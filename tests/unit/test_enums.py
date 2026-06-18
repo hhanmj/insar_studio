@@ -40,7 +40,18 @@ def test_coverage_status_members() -> None:
 
 
 def test_polarization_members() -> None:
-    assert {s.value for s in enums.Polarization} == {"VV", "VH", "VV_VH", "HH", "HV"}
+    assert {s.value for s in enums.Polarization} == {
+        "VV",
+        "VH",
+        "VV_VH",
+        "HH",
+        "HV",
+        "SH",
+        "SV",
+        "DH",
+        "DV",
+        "UNKNOWN",
+    }
 
 
 def test_enum_values_are_strings() -> None:

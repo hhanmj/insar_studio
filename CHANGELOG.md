@@ -49,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `parse_scene_name` granule parsing, and `deduplicate_scenes`. No network,
   no `asf_search`, no credentials.
 
+### Fixed
+
+- Preserve Sentinel-1 product polarization codes (Task 006a): `Polarization`
+  now includes `SH`/`SV`/`DH`/`DV`/`UNKNOWN`, and `parse_scene_name` keeps the
+  original code so dual-pol (`DH`/`DV`) is no longer collapsed to single-pol
+  (`HH`/`VV`). Added `polarization_code_to_channels` helper.
+
 ## [0.1.0] - 2026-06-18
 
 ### Added

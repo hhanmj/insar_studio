@@ -80,13 +80,23 @@ class BeamMode(StrEnum):
 
 
 class Polarization(StrEnum):
-    """SAR polarization (manual section 11.4)."""
+    """SAR polarization.
+
+    Includes channel-style values (manual section 11.4) and the Sentinel-1
+    product polarization codes (``SH``/``SV``/``DH``/``DV``) so dual-pol products
+    are never collapsed to a single channel.
+    """
 
     VV = "VV"
     VH = "VH"
     VV_VH = "VV_VH"
     HH = "HH"
     HV = "HV"
+    SH = "SH"
+    SV = "SV"
+    DH = "DH"
+    DV = "DV"
+    UNKNOWN = "UNKNOWN"
 
 
 class Provider(StrEnum):

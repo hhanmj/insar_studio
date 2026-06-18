@@ -26,16 +26,25 @@ _S1_SLC_RE = re.compile(
     r"_(?P<datatake>[0-9A-Fa-f]{6})(?:_(?P<unique>[0-9A-Fa-f]{4}))?$"
 )
 
-# Sentinel-1 polarization codes -> available Polarization enum members.
-# Note: the project Polarization enum has no HH+HV member, so "DH" maps to HH.
-_POL_MAP = {
-    "SV": Polarization.VV,
-    "SH": Polarization.HH,
-    "DV": Polarization.VV_VH,
-    "DH": Polarization.HH,
+# Sentinel-1 product polarization codes -> SAR channels. The Scene keeps the
+# original code (SH/SV/DH/DV) so dual-pol is never collapsed to single-pol.
+_POL_CHANNELS: dict[Polarization, tuple[str, ...]] = {
+    Polarization.SH: ("HH",),
+    Polarization.SV: ("VV",),
+    Polarization.DH: ("HH", "HV"),
+    Polarization.DV: ("VV", "VH"),
 }
 
 _EXTENSIONS = (".zip", ".SAFE", ".safe")
+
+
+def polarization_code_to_channels(code: Polarization | str) -> tuple[str, ...]:
+    """Return the SAR channels for a Sentinel-1 polarization code.
+
+    ``SH`` -> ``("HH",)``, ``SV`` -> ``("VV",)``, ``DH`` -> ``("HH", "HV")``,
+    ``DV`` -> ``("VV", "VH")``; any other value returns an empty tuple.
+    """
+    return _POL_CHANNELS.get(Polarization(code), ())
 
 
 def _granule_base(value: str) -> str:
@@ -67,7 +76,7 @@ def parse_scene_name(scene_name_or_url: str) -> Scene:
         platform=Platform(f"S1{match['sat']}"),
         product_type=ProductType.SLC,
         beam_mode=BeamMode.IW,
-        polarization=_POL_MAP.get(match["pol"], Polarization.VV),
+        polarization=Polarization(match["pol"]),
         acquisition_datetime=acquired,
         absolute_orbit=int(match["orbit"]),
         url=url,
