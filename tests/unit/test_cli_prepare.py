@@ -97,6 +97,44 @@ def test_prepare_generates_markdown(tmp_path: Path) -> None:
     assert "## Scene consistency" in text
 
 
+def test_prepare_prints_output_paths(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    json_path, md_path = report_paths(tmp_path, "shiliushubao")
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Data preparation report written:" in out
+    assert str(json_path) in out
+    assert str(md_path) in out
+
+
+def test_prepare_output_filenames_exact(tmp_path: Path) -> None:
+    json_path, md_path = report_paths(tmp_path, "shiliushubao")
+    main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+        ]
+    )
+    assert json_path.name == "shiliushubao_data_preparation_report.json"
+    assert md_path.name == "shiliushubao_data_preparation_report.md"
+    assert json_path.parent.name == "07_reports"
+
+
 def test_output_directory_is_07_reports(tmp_path: Path) -> None:
     json_path, _ = report_paths(tmp_path, "shiliushubao")
     main(

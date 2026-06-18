@@ -129,6 +129,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via `sarscape_safe_name`; missing/invalid carts return a non-zero exit code.
   `--help`/`--version` are unchanged; no `print()`, no network, no new deps.
 
+### Changed
+
+- `insar-prep prepare` (Task 015a) now writes a concise confirmation to stdout
+  on success (the JSON and Markdown report paths) via `sys.stdout.write` (still
+  no `print()`); the report content, exit-code policy, `--help`/`--version`, and
+  the `07_reports` / `<region_safe_name>_data_preparation_report.{json,md}`
+  output paths are unchanged.
+
 ## [0.1.0] - 2026-06-18
 
 ### Added

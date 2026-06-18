@@ -11,6 +11,7 @@ API calls, no credentials, and no real DEM conversion. No ``print()`` is used
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from insar_prep.core.enums import Polarization
@@ -111,5 +112,11 @@ def run_prepare(args: argparse.Namespace) -> int:
         "wrote data preparation report: %s and %s",
         output.json_path,
         output.markdown_path,
+    )
+    # User-facing confirmation on stdout (no print(); Ruff T20 stays satisfied).
+    sys.stdout.write(
+        "Data preparation report written:\n"
+        f"JSON: {output.json_path}\n"
+        f"Markdown: {output.markdown_path}\n"
     )
     return _EXIT_OK
