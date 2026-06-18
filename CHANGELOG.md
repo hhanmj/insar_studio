@@ -218,6 +218,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.spec`, `*.exe`) stay git-ignored and are never committed;
   `docs/packaging_readiness.md` records the build result and follow-ups. No
   business-module changes; no new runtime dependencies.
+- Windows exe smoke-test package (Task 023): added
+  `scripts/make_windows_smoke_package.ps1`, which assembles a local
+  `smoke_package/insar_prep_windows_smoke/` containing the built
+  `insar-prep.exe`, small offline sample inputs (ASF URL cart, orbit `.EOF`
+  files, GACOS `.ztd`/`.ztd.rsc`), a `README_SMOKE_TEST.md`, and a
+  `run_smoke_test.ps1` that exercises the full offline `prepare` workflow and
+  verifies the JSON + Markdown reports, no `.tif`, and untouched GACOS inputs.
+  `docs/windows_exe_smoke_test.md` documents how to generate and run it.
+  `smoke_package/` is git-ignored and never committed (only the generator script
+  and docs are). Offline only: no GUI, installer, release, upload, or network; no
+  business-module changes; no new dependencies.
 
 ## [0.1.0] - 2026-06-18
 

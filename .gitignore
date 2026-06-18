@@ -28,6 +28,9 @@ uv.lock.bak
 *.manifest
 pyinstaller-build/
 
+# ---- Windows exe smoke-test package (Task 023; generated locally) ----
+smoke_package/
+
 # ---- Test / lint / type caches ----
 .pytest_cache/
 .ruff_cache/
