@@ -1,0 +1,6 @@
+WIDTH         10
+FILE_LENGTH   10
+X_FIRST       109.5
+Y_FIRST       25.5
+X_STEP        0.000277777
+Y_STEP        -0.000277777

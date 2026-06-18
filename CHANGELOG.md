@@ -99,6 +99,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expected file patterns), and `validate_gacos_request_plan` returns a
   serializable `GacosPlanningReport`. No network, no GACOS web submission, no
   scraping, no browser automation, no product download, no credentials.
+- GACOS import checker (Task 013) in
+  `src/insar_prep/providers/gacos/import_checker.py`:
+  `scan_gacos_product_directory` groups well-formed `YYYYMMDD.ztd` /
+  `YYYYMMDD.ztd.rsc` files into `GacosProductFile` records (paths + sizes only,
+  contents never opened), and `check_gacos_products` compares a local product
+  directory against a `GacosRequestPlan` to produce a serializable
+  `GacosImportCheckReport` (missing `.ztd`/`.ztd.rsc`, unexpected dates,
+  malformed filenames, and empty files). Read-only and offline: it raises
+  `AtmosphereProductError` (`GAC002`) for a missing directory and never moves,
+  deletes, or creates user files, parses raster/`.rsc` content, downloads, or
+  contacts GACOS. Small placeholder fixtures live in `tests/fixtures/gacos/`.
 
 ## [0.1.0] - 2026-06-18
 
