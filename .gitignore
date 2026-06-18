@@ -1,0 +1,51 @@
+# ---- Security: never commit credentials ----
+.env
+*.env
+.netrc
+credentials.yaml
+secrets.yaml
+*.key
+*.token
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+
+# ---- uv / virtualenv ----
+.venv/
+venv/
+uv.lock.bak
+
+# ---- Test / lint / type caches ----
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ---- InSAR data (must never be committed) ----
+*.SAFE
+*.SAFE/
+*.zip
+*.tif
+*.tiff
+*.dem
+*.SLC
+
+# ---- Third-party reference projects (study only, do not commit) ----
+参考项目/
+*.exe
