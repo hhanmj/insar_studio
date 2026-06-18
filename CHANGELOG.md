@@ -183,6 +183,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offline: it never downloads, submits, scrapes, drives a browser, reads
   accounts, stores credentials, creates the SARscape-ready atmosphere
   directory, or moves/deletes/creates user files; no new dependencies.
+- End-to-end regression + quickstart docs (Task 020): a new
+  `tests/e2e/test_prepare_workflow.py` drives the full offline `prepare`
+  workflow through the public CLI with every optional module enabled at once
+  (orbit matching, DEM planning + conversion, GACOS request planning, GACOS
+  import check), asserting the JSON + Markdown `07_reports` output, all six
+  module sections, that no real DEM `.tif` is created, that the GACOS products
+  are never moved/deleted/modified, and — by blocking socket creation during the
+  run — that the workflow is fully offline. `README.md` was rewritten with the
+  project scope, `uv sync` install, base commands, minimal and full offline
+  `prepare` examples, the `07_reports` output location, SARscape naming
+  constraints, and an explicit "what it does not do" list. No business-module
+  changes; no new dependencies.
 
 ## [0.1.0] - 2026-06-18
 
