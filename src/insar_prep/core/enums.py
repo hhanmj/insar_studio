@@ -68,15 +68,21 @@ class Platform(StrEnum):
 
 
 class ProductType(StrEnum):
-    """SAR product type. Phase one only handles SLC."""
+    """SAR product type (phase one targets SLC)."""
 
+    RAW = "RAW"
     SLC = "SLC"
+    GRD = "GRD"
+    OCN = "OCN"
 
 
 class BeamMode(StrEnum):
-    """SAR beam mode. Phase one only handles IW."""
+    """SAR beam mode (phase one targets IW)."""
 
+    SM = "SM"
     IW = "IW"
+    EW = "EW"
+    WV = "WV"
 
 
 class Polarization(StrEnum):

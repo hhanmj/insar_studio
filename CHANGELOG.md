@@ -56,6 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   original code so dual-pol (`DH`/`DV`) is no longer collapsed to single-pol
   (`HH`/`VV`). Added `polarization_code_to_channels` helper.
 
+### Added (continued)
+
+- Scene consistency checks (Task 007) in `src/insar_prep/quality/`:
+  `check_scene_collection` produces a serializable `SceneCheckReport`
+  (`CheckIssue`/`CheckSeverity`) covering empty input, duplicate scene_id/time,
+  product/beam/polarization mismatches, mixed DH/DV and mixed platforms, missing
+  URL/source, and an `coverage_not_checked` note when footprints are unavailable.
+- `ProductType` gained `RAW`/`GRD`/`OCN` and `BeamMode` gained `SM`/`EW`/`WV`
+  so non-SLC / non-IW inputs can be represented and flagged.
+
 ## [0.1.0] - 2026-06-18
 
 ### Added
