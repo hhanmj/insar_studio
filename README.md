@@ -68,8 +68,26 @@ uv run insar-prep prepare \
   --gacos-import-dir ./gacos_products
 ```
 
-> On Windows PowerShell, replace the line-continuation `\` with a backtick `` ` ``
-> or put the whole command on a single line.
+### Windows (PowerShell)
+
+PowerShell uses a backtick (`` ` ``) for line continuation instead of `\`, and
+**any path containing spaces must be quoted**:
+
+```powershell
+uv run insar-prep prepare `
+  --cart tests/fixtures/asf/urls.txt `
+  --region-name shiliushubao_demo `
+  --output-root "C:\My Work\workspace" `
+  --orbit-dir ".\orbits" `
+  --dem-plan `
+  --bbox 110.1 30.8 110.6 31.2 `
+  --gacos-plan `
+  --gacos-import-dir ".\gacos_products"
+```
+
+Both `\` and `/` path separators are accepted. The output directory and report
+file names are always SARscape-safe (snake_case), so spaces in `--output-root`
+or `--region-name` never leak into generated names.
 
 ## Where the report is written
 
@@ -130,6 +148,13 @@ tests/
 
 See `DEVELOPMENT_MANUAL.md`, `CURSOR_OPUS_GUIDE.md`, and
 `insar_prep_project_rules.mdc` for design, hard constraints, and the task roadmap.
+
+## Packaging
+
+A standalone Windows executable is **not** built yet. See
+[`docs/packaging_readiness.md`](docs/packaging_readiness.md) for the packaging
+readiness checklist, runtime-dependency risks (shapely/GEOS, pydantic-core), and
+the planned PyInstaller approach for a future task.
 
 ## Development
 

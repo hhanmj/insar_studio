@@ -195,6 +195,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prepare` examples, the `07_reports` output location, SARscape naming
   constraints, and an explicit "what it does not do" list. No business-module
   changes; no new dependencies.
+- Packaging readiness check (Task 021): added `docs/packaging_readiness.md`
+  documenting the offline-CLI packaging status, the stable
+  `insar_prep.cli.main:main` entry point, runtime-dependency risks for
+  PyInstaller (shapely/GEOS native libraries and pydantic-core), files that must
+  not be bundled, runtime-only outputs, Windows path handling, a recommended
+  Task 022 PyInstaller command, known risks, and a pre-packaging checklist.
+  `.gitignore` now also ignores `*.spec` / `*.manifest`; `README.md` gained a
+  Windows PowerShell example (with quoting for spaced paths) and a Packaging
+  pointer; and a new end-to-end test verifies an `--output-root` that contains
+  spaces. No PyInstaller run, no exe/build/dist artifacts, no business-module
+  changes, and no new dependencies; the version stays `0.1.0`.
 
 ## [0.1.0] - 2026-06-18
 

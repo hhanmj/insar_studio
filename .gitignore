@@ -22,6 +22,12 @@ wheels/
 venv/
 uv.lock.bak
 
+# ---- PyInstaller / packaging artifacts (Task 022 onward) ----
+# build/ and dist/ are already ignored above; *.exe is ignored below.
+*.spec
+*.manifest
+pyinstaller-build/
+
 # ---- Test / lint / type caches ----
 .pytest_cache/
 .ruff_cache/

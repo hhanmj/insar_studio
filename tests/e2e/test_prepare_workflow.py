@@ -142,3 +142,34 @@ def test_full_offline_prepare_workflow(
     out = capsys.readouterr().out
     assert str(json_path) in out
     assert str(md_path) in out
+
+
+def test_prepare_workflow_handles_output_root_with_spaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Windows-style output root containing spaces must work end to end."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "My Work" / "work space"
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+        ]
+    )
+    assert code == 0
+
+    safe = sarscape_safe_name(region)
+    reports = workspace / safe / "07_reports"
+    assert (reports / f"{safe}_data_preparation_report.json").exists()
+    assert (reports / f"{safe}_data_preparation_report.md").exists()
+    # The space stays in the user-chosen output root, never in the safe names.
+    assert " " in str(workspace)
+    assert " " not in safe
