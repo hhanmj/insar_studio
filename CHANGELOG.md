@@ -120,6 +120,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SARscape-safe `07_reports` directory. All written text is credential-masked
   via `mask_text`/`mask_secret`. Offline only: no GUI, PDF, HTML, browser,
   network, or new dependencies.
+- `prepare` CLI workflow (Task 015) in `src/insar_prep/cli/`: a new
+  `insar-prep prepare --cart ... --region-name ... --output-root ...` command
+  (with optional `--region-id`, `--require-urls`, `--expected-polarization`)
+  that wires the offline pipeline ASF cart parser -> scene consistency check ->
+  `DataPreparationReport` -> `save_report`, writing JSON + Markdown to
+  `<output_root>/<region_safe_name>/07_reports/`. Region names are normalized
+  via `sarscape_safe_name`; missing/invalid carts return a non-zero exit code.
+  `--help`/`--version` are unchanged; no `print()`, no network, no new deps.
 
 ## [0.1.0] - 2026-06-18
 
