@@ -262,6 +262,7 @@ class DownloadTask(InsarBaseModel):
     region_id: str
     provider: Provider
     task_type: TaskType
+    priority: int = 0
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
     status: TaskStatus = TaskStatus.PENDING

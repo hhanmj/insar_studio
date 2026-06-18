@@ -65,6 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   URL/source, and an `coverage_not_checked` note when footprints are unavailable.
 - `ProductType` gained `RAW`/`GRD`/`OCN` and `BeamMode` gained `SM`/`EW`/`WV`
   so non-SLC / non-IW inputs can be represented and flagged.
+- Task queue framework (Task 008) in `src/insar_prep/queue/`: `TaskQueue` with a
+  validated task state machine (pause/resume/cancel/retry, priority ordering,
+  region/type filters), `summarize_job_status`, executors (`DryRunExecutor`,
+  `FailingExecutor`, `TaskExecutor` protocol), and a sequential scheduler
+  (`QueueRunConfig`/`QueueRunResult`). Fully offline; no real downloads.
+- `DownloadTask` gained a `priority` field for queue ordering.
 
 ## [0.1.0] - 2026-06-18
 
