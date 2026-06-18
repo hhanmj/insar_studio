@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   masking).
 - Ruff `T20` rule enabled to forbid `print()`; application code must use the
   project logger.
+- AOI input module (Task 005) in `src/insar_prep/processing/aoi.py`: manual
+  bbox Processing AOIs, buffered Download AOIs, and multi-feature handling
+  (`merge_features_to_one_region`, `select_feature`, `split_features_to_regions`,
+  `build_regions`) plus `validate_china_boundary_compliance` (AOI003).
+- Model additions for AOI: `BBox.to_polygon()`/`BBox.buffer()`, `Aoi.role`
+  (`AoiRole`), `AoiFeature`, and `BoundaryCompliance.country`/
+  `requires_review_number`; new `AoiRole` and `MultiFeatureMode` enums.
+- `shapely>=2` runtime dependency (geometry, union, bounds; no geopandas/fiona).
 
 ## [0.1.0] - 2026-06-18
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import secrets
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import (
     BaseModel,
@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from insar_prep.core.enums import (
+    AoiRole,
     AoiSource,
     BeamMode,
     CoverageStatus,
@@ -41,6 +42,9 @@ from insar_prep.core.enums import (
     TaskType,
     VerticalDatum,
 )
+
+if TYPE_CHECKING:
+    from shapely.geometry.base import BaseGeometry
 
 # A SARscape-safe snake_case name: lowercase letters/digits, single underscores
 # between groups, no leading/trailing/double underscores. Generation of such
@@ -107,6 +111,24 @@ class BBox(InsarBaseModel):
             raise ValueError("south must be strictly less than north")
         return self
 
+    def to_polygon(self) -> BaseGeometry:
+        """Return this bbox as a shapely rectangle polygon."""
+        from shapely.geometry import box
+
+        return box(self.west, self.south, self.east, self.north)
+
+    def buffer(self, degrees: float) -> BBox:
+        """Return a new bbox expanded by ``degrees`` on each side (clamped)."""
+        if degrees < 0:
+            raise ValueError("buffer degrees must be non-negative")
+        return BBox(
+            west=max(-180.0, self.west - degrees),
+            east=min(180.0, self.east + degrees),
+            south=max(-90.0, self.south - degrees),
+            north=min(90.0, self.north + degrees),
+            crs=self.crs,
+        )
+
 
 class AoiBuffer(InsarBaseModel):
     """Auxiliary-product download buffers in degrees (manual section 8.6)."""
@@ -120,6 +142,7 @@ class Aoi(InsarBaseModel):
     """A region's processing area of interest."""
 
     source: AoiSource
+    role: AoiRole = AoiRole.PROCESSING_AOI
     bbox: BBox | None = None
     geometry_path: Path | None = None
     crs: str = "EPSG:4326"
@@ -129,6 +152,8 @@ class Aoi(InsarBaseModel):
 class BoundaryCompliance(InsarBaseModel):
     """Administrative boundary provenance metadata (manual section 9.3)."""
 
+    country: str | None = None
+    requires_review_number: bool = False
     boundary_source: str | None = None
     provider: str | None = None
     review_number: str | None = None
@@ -139,6 +164,16 @@ class BoundaryCompliance(InsarBaseModel):
     crs: str | None = None
     file_path: Path | None = None
     notes: str = ""
+
+
+class AoiFeature(InsarBaseModel):
+    """A lightweight AOI feature (geometry kept as WKT/bbox for serialization)."""
+
+    feature_id: str = Field(default_factory=lambda: generate_id("feature"))
+    name: str = ""
+    geometry_wkt: str | None = None
+    bbox: BBox | None = None
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class Scene(InsarBaseModel):

@@ -15,6 +15,7 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2",
+    "shapely>=2",
 ]
 
 [project.urls]

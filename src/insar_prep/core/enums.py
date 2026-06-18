@@ -140,3 +140,19 @@ class DemDataset(StrEnum):
     AW3D30 = "AW3D30"
     AW3D30_ELLIPSOIDAL = "AW3D30_ELLIPSOIDAL"
     USER_LOCAL = "USER_LOCAL"
+
+
+class AoiRole(StrEnum):
+    """The role an AOI plays in the workflow (manual section 8.1)."""
+
+    SLC_FOOTPRINT = "SLC_FOOTPRINT"
+    PROCESSING_AOI = "PROCESSING_AOI"
+    DOWNLOAD_AOI = "DOWNLOAD_AOI"
+
+
+class MultiFeatureMode(StrEnum):
+    """How to turn a multi-feature vector input into regions (manual 8.5)."""
+
+    MERGE_TO_ONE_REGION = "MERGE_TO_ONE_REGION"
+    SELECT_ONE_FEATURE = "SELECT_ONE_FEATURE"
+    SPLIT_TO_REGIONS = "SPLIT_TO_REGIONS"
