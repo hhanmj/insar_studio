@@ -29,7 +29,11 @@ from insar_prep.providers.dem import (
     validate_dem_conversion_plan,
     validate_dem_request_plan,
 )
-from insar_prep.providers.gacos import create_gacos_request_plan, validate_gacos_request_plan
+from insar_prep.providers.gacos import (
+    check_gacos_products,
+    create_gacos_request_plan,
+    validate_gacos_request_plan,
+)
 from insar_prep.providers.orbit import match_orbits_for_scenes, scan_orbit_directory
 from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.reporting.generator import build_data_preparation_report, save_report
@@ -162,6 +166,16 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         default=20,
         help="Maximum acquisition dates per GACOS request batch (default: 20).",
     )
+    parser.add_argument(
+        "--gacos-import-dir",
+        dest="gacos_import_dir",
+        default=None,
+        help=(
+            "Optional local directory of already-downloaded GACOS products "
+            "(YYYYMMDD.ztd / YYYYMMDD.ztd.rsc) to check against the expected scene "
+            "dates; requires --bbox. Read-only: never downloads, moves, or creates files."
+        ),
+    )
     return parser
 
 
@@ -200,11 +214,13 @@ def run_prepare(args: argparse.Namespace) -> int:
             return _EXIT_ERROR
         orbit_report = match_orbits_for_scenes(scenes, orbit_files)
 
-    # DEM and GACOS planning both need a Processing AOI built from --bbox; build it once.
+    # DEM and GACOS features all need a Processing AOI built from --bbox; build it once.
     processing_aoi = None
-    if args.dem_plan or args.gacos_plan:
+    if args.dem_plan or args.gacos_plan or args.gacos_import_dir is not None:
         if args.bbox is None:
-            logger.error("--dem-plan/--gacos-plan require --bbox WEST SOUTH EAST NORTH")
+            logger.error(
+                "--dem-plan/--gacos-plan/--gacos-import-dir require --bbox WEST SOUTH EAST NORTH"
+            )
             return _EXIT_ERROR
         west, south, east, north = args.bbox
         try:
@@ -234,6 +250,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         dem_planning_report = validate_dem_request_plan(dem_plan)
         dem_conversion_report = validate_dem_conversion_plan(create_dem_conversion_plan(dem_plan))
 
+    gacos_plan = None
     gacos_planning_report = None
     if args.gacos_plan:
         try:
@@ -251,6 +268,36 @@ def run_prepare(args: argparse.Namespace) -> int:
             return _EXIT_ERROR
         gacos_planning_report = validate_gacos_request_plan(gacos_plan)
 
+    # GACOS import check: compare a local product directory against the expected
+    # acquisition dates. Expected dates come from an existing --gacos-plan plan when
+    # available, otherwise from a plan built from the scene dates (both need --bbox).
+    # Uses the existing read-only checker; no products are downloaded, moved, or created.
+    gacos_import_report = None
+    if args.gacos_import_dir is not None:
+        import_plan = gacos_plan
+        if import_plan is None:
+            try:
+                import_plan = create_gacos_request_plan(
+                    region_id=region_id,
+                    region_safe_name=region_safe_name,
+                    processing_aoi=processing_aoi,
+                    scenes=scenes,
+                    output_root=args.output_root,
+                    buffer_degrees=args.gacos_buffer,
+                    max_dates_per_batch=args.gacos_max_dates_per_batch,
+                )
+            except InsarPrepError as exc:
+                logger.error("failed to derive GACOS expected dates: %s", exc)
+                return _EXIT_ERROR
+        try:
+            gacos_import_report = check_gacos_products(
+                request_plan=import_plan,
+                product_directory=args.gacos_import_dir,
+            )
+        except InsarPrepError as exc:
+            logger.error("failed to check GACOS products in %s: %s", args.gacos_import_dir, exc)
+            return _EXIT_ERROR
+
     report = build_data_preparation_report(
         region_id=region_id,
         region_safe_name=region_safe_name,
@@ -259,6 +306,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         dem_planning_report=dem_planning_report,
         dem_conversion_report=dem_conversion_report,
         gacos_planning_report=gacos_planning_report,
+        gacos_import_report=gacos_import_report,
     )
     output = save_report(report, args.output_root)
     logger.info(

@@ -169,6 +169,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Task 017 behavior is unchanged. No network, no GACOS web submission,
   scraping, browser automation, product download, or credentials; no real
   `.ztd` files are created; no new dependencies.
+- `insar-prep prepare` (Task 019) gained an optional `--gacos-import-dir` flag
+  (with `--bbox WEST SOUTH EAST NORTH`): it wires the existing read-only GACOS
+  import checker into the workflow, comparing a local directory of
+  already-downloaded GACOS products against the expected acquisition dates and
+  adding a "GACOS import check" section to the report (expected/found/missing/
+  extra date counts, empty-file count, and per-issue codes for missing `.ztd`/
+  `.ztd.rsc`, unexpected dates, malformed filenames, and empty files). Expected
+  dates come from an existing `--gacos-plan` plan when given, otherwise from a
+  plan built from the parsed scene dates. A missing import directory exits
+  non-zero; `--gacos-import-dir` without `--bbox` exits non-zero. Without
+  `--gacos-import-dir` the Task 018 behavior is unchanged. Read-only and
+  offline: it never downloads, submits, scrapes, drives a browser, reads
+  accounts, stores credentials, creates the SARscape-ready atmosphere
+  directory, or moves/deletes/creates user files; no new dependencies.
 
 ## [0.1.0] - 2026-06-18
 

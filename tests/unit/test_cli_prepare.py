@@ -658,3 +658,165 @@ def test_prepare_dem_and_gacos_share_bbox(tmp_path: Path) -> None:
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert find_section(data, "DEM planning") is not None
     assert find_section(data, "GACOS request planning") is not None
+
+
+# Scene dates in urls.txt (S1A 2024-01-01, S1B 2024-01-13) define the expected
+# GACOS acquisition dates the import checker looks for.
+_GACOS_IMPORT_DATES = ("20240101", "20240113")
+
+
+def _write_gacos_products(directory: Path, dates: tuple[str, ...]) -> Path:
+    """Write placeholder GACOS ``.ztd``/``.ztd.rsc`` files (non-empty; never parsed)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for stamp in dates:
+        (directory / f"{stamp}.ztd").write_text("ztd\n", encoding="utf-8")
+        (directory / f"{stamp}.ztd.rsc").write_text("WIDTH 10\n", encoding="utf-8")
+    return directory
+
+
+def _import_codes(section: dict) -> str:
+    return " ".join(issue["code"] for issue in section["issues"])
+
+
+def _prepare_with_gacos_import(tmp_path: Path, import_dir: Path, *extra: str) -> int:
+    return main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--gacos-import-dir",
+            str(import_dir),
+            "--bbox",
+            "110.1",
+            "30.8",
+            "110.6",
+            "31.2",
+            *extra,
+        ]
+    )
+
+
+def test_prepare_help_shows_gacos_import_dir(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["prepare", "--help"])
+    assert "--gacos-import-dir" in capsys.readouterr().out
+
+
+def test_prepare_without_gacos_import_dir_has_no_import_section(tmp_path: Path) -> None:
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+        ]
+    )
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert find_section(data, "GACOS import check") is None
+
+
+def test_prepare_with_complete_gacos_import_adds_section(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import_dir = _write_gacos_products(tmp_path / "gacos_products", _GACOS_IMPORT_DATES)
+    json_path, md_path = report_paths(tmp_path, "shiliushubao")
+    code = _prepare_with_gacos_import(tmp_path, import_dir)
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    section = find_section(data, "GACOS import check")
+    assert section is not None
+    assert section["summary"]["expected_date_count"] == 2
+    assert section["summary"]["found_date_count"] == 2
+    assert section["summary"]["missing_date_count"] == 0
+    assert "GACOS_IMPORT_READY" in _import_codes(section)
+    assert data["has_errors"] is False
+    out = capsys.readouterr().out
+    assert str(json_path) in out
+    assert str(md_path) in out
+
+
+def test_prepare_gacos_import_markdown_has_section_title(tmp_path: Path) -> None:
+    import_dir = _write_gacos_products(tmp_path / "gacos_products", _GACOS_IMPORT_DATES)
+    _, md_path = report_paths(tmp_path, "shiliushubao")
+    _prepare_with_gacos_import(tmp_path, import_dir)
+    assert "## GACOS import check" in md_path.read_text(encoding="utf-8")
+
+
+def test_prepare_gacos_import_missing_products_flag_errors(tmp_path: Path) -> None:
+    # Only the first date is present; the second expected date is missing entirely.
+    import_dir = _write_gacos_products(tmp_path / "gacos_products", ("20240101",))
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    code = _prepare_with_gacos_import(tmp_path, import_dir)
+    assert code == 0
+    text = json_path.read_text(encoding="utf-8")
+    assert "GACOS_ZTD_MISSING" in text
+    assert "GACOS_RSC_MISSING" in text
+    data = json.loads(text)
+    assert data["has_errors"] is True
+    section = find_section(data, "GACOS import check")
+    assert section["summary"]["missing_date_count"] == 1
+
+
+def test_prepare_gacos_import_extra_date_is_warning(tmp_path: Path) -> None:
+    import_dir = _write_gacos_products(
+        tmp_path / "gacos_products", (*_GACOS_IMPORT_DATES, "20240201")
+    )
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    code = _prepare_with_gacos_import(tmp_path, import_dir)
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    section = find_section(data, "GACOS import check")
+    assert section["summary"]["extra_date_count"] == 1
+    assert "GACOS_EXTRA_DATE" in _import_codes(section)
+
+
+def test_prepare_gacos_import_dir_requires_bbox(tmp_path: Path) -> None:
+    import_dir = _write_gacos_products(tmp_path / "gacos_products", _GACOS_IMPORT_DATES)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--gacos-import-dir",
+            str(import_dir),
+        ]
+    )
+    assert code != 0
+
+
+def test_prepare_gacos_import_missing_dir_fails(tmp_path: Path) -> None:
+    code = _prepare_with_gacos_import(tmp_path, tmp_path / "no_gacos_here")
+    assert code != 0
+
+
+def test_prepare_gacos_import_with_plan_has_both_sections(tmp_path: Path) -> None:
+    import_dir = _write_gacos_products(tmp_path / "gacos_products", _GACOS_IMPORT_DATES)
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    code = _prepare_with_gacos_import(tmp_path, import_dir, "--gacos-plan")
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert find_section(data, "GACOS request planning") is not None
+    assert find_section(data, "GACOS import check") is not None
+
+
+def test_prepare_gacos_import_is_read_only(tmp_path: Path) -> None:
+    import_dir = _write_gacos_products(tmp_path / "gacos_products", _GACOS_IMPORT_DATES)
+    before = {entry.name: entry.stat().st_size for entry in import_dir.iterdir()}
+    code = _prepare_with_gacos_import(tmp_path, import_dir)
+    assert code == 0
+    after = {entry.name: entry.stat().st_size for entry in import_dir.iterdir()}
+    assert before == after
+    # Import checking alone must not create the GACOS requests output tree.
+    assert not (tmp_path / "shiliushubao" / "05_atmosphere").exists()
