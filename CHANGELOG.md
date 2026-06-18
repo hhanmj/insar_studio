@@ -155,6 +155,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exit non-zero. Without `--dem-plan` the Task 016 behavior is unchanged. No
   network, no OpenTopography/GDAL/rasterio/pyproj, no real `.tif` files, no new
   dependencies.
+- `insar-prep prepare` (Task 018) gained optional GACOS request planning:
+  `--gacos-plan` with `--bbox WEST SOUTH EAST NORTH` (plus `--gacos-buffer` and
+  `--gacos-max-dates-per-batch`) builds a Processing AOI, extracts the unique
+  acquisition dates from the parsed scenes, and produces an offline GACOS
+  request plan, adding a "GACOS request planning" section to the report (total
+  dates, batch count/sizes, buffered request bbox, `05_atmosphere/gacos/requests`
+  output directory, `.ztd`/`.ztd.rsc` expected file patterns, manual-submission
+  flag, and any missing-scene-date warnings). When both `--dem-plan` and
+  `--gacos-plan` are given they reuse the same `--bbox` Processing AOI.
+  `--gacos-plan` without `--bbox`, a negative `--gacos-buffer`, or a
+  `--gacos-max-dates-per-batch` below 1 exit non-zero. Without `--gacos-plan`
+  the Task 017 behavior is unchanged. No network, no GACOS web submission,
+  scraping, browser automation, product download, or credentials; no real
+  `.ztd` files are created; no new dependencies.
 
 ## [0.1.0] - 2026-06-18
 

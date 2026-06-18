@@ -29,6 +29,7 @@ from insar_prep.providers.dem import (
     validate_dem_conversion_plan,
     validate_dem_request_plan,
 )
+from insar_prep.providers.gacos import create_gacos_request_plan, validate_gacos_request_plan
 from insar_prep.providers.orbit import match_orbits_for_scenes, scan_orbit_directory
 from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.reporting.generator import build_data_preparation_report, save_report
@@ -141,6 +142,26 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         choices=[member.value for member in VerticalDatum],
         help="Target DEM vertical datum (default: WGS84_ELLIPSOID).",
     )
+    parser.add_argument(
+        "--gacos-plan",
+        dest="gacos_plan",
+        action="store_true",
+        help="Also build an offline GACOS request plan from scene dates (requires --bbox).",
+    )
+    parser.add_argument(
+        "--gacos-buffer",
+        dest="gacos_buffer",
+        type=float,
+        default=0.05,
+        help="GACOS request bbox buffer in degrees (default: 0.05).",
+    )
+    parser.add_argument(
+        "--gacos-max-dates-per-batch",
+        dest="gacos_max_dates_per_batch",
+        type=int,
+        default=20,
+        help="Maximum acquisition dates per GACOS request batch (default: 20).",
+    )
     return parser
 
 
@@ -179,11 +200,11 @@ def run_prepare(args: argparse.Namespace) -> int:
             return _EXIT_ERROR
         orbit_report = match_orbits_for_scenes(scenes, orbit_files)
 
-    dem_planning_report = None
-    dem_conversion_report = None
-    if args.dem_plan:
+    # DEM and GACOS planning both need a Processing AOI built from --bbox; build it once.
+    processing_aoi = None
+    if args.dem_plan or args.gacos_plan:
         if args.bbox is None:
-            logger.error("--dem-plan requires --bbox WEST SOUTH EAST NORTH")
+            logger.error("--dem-plan/--gacos-plan require --bbox WEST SOUTH EAST NORTH")
             return _EXIT_ERROR
         west, south, east, north = args.bbox
         try:
@@ -191,6 +212,10 @@ def run_prepare(args: argparse.Namespace) -> int:
         except (ValidationError, ValueError) as exc:
             logger.error("invalid --bbox %s: %s", args.bbox, exc)
             return _EXIT_ERROR
+
+    dem_planning_report = None
+    dem_conversion_report = None
+    if args.dem_plan:
         try:
             dem_plan = create_dem_request_plan(
                 region_id=region_id,
@@ -209,6 +234,23 @@ def run_prepare(args: argparse.Namespace) -> int:
         dem_planning_report = validate_dem_request_plan(dem_plan)
         dem_conversion_report = validate_dem_conversion_plan(create_dem_conversion_plan(dem_plan))
 
+    gacos_planning_report = None
+    if args.gacos_plan:
+        try:
+            gacos_plan = create_gacos_request_plan(
+                region_id=region_id,
+                region_safe_name=region_safe_name,
+                processing_aoi=processing_aoi,
+                scenes=scenes,
+                output_root=args.output_root,
+                buffer_degrees=args.gacos_buffer,
+                max_dates_per_batch=args.gacos_max_dates_per_batch,
+            )
+        except InsarPrepError as exc:
+            logger.error("failed to build GACOS plan: %s", exc)
+            return _EXIT_ERROR
+        gacos_planning_report = validate_gacos_request_plan(gacos_plan)
+
     report = build_data_preparation_report(
         region_id=region_id,
         region_safe_name=region_safe_name,
@@ -216,6 +258,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         orbit_match_report=orbit_report,
         dem_planning_report=dem_planning_report,
         dem_conversion_report=dem_conversion_report,
+        gacos_planning_report=gacos_planning_report,
     )
     output = save_report(report, args.output_root)
     logger.info(

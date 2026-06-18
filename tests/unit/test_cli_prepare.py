@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -475,3 +476,185 @@ def test_prepare_dem_plan_creates_no_tif(tmp_path: Path) -> None:
     code = _prepare_with_dem(tmp_path)
     assert code == 0
     assert not list(tmp_path.rglob("*.tif"))
+
+
+def _prepare_with_gacos(tmp_path: Path, *extra: str) -> int:
+    return main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--gacos-plan",
+            "--bbox",
+            "110.1",
+            "30.8",
+            "110.6",
+            "31.2",
+            *extra,
+        ]
+    )
+
+
+def _write_dated_cart(path: Path, count: int) -> Path:
+    """Write an ASF URL cart with ``count`` scenes on ``count`` distinct dates."""
+    base = datetime(2024, 1, 1)
+    lines = ["# generated ASF download URLs (one per line)"]
+    for index in range(count):
+        day = base + timedelta(days=12 * index)
+        start = day.strftime("%Y%m%dT100000")
+        stop = day.strftime("%Y%m%dT100027")
+        granule = f"S1A_IW_SLC__1SDV_{start}_{stop}_{52000 + index:06d}_064ABC_{index:04x}"
+        lines.append(f"https://datapool.asf.alaska.edu/SLC/SA/{granule}.zip")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_prepare_help_shows_gacos_options(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["prepare", "--help"])
+    out = capsys.readouterr().out
+    assert "--gacos-plan" in out
+    assert "--gacos-buffer" in out
+    assert "--gacos-max-dates-per-batch" in out
+
+
+def test_prepare_without_gacos_plan_has_no_gacos_section(tmp_path: Path) -> None:
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+        ]
+    )
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert find_section(data, "GACOS request planning") is None
+
+
+def test_prepare_with_gacos_plan_adds_section(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    json_path, md_path = report_paths(tmp_path, "shiliushubao")
+    code = _prepare_with_gacos(tmp_path)
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    section = find_section(data, "GACOS request planning")
+    assert section is not None
+    items = " ".join(section["items"])
+    assert "Total acquisition dates" in items
+    assert "Request batches" in items
+    assert "Request bbox" in items
+    assert "Output directory" in items
+    assert "05_atmosphere" in items
+    assert "Expected file patterns" in items
+    assert "*.ztd" in items
+    assert "Manual submission required" in items
+    out = capsys.readouterr().out
+    assert str(json_path) in out
+    assert str(md_path) in out
+
+
+def test_prepare_gacos_markdown_has_section_title(tmp_path: Path) -> None:
+    _, md_path = report_paths(tmp_path, "shiliushubao")
+    _prepare_with_gacos(tmp_path)
+    text = md_path.read_text(encoding="utf-8")
+    assert "## GACOS request planning" in text
+
+
+def test_prepare_gacos_batches_dates_into_20_20_5(tmp_path: Path) -> None:
+    cart = _write_dated_cart(tmp_path / "many_dates.txt", 45)
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(cart),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--gacos-plan",
+            "--bbox",
+            "110.1",
+            "30.8",
+            "110.6",
+            "31.2",
+            "--gacos-max-dates-per-batch",
+            "20",
+        ]
+    )
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    section = find_section(data, "GACOS request planning")
+    assert section is not None
+    assert section["summary"]["unique_date_count"] == 45
+    assert section["summary"]["batch_count"] == 3
+    assert "Batch sizes: [20, 20, 5]" in " ".join(section["items"])
+
+
+def test_prepare_gacos_plan_requires_bbox(tmp_path: Path) -> None:
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--gacos-plan",
+        ]
+    )
+    assert code != 0
+
+
+def test_prepare_negative_gacos_buffer_fails(tmp_path: Path) -> None:
+    code = _prepare_with_gacos(tmp_path, "--gacos-buffer", "-0.1")
+    assert code != 0
+
+
+def test_prepare_gacos_max_dates_below_one_fails(tmp_path: Path) -> None:
+    code = _prepare_with_gacos(tmp_path, "--gacos-max-dates-per-batch", "0")
+    assert code != 0
+
+
+def test_prepare_gacos_plan_creates_no_ztd(tmp_path: Path) -> None:
+    code = _prepare_with_gacos(tmp_path)
+    assert code == 0
+    assert not list(tmp_path.rglob("*.ztd"))
+    assert not list(tmp_path.rglob("*.ztd.rsc"))
+    assert not (tmp_path / "shiliushubao" / "05_atmosphere").exists()
+
+
+def test_prepare_dem_and_gacos_share_bbox(tmp_path: Path) -> None:
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--dem-plan",
+            "--gacos-plan",
+            "--bbox",
+            "110.1",
+            "30.8",
+            "110.6",
+            "31.2",
+        ]
+    )
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert find_section(data, "DEM planning") is not None
+    assert find_section(data, "GACOS request planning") is not None

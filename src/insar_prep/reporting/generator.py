@@ -144,7 +144,10 @@ def _gacos_planning_section(report) -> ReportSection:
         items = [
             f"Total acquisition dates: {len(plan.unique_dates)}",
             f"Request batches: {len(plan.batches)}",
+            f"Batch sizes: {[batch.date_count for batch in plan.batches]}",
             f"Request bbox: {_bbox_text(plan.request_bbox)}",
+            f"Output directory: {plan.output_directory}",
+            f"Expected file patterns: {plan.expected_file_patterns}",
             f"Manual submission required: {plan.manual_submission_required}",
         ]
     return ReportSection(
