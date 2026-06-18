@@ -144,6 +144,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   orbit section flagging the unmatched scenes. Without `--orbit-dir` the Task 015
   behavior is unchanged (no orbit section). Still offline; no orbit downloads,
   no `sentineleof`, no new dependencies.
+- `insar-prep prepare` (Task 017) gained optional DEM planning: `--dem-plan`
+  with `--bbox WEST SOUTH EAST NORTH` (plus `--dem-dataset`, `--dem-provider`,
+  `--dem-buffer`, `--source-vertical-datum`, `--target-vertical-datum`) builds a
+  Processing AOI, an offline DEM request plan, and a DEM conversion plan, adding
+  "DEM planning" and "DEM conversion" sections to the report (dataset, provider,
+  request bbox, `04_dem/raw` + `04_dem/ellipsoid` + `06_sarscape_ready/
+  <region_safe_name>_dem.tif` paths, datums, geoid/manual-review status).
+  `--dem-plan` without `--bbox`, an invalid bbox, or a negative `--dem-buffer`
+  exit non-zero. Without `--dem-plan` the Task 016 behavior is unchanged. No
+  network, no OpenTopography/GDAL/rasterio/pyproj, no real `.tif` files, no new
+  dependencies.
 
 ## [0.1.0] - 2026-06-18
 

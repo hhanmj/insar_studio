@@ -349,3 +349,129 @@ def test_prepare_orbit_dir_without_matches(tmp_path: Path) -> None:
     assert section is not None
     assert section["summary"]["matched"] == 0
     assert section["issues"]
+
+
+def _prepare_with_dem(tmp_path: Path, *extra: str) -> int:
+    return main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--dem-plan",
+            "--bbox",
+            "110.1",
+            "30.8",
+            "110.6",
+            "31.2",
+            *extra,
+        ]
+    )
+
+
+def test_prepare_help_shows_dem_options(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["prepare", "--help"])
+    out = capsys.readouterr().out
+    assert "--dem-plan" in out
+    assert "--bbox" in out
+
+
+def test_prepare_without_dem_plan_has_no_dem_sections(tmp_path: Path) -> None:
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+        ]
+    )
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert find_section(data, "DEM planning") is None
+    assert find_section(data, "DEM conversion") is None
+
+
+def test_prepare_with_dem_plan_adds_sections(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    json_path, md_path = report_paths(tmp_path, "shiliushubao")
+    code = _prepare_with_dem(tmp_path)
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    planning = find_section(data, "DEM planning")
+    conversion = find_section(data, "DEM conversion")
+    assert planning is not None
+    assert conversion is not None
+    items = " ".join(planning["items"])
+    assert "04_dem" in items
+    assert "raw" in items
+    assert "ellipsoid" in items
+    assert "06_sarscape_ready" in items
+    assert "shiliushubao_dem.tif" in items
+    out = capsys.readouterr().out
+    assert str(json_path) in out
+    assert str(md_path) in out
+
+
+def test_prepare_dem_markdown_has_section_titles(tmp_path: Path) -> None:
+    _, md_path = report_paths(tmp_path, "shiliushubao")
+    _prepare_with_dem(tmp_path)
+    text = md_path.read_text(encoding="utf-8")
+    assert "## DEM planning" in text
+    assert "## DEM conversion" in text
+
+
+def test_prepare_dem_plan_requires_bbox(tmp_path: Path) -> None:
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--dem-plan",
+        ]
+    )
+    assert code != 0
+
+
+def test_prepare_invalid_bbox_fails(tmp_path: Path) -> None:
+    # west >= east is invalid.
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--dem-plan",
+            "--bbox",
+            "110.6",
+            "30.8",
+            "110.1",
+            "31.2",
+        ]
+    )
+    assert code != 0
+
+
+def test_prepare_negative_dem_buffer_fails(tmp_path: Path) -> None:
+    code = _prepare_with_dem(tmp_path, "--dem-buffer", "-0.1")
+    assert code != 0
+
+
+def test_prepare_dem_plan_creates_no_tif(tmp_path: Path) -> None:
+    code = _prepare_with_dem(tmp_path)
+    assert code == 0
+    assert not list(tmp_path.rglob("*.tif"))

@@ -14,11 +14,21 @@ import argparse
 import sys
 from pathlib import Path
 
-from insar_prep.core.enums import Polarization
+from pydantic import ValidationError
+
+from insar_prep.core.enums import DemDataset, Polarization, VerticalDatum
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import get_logger
 from insar_prep.core.naming import sarscape_safe_name
+from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
+from insar_prep.providers.dem import (
+    DemProvider,
+    create_dem_conversion_plan,
+    create_dem_request_plan,
+    validate_dem_conversion_plan,
+    validate_dem_request_plan,
+)
 from insar_prep.providers.orbit import match_orbits_for_scenes, scan_orbit_directory
 from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.reporting.generator import build_data_preparation_report, save_report
@@ -81,6 +91,56 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         default=None,
         help="Optional local directory of Sentinel-1 orbit (.EOF) files to match.",
     )
+    parser.add_argument(
+        "--dem-plan",
+        dest="dem_plan",
+        action="store_true",
+        help="Also build an offline DEM request + conversion plan (requires --bbox).",
+    )
+    parser.add_argument(
+        "--bbox",
+        dest="bbox",
+        nargs=4,
+        type=float,
+        default=None,
+        metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+        help="Processing AOI bounds for --dem-plan, in degrees: WEST SOUTH EAST NORTH.",
+    )
+    parser.add_argument(
+        "--dem-dataset",
+        dest="dem_dataset",
+        default=DemDataset.COP30.value,
+        choices=[member.value for member in DemDataset],
+        help="DEM dataset to plan for (default: COP30).",
+    )
+    parser.add_argument(
+        "--dem-provider",
+        dest="dem_provider",
+        default=DemProvider.OPENTOPOGRAPHY.value,
+        choices=[member.value for member in DemProvider],
+        help="Planned DEM provider (default: OPENTOPOGRAPHY).",
+    )
+    parser.add_argument(
+        "--dem-buffer",
+        dest="dem_buffer",
+        type=float,
+        default=0.05,
+        help="DEM request bbox buffer in degrees (default: 0.05).",
+    )
+    parser.add_argument(
+        "--source-vertical-datum",
+        dest="source_vertical_datum",
+        default=VerticalDatum.EGM2008.value,
+        choices=[member.value for member in VerticalDatum],
+        help="Source DEM vertical datum (default: EGM2008).",
+    )
+    parser.add_argument(
+        "--target-vertical-datum",
+        dest="target_vertical_datum",
+        default=VerticalDatum.WGS84_ELLIPSOID.value,
+        choices=[member.value for member in VerticalDatum],
+        help="Target DEM vertical datum (default: WGS84_ELLIPSOID).",
+    )
     return parser
 
 
@@ -119,11 +179,43 @@ def run_prepare(args: argparse.Namespace) -> int:
             return _EXIT_ERROR
         orbit_report = match_orbits_for_scenes(scenes, orbit_files)
 
+    dem_planning_report = None
+    dem_conversion_report = None
+    if args.dem_plan:
+        if args.bbox is None:
+            logger.error("--dem-plan requires --bbox WEST SOUTH EAST NORTH")
+            return _EXIT_ERROR
+        west, south, east, north = args.bbox
+        try:
+            processing_aoi = make_processing_aoi_from_bbox(west, east, south, north)
+        except (ValidationError, ValueError) as exc:
+            logger.error("invalid --bbox %s: %s", args.bbox, exc)
+            return _EXIT_ERROR
+        try:
+            dem_plan = create_dem_request_plan(
+                region_id=region_id,
+                region_safe_name=region_safe_name,
+                processing_aoi=processing_aoi,
+                output_root=args.output_root,
+                dataset=args.dem_dataset,
+                provider=args.dem_provider,
+                buffer_degrees=args.dem_buffer,
+                source_vertical_datum=VerticalDatum(args.source_vertical_datum),
+                target_vertical_datum=VerticalDatum(args.target_vertical_datum),
+            )
+        except InsarPrepError as exc:
+            logger.error("failed to build DEM plan: %s", exc)
+            return _EXIT_ERROR
+        dem_planning_report = validate_dem_request_plan(dem_plan)
+        dem_conversion_report = validate_dem_conversion_plan(create_dem_conversion_plan(dem_plan))
+
     report = build_data_preparation_report(
         region_id=region_id,
         region_safe_name=region_safe_name,
         scene_check_report=scene_report,
         orbit_match_report=orbit_report,
+        dem_planning_report=dem_planning_report,
+        dem_conversion_report=dem_conversion_report,
     )
     output = save_report(report, args.output_root)
     logger.info(
