@@ -64,6 +64,7 @@ class Platform(StrEnum):
     S1A = "S1A"
     S1B = "S1B"
     S1C = "S1C"
+    S1D = "S1D"
     UNKNOWN = "UNKNOWN"
 
 

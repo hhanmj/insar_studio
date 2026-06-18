@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FailingExecutor`, `TaskExecutor` protocol), and a sequential scheduler
   (`QueueRunConfig`/`QueueRunResult`). Fully offline; no real downloads.
 - `DownloadTask` gained a `priority` field for queue ordering.
+- Sentinel-1 orbit matching (Task 009) in `src/insar_prep/providers/orbit/`:
+  `parse_orbit_filename`/`scan_orbit_directory` (local EOF parsing, no download)
+  and `match_orbit_for_scene`/`match_orbits_for_scenes` preferring
+  POEORB > MOEORB > RESORB (newest creation within a type), producing a
+  serializable `OrbitMatchReport`. `Platform` gained `S1D`.
 
 ## [0.1.0] - 2026-06-18
 
