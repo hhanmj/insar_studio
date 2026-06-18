@@ -13,7 +13,11 @@ Sentinel-1 / InSAR beginners.
   no network, no downloads, and no GUI.
 
 > Status: **v0.1.0 — offline CLI MVP.** The `insar-prep prepare` workflow is
-> implemented end to end; packaging (exe) and a GUI are intentionally deferred.
+> implemented end to end. A one-file Windows exe can be built *locally* for
+> testing, but no official release, installer, or GUI is published yet — those are
+> intentionally deferred. See
+> [`docs/release_readiness_v0_1_0.md`](docs/release_readiness_v0_1_0.md) for the
+> full release-readiness review and the supported / not-supported feature lists.
 
 ## Requirements
 
@@ -151,10 +155,19 @@ See `DEVELOPMENT_MANUAL.md`, `CURSOR_OPUS_GUIDE.md`, and
 
 ## Packaging
 
-A standalone Windows executable is **not** built yet. See
-[`docs/packaging_readiness.md`](docs/packaging_readiness.md) for the packaging
-readiness checklist, runtime-dependency risks (shapely/GEOS, pydantic-core), and
-the planned PyInstaller approach for a future task.
+No official release or installer is published. For local testing only, a one-file
+Windows executable can be built with `scripts/build_windows_exe.ps1`, and a
+self-contained smoke-test package can be assembled with
+`scripts/make_windows_smoke_package.ps1` (both produce git-ignored artifacts that
+are never committed). See:
+
+- [`docs/packaging_readiness.md`](docs/packaging_readiness.md) — packaging
+  readiness checklist, runtime-dependency risks (shapely/GEOS, pydantic-core), the
+  PyInstaller command, and the build result.
+- [`docs/windows_exe_smoke_test.md`](docs/windows_exe_smoke_test.md) — how to
+  generate and run the local Windows smoke-test package.
+- [`docs/release_readiness_v0_1_0.md`](docs/release_readiness_v0_1_0.md) — the
+  v0.1.0 offline CLI MVP release-readiness review and checklist.
 
 ## Development
 

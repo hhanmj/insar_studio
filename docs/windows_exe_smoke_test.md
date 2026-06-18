@@ -91,4 +91,5 @@ The script reports `SMOKE TEST PASSED` after confirming:
 
 This package is a **local user smoke test only**. It is not a GitHub release, not
 an installer, and not a signed distributable. Producing a real release is a
-separate, future task.
+separate, future task. For the v0.1.0 release-readiness review and checklist, see
+[`release_readiness_v0_1_0.md`](release_readiness_v0_1_0.md).

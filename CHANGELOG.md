@@ -229,6 +229,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `smoke_package/` is git-ignored and never committed (only the generator script
   and docs are). Offline only: no GUI, installer, release, upload, or network; no
   business-module changes; no new dependencies.
+- v0.1.0 offline CLI MVP release readiness (Task 024): added
+  `docs/release_readiness_v0_1_0.md` capturing the version status (stays `0.1.0`),
+  the supported feature list, the explicit not-supported list, a release
+  checklist (quality gate, CLI surface, repository-hygiene and credential
+  `git ls-files` checks), a documentation-consistency summary, and a reference-only
+  tag suggestion (`v0.1.0-offline-cli`) that is intentionally **not** executed.
+  `README.md` was updated to reflect that a one-file Windows exe can be built
+  locally for testing (no official release/installer/GUI yet) and to link the
+  release-readiness and Windows smoke-test docs; `.gitignore` was hardened with
+  additional archive and remote-sensing data patterns. Documentation/readiness
+  only: no business-module, test-logic, CLI, or `pyproject` version changes; no
+  new dependencies; no exe / zip / smoke package generated; no real release, tag,
+  or upload; the full `pytest`, `ruff check`, and `ruff format --check` quality
+  gate stays green.
+
+### Release readiness
+
+- **v0.1.0 — offline CLI MVP.** Readiness reviewed in Task 024; see
+  [`docs/release_readiness_v0_1_0.md`](docs/release_readiness_v0_1_0.md). The
+  version is unchanged and **no** official release is cut here. A future release
+  would only need a deliberate tag plus an optional local build/publish step.
 
 ## [0.1.0] - 2026-06-18
 

@@ -54,6 +54,23 @@ Thumbs.db
 *.tiff
 *.dem
 *.SLC
+# Bulk archives (e.g. GACOS .tar.gz downloads, DEM tiles)
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+# Other large remote-sensing raster / data formats
+*.hgt
+*.img
+*.grd
+*.nc
+*.h5
+*.hdf5
+*.he5
+*.vrt
+# Note: small *.ztd / *.ztd.rsc GACOS fixtures under tests/ are intentionally
+# tracked and must NOT be ignored.
 
 # ---- Third-party reference projects (study only, do not commit) ----
 参考项目/

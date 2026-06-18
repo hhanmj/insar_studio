@@ -13,6 +13,10 @@ performed in Task 022 (see "Task 022 build result" below).
 - As of Task 022, a working one-file Windows exe can be built locally via
   `scripts/build_windows_exe.ps1`. Build artifacts (`build/`, `dist/`, `*.spec`,
   `*.manifest`, `*.exe`) are git-ignored and are never committed.
+- For the overall release-readiness review (supported / not-supported feature
+  lists, release checklist, and tag suggestion) see
+  [`release_readiness_v0_1_0.md`](release_readiness_v0_1_0.md). No official
+  release or installer is published.
 
 ## 2. CLI entry point
 
