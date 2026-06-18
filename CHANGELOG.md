@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SARscape adapter in `src/insar_prep/sar_apps/sarscape.py`:
   `ensure_sarscape_dem_name` (enforces the `_dem.tif` suffix and rejects
   `*_ellipsoid.tif`) and `sarscape_ready_dem_path`.
+- Error and logging infrastructure (Task 004): `core/error_codes.py`
+  (`ErrorCode` + `ERROR_CODE_MESSAGES`), `core/exceptions.py`
+  (`InsarPrepError` and typed subclasses incl. `InputValidationError`,
+  `ReportError`), `core/events.py` (`EventType`, `Event` with UTC ISO-8601
+  timestamps), and `core/logging.py` (per-region/global file logging to
+  `app.log`/`task.log`/`events.jsonl`/`errors.log` with UTF-8 and credential
+  masking).
+- Ruff `T20` rule enabled to forbid `print()`; application code must use the
+  project logger.
 
 ## [0.1.0] - 2026-06-18
 

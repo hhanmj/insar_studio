@@ -46,7 +46,7 @@ src = ["src", "tests"]
 extend-exclude = ["参考项目"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP", "B"]
+select = ["E", "F", "I", "W", "UP", "B", "T20"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
