@@ -90,6 +90,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serializable `DemConversionReport`, plus `requires_geoid_conversion` and
   `suggest_geoid_model` helpers. No GDAL/rasterio, no geoid download, no DEM
   files created.
+- GACOS request planner (Task 012) in `src/insar_prep/providers/gacos/`:
+  `extract_gacos_dates_from_scenes` (sorted, de-duplicated acquisition dates,
+  skipping scenes with no date), `create_gacos_request_plan` builds an offline
+  `GacosRequestPlan` (buffered/clamped request bbox, unique dates split into
+  `GacosRequestBatch` batches by `max_dates_per_batch`, manual-submission flag,
+  `05_atmosphere/gacos/requests` output directory, and `.ztd`/`.ztd.rsc`
+  expected file patterns), and `validate_gacos_request_plan` returns a
+  serializable `GacosPlanningReport`. No network, no GACOS web submission, no
+  scraping, no browser automation, no product download, no credentials.
 
 ## [0.1.0] - 2026-06-18
 
