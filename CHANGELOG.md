@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`AoiRole`), `AoiFeature`, and `BoundaryCompliance.country`/
   `requires_review_number`; new `AoiRole` and `MultiFeatureMode` enums.
 - `shapely>=2` runtime dependency (geometry, union, bounds; no geopandas/fiona).
+- ASF cart parser (Task 006) in `src/insar_prep/providers/asf/`: local parsing
+  of Vertex Python scripts (regex-only, never executed), URL text, CSV, and
+  GeoJSON into Sentinel-1 SLC `Scene` lists (`parse_asf_cart_file` dispatch),
+  `parse_scene_name` granule parsing, and `deduplicate_scenes`. No network,
+  no `asf_search`, no credentials.
 
 ## [0.1.0] - 2026-06-18
 
