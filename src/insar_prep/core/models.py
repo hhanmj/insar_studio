@@ -265,6 +265,7 @@ class DownloadTask(InsarBaseModel):
     priority: int = 0
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
+    local_path: Path | None = None
     status: TaskStatus = TaskStatus.PENDING
     progress: float = Field(default=0.0, ge=0.0, le=100.0)
     retry_count: int = Field(default=0, ge=0)

@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `match_orbit_for_scene`/`match_orbits_for_scenes` preferring
   POEORB > MOEORB > RESORB (newest creation within a type), producing a
   serializable `OrbitMatchReport`. `Platform` gained `S1D`.
+- DEM request planner (Task 010) in `src/insar_prep/providers/dem/`:
+  `create_dem_request_plan` builds an offline `DemRequestPlan` (buffered request
+  bbox, raw/ellipsoid/SARscape-ready DEM paths, planning-only `DownloadTask`),
+  `validate_dem_request_plan` returns a serializable `DemPlanningReport`, and
+  `create_dem_download_task` produces a PENDING DEM task. No network, no
+  OpenTopography calls, no DEM download, no vertical-datum conversion.
 
 ## [0.1.0] - 2026-06-18
 
