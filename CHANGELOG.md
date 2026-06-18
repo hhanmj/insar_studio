@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `validate_dem_request_plan` returns a serializable `DemPlanningReport`, and
   `create_dem_download_task` produces a PENDING DEM task. No network, no
   OpenTopography calls, no DEM download, no vertical-datum conversion.
+- DEM vertical-datum conversion planner (Task 011) in
+  `src/insar_prep/providers/dem/conversion_planner.py`:
+  `create_dem_conversion_plan` builds an offline `DemConversionPlan` (step list
+  of `VERTICAL_DATUM_CONVERSION`/`COPY_TO_SARSCAPE_READY`/`NO_OP`/
+  `MANUAL_REVIEW_REQUIRED`), `validate_dem_conversion_plan` returns a
+  serializable `DemConversionReport`, plus `requires_geoid_conversion` and
+  `suggest_geoid_model` helpers. No GDAL/rasterio, no geoid download, no DEM
+  files created.
 
 ## [0.1.0] - 2026-06-18
 
