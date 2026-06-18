@@ -110,6 +110,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AtmosphereProductError` (`GAC002`) for a missing directory and never moves,
   deletes, or creates user files, parses raster/`.rsc` content, downloads, or
   contacts GACOS. Small placeholder fixtures live in `tests/fixtures/gacos/`.
+- Data-preparation reports (Task 014) in `src/insar_prep/reporting/`:
+  `build_data_preparation_report` consolidates the scene, orbit, DEM, DEM
+  conversion, and GACOS planning/import reports into a serializable
+  `DataPreparationReport` (per-module `ReportSection`s plus an aggregated
+  "Next actions" checklist and an overall `ready`/`ready_with_warnings`/
+  `blocked` status), `render_report_markdown` renders a beginner-friendly
+  Markdown view, and `save_report` writes UTF-8 JSON + Markdown to a
+  SARscape-safe `07_reports` directory. All written text is credential-masked
+  via `mask_text`/`mask_secret`. Offline only: no GUI, PDF, HTML, browser,
+  network, or new dependencies.
 
 ## [0.1.0] - 2026-06-18
 
