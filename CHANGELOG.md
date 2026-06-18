@@ -136,6 +136,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no `print()`); the report content, exit-code policy, `--help`/`--version`, and
   the `07_reports` / `<region_safe_name>_data_preparation_report.{json,md}`
   output paths are unchanged.
+- `insar-prep prepare` (Task 016) gained an optional `--orbit-dir` flag: when
+  given, it scans the local directory for Sentinel-1 `.EOF` orbit files, matches
+  them against the parsed scenes, and adds an "Orbit matching" section to the
+  report (matched/unmatched counts and issues). A missing orbit directory exits
+  non-zero; a directory with no matching EOFs still produces a report with an
+  orbit section flagging the unmatched scenes. Without `--orbit-dir` the Task 015
+  behavior is unchanged (no orbit section). Still offline; no orbit downloads,
+  no `sentineleof`, no new dependencies.
 
 ## [0.1.0] - 2026-06-18
 

@@ -14,6 +14,12 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "asf"
 URLS_CART = FIXTURES / "urls.txt"
 CSV_CART = FIXTURES / "scenes.csv"
 
+# Orbit EOFs covering the two urls.txt scenes (S1A 2024-01-01, S1B 2024-01-13).
+_MATCHING_ORBIT_NAMES = (
+    "S1A_OPER_AUX_POEORB_OPOD_20240102T120000_V20240101T000000_20240102T000000.EOF",
+    "S1B_OPER_AUX_POEORB_OPOD_20240114T120000_V20240113T000000_20240114T000000.EOF",
+)
+
 
 def report_paths(output_root: Path, region_name: str) -> tuple[Path, Path]:
     safe = sarscape_safe_name(region_name)
@@ -22,6 +28,17 @@ def report_paths(output_root: Path, region_name: str) -> tuple[Path, Path]:
         base / f"{safe}_data_preparation_report.json",
         base / f"{safe}_data_preparation_report.md",
     )
+
+
+def find_section(data: dict, title: str) -> dict | None:
+    return next((section for section in data["sections"] if section["title"] == title), None)
+
+
+def write_matching_orbits(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in _MATCHING_ORBIT_NAMES:
+        (directory / name).write_text("placeholder; contents are never parsed\n", encoding="utf-8")
+    return directory
 
 
 def test_top_level_help_exits_zero() -> None:
@@ -241,3 +258,94 @@ def test_expected_polarization_flag_flags_mismatch(tmp_path: Path) -> None:
     text = json_path.read_text(encoding="utf-8")
     assert "SCENE_POLARIZATION_MISMATCH" in text
     assert json.loads(text)["has_errors"] is True
+
+
+def test_prepare_help_shows_orbit_dir(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["prepare", "--help"])
+    assert "--orbit-dir" in capsys.readouterr().out
+
+
+def test_prepare_without_orbit_dir_has_no_orbit_section(tmp_path: Path) -> None:
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+        ]
+    )
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert find_section(data, "Orbit matching") is None
+
+
+def test_prepare_with_matching_orbits(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    orbit_dir = write_matching_orbits(tmp_path / "orbits")
+    json_path, md_path = report_paths(tmp_path, "shiliushubao")
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--orbit-dir",
+            str(orbit_dir),
+        ]
+    )
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    section = find_section(data, "Orbit matching")
+    assert section is not None
+    assert section["summary"]["matched"] == 2
+    out = capsys.readouterr().out
+    assert str(json_path) in out
+    assert str(md_path) in out
+
+
+def test_prepare_missing_orbit_dir_fails(tmp_path: Path) -> None:
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--orbit-dir",
+            str(tmp_path / "no_orbits_here"),
+        ]
+    )
+    assert code != 0
+
+
+def test_prepare_orbit_dir_without_matches(tmp_path: Path) -> None:
+    empty_orbits = tmp_path / "orbits_empty"
+    empty_orbits.mkdir()
+    json_path, _ = report_paths(tmp_path, "shiliushubao")
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            "shiliushubao",
+            "--output-root",
+            str(tmp_path),
+            "--orbit-dir",
+            str(empty_orbits),
+        ]
+    )
+    assert code == 0
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    section = find_section(data, "Orbit matching")
+    assert section is not None
+    assert section["summary"]["matched"] == 0
+    assert section["issues"]

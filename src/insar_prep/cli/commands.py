@@ -19,6 +19,7 @@ from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import get_logger
 from insar_prep.core.naming import sarscape_safe_name
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
+from insar_prep.providers.orbit import match_orbits_for_scenes, scan_orbit_directory
 from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.reporting.generator import build_data_preparation_report, save_report
 
@@ -74,6 +75,12 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         choices=[member.value for member in Polarization],
         help="Require every scene to use this Sentinel-1 polarization code.",
     )
+    parser.add_argument(
+        "--orbit-dir",
+        dest="orbit_dir",
+        default=None,
+        help="Optional local directory of Sentinel-1 orbit (.EOF) files to match.",
+    )
     return parser
 
 
@@ -102,10 +109,21 @@ def run_prepare(args: argparse.Namespace) -> int:
         require_urls=args.require_urls,
         expected_polarization=expected_polarization,
     )
+
+    orbit_report = None
+    if args.orbit_dir is not None:
+        try:
+            orbit_files = scan_orbit_directory(args.orbit_dir)
+        except InsarPrepError as exc:
+            logger.error("failed to scan orbit directory %s: %s", args.orbit_dir, exc)
+            return _EXIT_ERROR
+        orbit_report = match_orbits_for_scenes(scenes, orbit_files)
+
     report = build_data_preparation_report(
         region_id=region_id,
         region_safe_name=region_safe_name,
         scene_check_report=scene_report,
+        orbit_match_report=orbit_report,
     )
     output = save_report(report, args.output_root)
     logger.info(
