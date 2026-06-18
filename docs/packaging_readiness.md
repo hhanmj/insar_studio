@@ -1,18 +1,18 @@
-# Packaging readiness (Task 021)
+# Packaging readiness
 
 This document records whether `insar-prep` is ready to be packaged into a
-standalone Windows executable, and what the next packaging task (Task 022) should
-do. **No executable is built in this task** — this is a readiness checklist only.
-PyInstaller is **not** installed, **not** run, and **not** added as a dependency
-here.
+standalone Windows executable and the result of the first packaging experiment.
+The readiness checklist was written in Task 021; the actual PyInstaller build was
+performed in Task 022 (see "Task 022 build result" below).
 
 ## 1. Current packaging status
 
-- Stage: **offline CLI MVP**, version `0.1.0` (unchanged by this task).
+- Stage: **offline CLI MVP**, version `0.1.0` (unchanged by packaging work).
 - The full `insar-prep prepare` workflow runs offline and is covered by unit +
   end-to-end tests (`uv run pytest`).
-- No `build/`, `dist/`, `*.spec`, `*.manifest`, or `*.exe` artifacts are produced
-  or committed.
+- As of Task 022, a working one-file Windows exe can be built locally via
+  `scripts/build_windows_exe.ps1`. Build artifacts (`build/`, `dist/`, `*.spec`,
+  `*.manifest`, `*.exe`) are git-ignored and are never committed.
 
 ## 2. CLI entry point
 
@@ -72,18 +72,19 @@ the `prepare` CLI does not call them, so no log directory is created implicitly.
 - Report directory and file names are SARscape-safe (snake_case), so they avoid
   spaces and special characters regardless of the human-readable `--region-name`.
 
-## 7. PyInstaller candidate command for Task 022
+## 7. PyInstaller command
 
-The simplest candidate (do **not** run in Task 021):
+The simplest candidate (kept for reference; not the one used):
 
 ```bash
 uv run pyinstaller --onefile --name insar-prep src/insar_prep/cli/main.py
 ```
 
-Recommended, more robust candidate for Task 022 (also not run here):
+The command actually used by `scripts/build_windows_exe.ps1` in Task 022 (builds
+successfully — see section 10):
 
 ```bash
-uv run --with pyinstaller pyinstaller --onefile --name insar-prep \
+uv run pyinstaller --clean --noconfirm --onefile --name insar-prep \
   --paths src \
   --collect-all shapely \
   --collect-submodules pydantic \
@@ -129,5 +130,34 @@ Rationale for the changes:
 - [x] `uv run pytest`, `ruff check`, and `ruff format --check` all pass.
 - [x] `.gitignore` excludes `build/`, `dist/`, `*.spec`, `*.manifest`, `*.exe`.
 - [x] Windows path-with-spaces handling covered by a test.
-- [ ] (Task 022) Add `packaging/insar_prep_entry.py` and build with PyInstaller.
-- [ ] (Task 022) Runtime smoke test of the exe on a clean Windows machine.
+- [x] (Task 022) Added `packaging/insar_prep_entry.py` + `scripts/build_windows_exe.ps1`; PyInstaller build succeeds.
+- [x] (Task 022) exe `--help` / `--version` / `prepare --help` + offline `prepare` smoke test pass on the build machine.
+- [ ] (Task 022+) Runtime smoke test of the exe on a clean Windows machine (no Python installed).
+
+## 10. Task 022 build result
+
+Built with `scripts/build_windows_exe.ps1` (PyInstaller 6.21.0, Python 3.11.15,
+Windows):
+
+- Output: `dist/insar-prep.exe`, one-file, **~28 MB**.
+- exe smoke tests pass: `--help`, `--version` (`insar-prep 0.1.0`),
+  `prepare --help`, and an offline `prepare` run that wrote both the JSON and
+  Markdown reports with no network and no `.tif`.
+- PyInstaller used the contrib **shapely** hook (bundling the `shapely.libs` GEOS
+  DLLs) and the **numpy** hook (`numpy.libs`), and the **pydantic** hook
+  (collecting `pydantic_core`). No missing-DLL errors at runtime.
+- Artifacts (`build/`, `dist/`, `insar-prep.spec`) are git-ignored; `git status`
+  shows none of them tracked.
+
+Observations / follow-ups:
+
+- `--collect-all shapely` also drags in `shapely.tests`, inflating size. The
+  contrib `hook-shapely` already collects the GEOS binaries, so a leaner build can
+  drop `--collect-all shapely` (rely on the hook) or use `--collect-binaries
+  shapely`; worth measuring later.
+- Harmless `WARNING: Hidden import "tzdata" not found` — the app uses stdlib UTC
+  only, so no IANA tz database is required.
+- A `--onedir` build (vs `--onefile`) starts faster and avoids per-run temp
+  extraction; evaluate if startup latency matters.
+- Build ran from an elevated shell (PyInstaller prints a deprecation notice);
+  prefer a non-admin terminal for future builds.

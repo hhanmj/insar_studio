@@ -27,6 +27,7 @@ insar-prep = "insar_prep.cli.main:main"
 
 [dependency-groups]
 dev = [
+    "pyinstaller>=6.21.0",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.6",

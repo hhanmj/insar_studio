@@ -206,6 +206,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointer; and a new end-to-end test verifies an `--output-root` that contains
   spaces. No PyInstaller run, no exe/build/dist artifacts, no business-module
   changes, and no new dependencies; the version stays `0.1.0`.
+- PyInstaller packaging experiment (Task 022): added
+  `packaging/insar_prep_entry.py` (a thin, package-external launcher that calls
+  `insar_prep.cli.main:main`), `scripts/build_windows_exe.ps1` (runs the quality
+  gate, cleans old artifacts, builds a one-file exe, and runs exe smoke tests),
+  and `tests/unit/test_packaging_entry.py`. `pyinstaller` was added as a **dev**
+  dependency (no runtime dependency change); `uv.lock` was updated. A local
+  `dist/insar-prep.exe` (~28 MB) builds successfully and its `--help` /
+  `--version` / `prepare --help` plus an offline `prepare` run (JSON + Markdown
+  report, no network, no `.tif`) all pass. Build artifacts (`build/`, `dist/`,
+  `*.spec`, `*.exe`) stay git-ignored and are never committed;
+  `docs/packaging_readiness.md` records the build result and follow-ups. No
+  business-module changes; no new runtime dependencies.
 
 ## [0.1.0] - 2026-06-18
 
