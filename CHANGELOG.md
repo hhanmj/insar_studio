@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation errors (unknown fields, invalid enums/bbox/safe_name/DEM suffix),
   and JSON round-trips.
 - `pydantic>=2` runtime dependency.
+- SARscape-safe naming utilities (Task 003) in `src/insar_prep/core/naming.py`:
+  `sarscape_safe_name`, `is_sarscape_safe_name`, and `validate_sarscape_ready_path`.
+- SARscape adapter in `src/insar_prep/sar_apps/sarscape.py`:
+  `ensure_sarscape_dem_name` (enforces the `_dem.tif` suffix and rejects
+  `*_ellipsoid.tif`) and `sarscape_ready_dem_path`.
 
 ## [0.1.0] - 2026-06-18
 
