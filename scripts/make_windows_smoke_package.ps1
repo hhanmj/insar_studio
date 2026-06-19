@@ -191,6 +191,7 @@ if (-not (Test-Path $exe)) { throw "insar-prep.exe not found next to this script
 
 $manifestHeader = "section,item_type,item_id,item_name,status,path,value,notes"
 $warningsHeader = "severity,section,item_type,item_id,item_name,code,message,path,action"
+$asfPlanHeader = "scene_id,platform,acquisition_datetime,product,beam,polarization,url_status,expected_filename,planned_path,status,credential_required,notes"
 
 function Invoke-Checked([string]$Name, [scriptblock]$Body) {
     & $Body
@@ -208,6 +209,14 @@ foreach ($flag in @("--bbox", "--aoi-geojson", "--aoi-wkt")) {
     if ($prepareHelp -notmatch [regex]::Escape($flag)) { throw "prepare --help missing $flag" }
 }
 Write-Host "[OK] prepare --help advertises --bbox / --aoi-geojson / --aoi-wkt" -ForegroundColor Green
+
+# plan-asf-downloads (Task 036) must be advertised and expose --cart / --output-dir.
+$planHelp = (& $exe plan-asf-downloads --help 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw "exe plan-asf-downloads --help failed (exit $LASTEXITCODE)" }
+foreach ($flag in @("--cart", "--output-dir")) {
+    if ($planHelp -notmatch [regex]::Escape($flag)) { throw "plan-asf-downloads --help missing $flag" }
+}
+Write-Host "[OK] plan-asf-downloads --help advertises --cart / --output-dir" -ForegroundColor Green
 
 $gacos = Join-Path $PSScriptRoot "input\gacos"
 $before = Get-ChildItem $gacos | ForEach-Object { "$($_.Name):$($_.Length)" } | Sort-Object
@@ -254,10 +263,33 @@ Invoke-PrepareSmoke "bbox" "Shiliushubao Demo BBox" "shiliushubao_demo_bbox" @("
 Invoke-PrepareSmoke "geojson" "Shiliushubao Demo GeoJSON" "shiliushubao_demo_geojson" @("--aoi-geojson", ".\input\aoi.geojson")
 Invoke-PrepareSmoke "wkt" "Shiliushubao Demo WKT" "shiliushubao_demo_wkt" @("--aoi-wkt", "POLYGON ((110.1 30.8, 110.6 30.8, 110.6 31.2, 110.1 31.2, 110.1 30.8))")
 
+# Offline ASF download dry-run plan smoke (Task 036): plan only, no real download.
+$planStdout = (& $exe plan-asf-downloads --cart ".\input\asf_urls.txt" --output-dir ".\output\asf_plan" 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw "plan-asf-downloads failed (exit $LASTEXITCODE)" }
+foreach ($token in @("ASF download plan written:", "JSON:", "CSV:")) {
+    if ($planStdout -notmatch [regex]::Escape($token)) { throw "plan-asf-downloads stdout missing $token" }
+}
+$planDir = Join-Path $PSScriptRoot "output\asf_plan\asf_download_plan"
+$planJson = Join-Path $planDir "asf_download_plan.json"
+$planCsv = Join-Path $planDir "asf_download_plan.csv"
+foreach ($file in @($planJson, $planCsv)) {
+    if (-not (Test-Path $file)) { throw "ASF plan file missing: $file" }
+}
+if ((Get-Content $planCsv -TotalCount 1) -ne $asfPlanHeader) { throw "ASF plan CSV header drifted" }
+$null = (Get-Content $planJson -Raw | ConvertFrom-Json)
+Write-Host "[OK] plan-asf-downloads: JSON + CSV plan present, header stable, JSON parses" -ForegroundColor Green
+
 if (Get-ChildItem -Path $PSScriptRoot -Recurse -Filter *.tif -ErrorAction SilentlyContinue) {
     throw "Unexpected .tif produced by the offline smoke test"
 }
 Write-Host "[OK] no .tif produced" -ForegroundColor Green
+
+foreach ($pattern in @("*.zip", "*.SAFE")) {
+    if (Get-ChildItem -Path $PSScriptRoot -Recurse -Filter $pattern -ErrorAction SilentlyContinue) {
+        throw "Unexpected $pattern produced by the offline smoke test"
+    }
+}
+Write-Host "[OK] no .zip / .SAFE produced" -ForegroundColor Green
 
 $after = Get-ChildItem $gacos | ForEach-Object { "$($_.Name):$($_.Length)" } | Sort-Object
 if (Compare-Object $before $after) { throw "GACOS input files were modified" }

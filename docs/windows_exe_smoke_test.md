@@ -62,11 +62,13 @@ cd smoke_package\insar_prep_windows_smoke
 .\run_smoke_test.ps1
 ```
 
-The script runs the exe `--help`, `--version`, and `prepare --help` (asserting the
-help advertises `--bbox`, `--aoi-geojson`, and `--aoi-wkt`), then the full offline
-`prepare` workflow **three times** — once per AOI source (`--bbox`,
-`--aoi-geojson`, `--aoi-wkt`) — each with orbit matching, DEM planning, GACOS
-request planning, and GACOS import checking enabled.
+The script runs the exe `--help`, `--version`, `prepare --help` (asserting the
+help advertises `--bbox`, `--aoi-geojson`, and `--aoi-wkt`), and
+`plan-asf-downloads --help` (asserting it advertises `--cart` / `--output-dir`),
+then the full offline `prepare` workflow **three times** — once per AOI source
+(`--bbox`, `--aoi-geojson`, `--aoi-wkt`) — each with orbit matching, DEM
+planning, GACOS request planning, and GACOS import checking enabled, followed by
+one offline `plan-asf-downloads` dry-run.
 
 ## 5. Expected output
 
@@ -89,9 +91,21 @@ runs (output under `shiliushubao_demo_bbox`, `shiliushubao_demo_geojson`, and
 - no real DEM `.tif` was produced;
 - the `input\gacos` files were not moved, deleted, or modified.
 
+It additionally runs one offline `plan-asf-downloads` dry-run (output under
+`output\asf_plan\asf_download_plan\`) and confirms:
+
+- the command exits `0` and its stdout reports `JSON:` and `CSV:` plan paths;
+- `asf_download_plan.json` and `asf_download_plan.csv` exist;
+- the plan CSV's first line is the fixed header
+  `scene_id,platform,acquisition_datetime,product,beam,polarization,url_status,expected_filename,planned_path,status,credential_required,notes`;
+- the plan JSON parses;
+- **no `.zip` or `.SAFE`** was produced anywhere in the package (the planner only
+  plans; it never downloads).
+
 The `manifest.csv` is produced by the `prepare` workflow added in Task 026, the
 `warnings.csv` problem summary by Task 028, the `--aoi-geojson` / `--aoi-wkt` AOI
-sources by Task 029, and the static HTML report by Task 031; this smoke test
+sources by Task 029, the static HTML report by Task 031, and the
+`plan-asf-downloads` dry-run planner by Task 033; this smoke test (Task 036)
 verifies the rebuilt exe carries all of them.
 
 ## 6. FAQ / troubleshooting

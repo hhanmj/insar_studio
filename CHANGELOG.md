@@ -440,6 +440,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blocks network access, and that no `.zip`/`.SAFE` is produced. No
   requests/aiohttp/httpx or any new dependency; no CLI change; the version stays
   `0.1.0`.
+- Windows exe smoke test for the ASF dry-run planner (Task 036). The rebuilt
+  one-file `dist/insar-prep.exe` now carries the `plan-asf-downloads` subcommand;
+  `scripts/make_windows_smoke_package.ps1` extends the generated
+  `run_smoke_test.ps1` to assert `plan-asf-downloads --help` advertises
+  `--cart`/`--output-dir`, run one offline `plan-asf-downloads` dry-run, and
+  verify its stdout reports the `JSON:`/`CSV:` plan paths, that
+  `output\asf_plan\asf_download_plan\asf_download_plan.json` + `.csv` exist, that
+  the plan CSV header is the fixed
+  `scene_id,platform,acquisition_datetime,product,beam,polarization,url_status,expected_filename,planned_path,status,credential_required,notes`,
+  that the JSON parses, and that **no `.zip`/`.SAFE`** is produced anywhere in the
+  package (alongside the existing no-`.tif` and untouched-GACOS-input checks).
+  `docs/windows_exe_smoke_test.md` and `docs/packaging_readiness.md` document the
+  new dry-run plan smoke. Offline only; no business-module, CLI, test-logic, or
+  `pyproject` version changes; no new dependency; build/`dist`/`*.spec`/`*.exe`
+  and `smoke_package/` stay git-ignored and uncommitted.
 
 ### Release readiness
 
