@@ -354,6 +354,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   business-module changes (ASF/AOI/DEM/GACOS/orbit/queue/core models and
   `manifest.py`/`warnings.py` untouched); no CLI-flag or `pyproject` version
   changes; the version stays `0.1.0`.
+- Credential-safe design for future ASF downloads (Task 032), documented in
+  `docs/asf_download_credential_design.md`. **Design only — nothing is
+  implemented**: no downloader, login, session, or credential read; no
+  `asf_search`/`keyring`/HTTP dependency; no `.netrc`/`.env`/env-var/prompt
+  access; no new CLI argument; and no change to the `prepare` workflow. The
+  document specifies the scope/non-goals, a threat model (keeping
+  username/password/token/cookie/session out of Git, logs, JSON/Markdown/HTML
+  reports, `manifest.csv`/`warnings.csv`, tracebacks, shell history, the smoke
+  package, and CI logs, and large SLC/zip/SAFE files out of the repo), the
+  binding credential-handling principles (no plaintext credentials in the
+  project dir; `dry-run` default; explicit opt-in for real download), the
+  proposed credential sources (OS keyring / env vars / interactive prompt /
+  user-managed external `.netrc`; `.env` is never the default and never
+  committed), the forbidden practices, the redaction rules (reuse `mask_secret`
+  / `mask_text` / `_MaskingFilter`, plus the known `_SECRET_KEY_RE` gaps to
+  close — bearer tokens, cookie values, presigned S3/data-pool query params, URL
+  userinfo, `.netrc` lines), the download modes (`dry-run` default vs explicit
+  `real`), dry-run / real-download / file-integrity / error-handling behavior, a
+  CLI proposal (recommend a separate `download-asf` subcommand over folding into
+  `prepare`), an offline-by-default test strategy (fake credentials,
+  socket-monkeypatched, opt-in real-download marker excluded from CI), and a
+  Task 033–038 breakdown. `README.md` notes that real ASF download is not yet
+  implemented and links the design. No changes to `src/`, `tests/`,
+  `pyproject.toml`, `uv.lock`, or scripts; no new dependency; the version stays
+  `0.1.0`.
 
 ### Release readiness
 

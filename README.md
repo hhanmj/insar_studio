@@ -180,6 +180,19 @@ The current offline MVP never performs any of the following:
 It also never reads accounts, stores credentials, or moves / deletes / renames
 your input files.
 
+### Planned ASF downloads (not yet implemented)
+
+- **Real ASF / Sentinel-1 SLC download is not yet implemented.** The current
+  version cannot download SAR data; it only parses local carts and plans.
+- The **credential-safe design** for a future downloader is documented in
+  [`docs/asf_download_credential_design.md`](docs/asf_download_credential_design.md)
+  (default `dry-run`, explicit opt-in for real download, strict log/report
+  redaction, and credentials kept out of the repository).
+- **Do not put credentials into project files.** When download support arrives,
+  Earthdata Login credentials will come from the OS keyring, environment
+  variables, an interactive prompt, or a user-managed `.netrc` **outside** the
+  project — never from a committed `.env`, config JSON, or a command-line flag.
+
 ## SARscape naming constraints
 
 Region names and generated paths are normalized to **SARscape-safe** names:
