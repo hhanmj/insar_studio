@@ -13,14 +13,17 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from insar_prep.core.enums import DemDataset, Polarization, VerticalDatum
-from insar_prep.core.exceptions import InsarPrepError
+from insar_prep.core.error_codes import ErrorCode
+from insar_prep.core.exceptions import InputValidationError, InsarPrepError
 from insar_prep.core.logging import get_logger
 from insar_prep.core.naming import sarscape_safe_name
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
+from insar_prep.processing.aoi_import import load_aoi_from_geojson, load_aoi_from_wkt
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
 from insar_prep.providers.dem import (
     DemProvider,
@@ -47,6 +50,9 @@ from insar_prep.reporting.warnings import (
     warnings_path_for,
     write_warnings_csv,
 )
+
+if TYPE_CHECKING:
+    from insar_prep.core.models import Aoi
 
 logger = get_logger("cli.prepare")
 
@@ -110,16 +116,36 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         "--dem-plan",
         dest="dem_plan",
         action="store_true",
-        help="Also build an offline DEM request + conversion plan (requires --bbox).",
+        help="Also build an offline DEM request + conversion plan (requires an AOI).",
     )
-    parser.add_argument(
+    # Processing AOI source. The three flags are mutually exclusive; argparse
+    # rejects any combination with exit code 2. All expect EPSG:4326 lon/lat.
+    aoi_group = parser.add_mutually_exclusive_group()
+    aoi_group.add_argument(
         "--bbox",
         dest="bbox",
         nargs=4,
         type=float,
         default=None,
         metavar=("WEST", "SOUTH", "EAST", "NORTH"),
-        help="Processing AOI bounds for --dem-plan, in degrees: WEST SOUTH EAST NORTH.",
+        help="Processing AOI bounds in degrees: WEST SOUTH EAST NORTH (EPSG:4326).",
+    )
+    aoi_group.add_argument(
+        "--aoi-geojson",
+        dest="aoi_geojson",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Processing AOI from a GeoJSON file (EPSG:4326 lon/lat; Polygon/"
+            "MultiPolygon, Feature, or FeatureCollection)."
+        ),
+    )
+    aoi_group.add_argument(
+        "--aoi-wkt",
+        dest="aoi_wkt",
+        default=None,
+        metavar="WKT",
+        help="Processing AOI from a WKT string (EPSG:4326 lon/lat; POLYGON or MULTIPOLYGON).",
     )
     parser.add_argument(
         "--dem-dataset",
@@ -160,7 +186,7 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         "--gacos-plan",
         dest="gacos_plan",
         action="store_true",
-        help="Also build an offline GACOS request plan from scene dates (requires --bbox).",
+        help="Also build an offline GACOS request plan from scene dates (requires an AOI).",
     )
     parser.add_argument(
         "--gacos-buffer",
@@ -183,10 +209,34 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         help=(
             "Optional local directory of already-downloaded GACOS products "
             "(YYYYMMDD.ztd / YYYYMMDD.ztd.rsc) to check against the expected scene "
-            "dates; requires --bbox. Read-only: never downloads, moves, or creates files."
+            "dates; requires an AOI. Read-only: never downloads, moves, or creates files."
         ),
     )
     return parser
+
+
+def _resolve_processing_aoi(args: argparse.Namespace) -> Aoi | None:
+    """Build a Processing AOI from the chosen AOI source, or ``None`` if none given.
+
+    The three sources (``--bbox`` / ``--aoi-geojson`` / ``--aoi-wkt``) are mutually
+    exclusive at the argparse level, so at most one is set here. Any validation
+    failure is surfaced as an :class:`InputValidationError` (``AOI001``). The AOI
+    bbox comes from the bounds of the imported geometry; the Download AOI buffer
+    logic downstream is unchanged.
+    """
+    if args.bbox is not None:
+        west, south, east, north = args.bbox
+        try:
+            return make_processing_aoi_from_bbox(west, east, south, north)
+        except (ValidationError, ValueError) as exc:
+            raise InputValidationError(
+                f"invalid --bbox {args.bbox}: {exc}", code=ErrorCode.AOI001
+            ) from exc
+    if args.aoi_geojson is not None:
+        return load_aoi_from_geojson(args.aoi_geojson, name=args.region_name)
+    if args.aoi_wkt is not None:
+        return load_aoi_from_wkt(args.aoi_wkt, name=args.region_name)
+    return None
 
 
 def run_prepare(args: argparse.Namespace) -> int:
@@ -224,19 +274,21 @@ def run_prepare(args: argparse.Namespace) -> int:
             return _EXIT_ERROR
         orbit_report = match_orbits_for_scenes(scenes, orbit_files)
 
-    # DEM and GACOS features all need a Processing AOI built from --bbox; build it once.
+    # DEM and GACOS features all need a Processing AOI; build it once from
+    # whichever AOI source was given (--bbox / --aoi-geojson / --aoi-wkt, which
+    # argparse already enforces to be mutually exclusive).
     processing_aoi = None
     if args.dem_plan or args.gacos_plan or args.gacos_import_dir is not None:
-        if args.bbox is None:
-            logger.error(
-                "--dem-plan/--gacos-plan/--gacos-import-dir require --bbox WEST SOUTH EAST NORTH"
-            )
-            return _EXIT_ERROR
-        west, south, east, north = args.bbox
         try:
-            processing_aoi = make_processing_aoi_from_bbox(west, east, south, north)
-        except (ValidationError, ValueError) as exc:
-            logger.error("invalid --bbox %s: %s", args.bbox, exc)
+            processing_aoi = _resolve_processing_aoi(args)
+        except InsarPrepError as exc:
+            logger.error("invalid Processing AOI: %s", exc)
+            return _EXIT_ERROR
+        if processing_aoi is None:
+            logger.error(
+                "--dem-plan/--gacos-plan/--gacos-import-dir require a Processing AOI: pass one "
+                "of --bbox WEST SOUTH EAST NORTH, --aoi-geojson PATH, or --aoi-wkt WKT"
+            )
             return _EXIT_ERROR
 
     dem_planning_report = None

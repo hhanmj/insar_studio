@@ -294,6 +294,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/windows_exe_smoke_test.md` verify `warnings.csv` and its header; `README.md`
   documents the new output. No business-module, CLI-flag, or `pyproject` version
   changes; the version stays `0.1.0`.
+- `insar-prep prepare` (Task 029) gained GeoJSON / WKT Processing AOI import: a
+  new offline `src/insar_prep/processing/aoi_import.py` (`load_aoi_from_geojson`,
+  `load_aoi_from_wkt`, `geometry_to_processing_aoi`) builds a Processing AOI from
+  a GeoJSON file (a `Polygon`/`MultiPolygon` geometry, a `Feature`, or a
+  `FeatureCollection` — multiple features are merged via `shapely.ops.unary_union`
+  and their combined bounds used) or a WKT `POLYGON`/`MULTIPOLYGON` string, using
+  only the standard-library `json` plus the existing `shapely` (no new
+  dependencies; no geopandas/fiona/rasterio/pyproj/GDAL). The `prepare` CLI added
+  `--aoi-geojson PATH` and `--aoi-wkt WKT`, mutually exclusive with `--bbox` and
+  with each other (argparse rejects any combination with exit code 2); the
+  imported geometry's bounds become the Processing AOI bbox and the existing
+  Download-AOI buffer logic is unchanged. WGS84 lon/lat (`EPSG:4326`) only: a
+  non-EPSG:4326 GeoJSON `crs`, out-of-range coordinates, an empty/invalid or
+  unsupported geometry (points/lines/`GeometryCollection`), a missing file, or
+  invalid JSON/WKT raise `InputValidationError` (`AOI001`) and the CLI exits `2`;
+  `shapefile`/`KML`/`GeoPackage` inputs and coordinate transforms remain
+  unsupported. Added `tests/unit/test_aoi_import.py` and extended
+  `tests/e2e/test_prepare_workflow.py` (GeoJSON/WKT `prepare` runs plus
+  mutual-exclusion exit-`2` checks); `README.md` documents the new AOI options. No
+  changes to the ASF parser, DEM/GACOS/orbit modules, reporting manifest/warnings,
+  queue, or core models; the `--bbox` behavior is unchanged; the version stays
+  `0.1.0`.
 
 ### Release readiness
 

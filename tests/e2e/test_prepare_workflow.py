@@ -43,6 +43,18 @@ _EXPECTED_SECTIONS = (
     "GACOS import check",
 )
 
+# A Processing AOI rectangle matching the demo --bbox (110.1 30.8 110.6 31.2),
+# expressed as GeoJSON and WKT for the Task 029 AOI-import paths.
+_AOI_RING = [
+    [110.1, 30.8],
+    [110.6, 30.8],
+    [110.6, 31.2],
+    [110.1, 31.2],
+    [110.1, 30.8],
+]
+_AOI_GEOJSON = {"type": "Polygon", "coordinates": [_AOI_RING]}
+_AOI_WKT = "POLYGON ((110.1 30.8, 110.6 30.8, 110.6 31.2, 110.1 31.2, 110.1 30.8))"
+
 
 def _make_orbit_dir(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
@@ -261,3 +273,182 @@ def test_prepare_warnings_csv_flags_missing_gacos(
     missing = next(row for row in rows if row["code"] == "GACOS_ZTD_MISSING")
     assert missing["action"]
     assert "GACOS_IMPORT_READY" not in codes
+
+
+def _assert_all_reports(workspace: Path, region: str, out: str) -> None:
+    """Assert the four report files exist and the success stdout lists them."""
+    safe = sarscape_safe_name(region)
+    reports = workspace / safe / "07_reports"
+    json_path = reports / f"{safe}_data_preparation_report.json"
+    md_path = reports / f"{safe}_data_preparation_report.md"
+    manifest_path = reports / f"{safe}_manifest.csv"
+    warnings_path = reports / f"{safe}_warnings.csv"
+    assert json_path.exists()
+    assert md_path.exists()
+    assert manifest_path.exists()
+    assert warnings_path.exists()
+    assert str(json_path) in out
+    assert str(md_path) in out
+    assert "Manifest:" in out
+    assert str(manifest_path) in out
+    assert "Warnings:" in out
+    assert str(warnings_path) in out
+
+
+def test_prepare_with_aoi_geojson(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A GeoJSON AOI can replace --bbox to drive DEM + GACOS planning."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    aoi_path = tmp_path / "aoi.geojson"
+    aoi_path.write_text(json.dumps(_AOI_GEOJSON), encoding="utf-8")
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+            "--aoi-geojson",
+            str(aoi_path),
+            "--dem-plan",
+            "--gacos-plan",
+        ]
+    )
+    assert code == 0
+
+    safe = sarscape_safe_name(region)
+    json_path = workspace / safe / "07_reports" / f"{safe}_data_preparation_report.json"
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    sections = {section["title"] for section in data["sections"]}
+    # The GeoJSON bounds resolved to a Processing AOI, so DEM/GACOS sections exist.
+    assert "DEM planning" in sections
+    assert "GACOS request planning" in sections
+
+    # Planning only: no real DEM raster, and the run stays offline.
+    assert not list(tmp_path.rglob("*.tif"))
+    _assert_all_reports(workspace, region, capsys.readouterr().out)
+
+
+def test_prepare_with_aoi_wkt(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A WKT AOI can replace --bbox to drive DEM + GACOS planning."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+            "--aoi-wkt",
+            _AOI_WKT,
+            "--dem-plan",
+            "--gacos-plan",
+        ]
+    )
+    assert code == 0
+    assert not list(tmp_path.rglob("*.tif"))
+    _assert_all_reports(workspace, region, capsys.readouterr().out)
+
+
+def test_prepare_bbox_and_aoi_geojson_are_mutually_exclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Supplying both --bbox and --aoi-geojson is rejected by argparse (exit 2)."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    aoi_path = tmp_path / "aoi.geojson"
+    aoi_path.write_text(json.dumps(_AOI_GEOJSON), encoding="utf-8")
+
+    _ban_network(monkeypatch)
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "prepare",
+                "--cart",
+                str(URLS_CART),
+                "--region-name",
+                region,
+                "--output-root",
+                str(workspace),
+                "--bbox",
+                "110.1",
+                "30.8",
+                "110.6",
+                "31.2",
+                "--aoi-geojson",
+                str(aoi_path),
+            ]
+        )
+    assert exc_info.value.code == 2
+
+
+def test_prepare_aoi_geojson_and_wkt_are_mutually_exclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Supplying both --aoi-geojson and --aoi-wkt is rejected by argparse (exit 2)."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    aoi_path = tmp_path / "aoi.geojson"
+    aoi_path.write_text(json.dumps(_AOI_GEOJSON), encoding="utf-8")
+
+    _ban_network(monkeypatch)
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "prepare",
+                "--cart",
+                str(URLS_CART),
+                "--region-name",
+                region,
+                "--output-root",
+                str(workspace),
+                "--aoi-geojson",
+                str(aoi_path),
+                "--aoi-wkt",
+                _AOI_WKT,
+            ]
+        )
+    assert exc_info.value.code == 2
+
+
+def test_prepare_dem_plan_without_any_aoi_exits_two(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--dem-plan with no AOI source resolves to a non-zero exit code."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+            "--dem-plan",
+        ]
+    )
+    assert code == 2

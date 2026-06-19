@@ -58,7 +58,8 @@ uv run insar-prep prepare \
 Enable every optional module at once — orbit matching, DEM planning + conversion
 planning, GACOS request planning, and GACOS import checking. Point `--orbit-dir`
 and `--gacos-import-dir` at local folders you already have, and pass the
-processing AOI via `--bbox WEST SOUTH EAST NORTH`.
+Processing AOI via `--bbox`, `--aoi-geojson`, or `--aoi-wkt` (see
+[Specifying the Processing AOI](#specifying-the-processing-aoi) below).
 
 ```bash
 uv run insar-prep prepare \
@@ -92,6 +93,40 @@ uv run insar-prep prepare `
 Both `\` and `/` path separators are accepted. The output directory and report
 file names are always SARscape-safe (snake_case), so spaces in `--output-root`
 or `--region-name` never leak into generated names.
+
+## Specifying the Processing AOI
+
+The DEM and GACOS planning steps need a Processing AOI. Provide it with **exactly
+one** of these mutually exclusive flags (passing more than one is rejected):
+
+- `--bbox WEST SOUTH EAST NORTH` — explicit bounds, in degrees.
+- `--aoi-geojson PATH` — a GeoJSON file holding a `Polygon`/`MultiPolygon`
+  geometry, a `Feature`, or a `FeatureCollection` (multiple features are merged
+  and their combined bounds are used).
+- `--aoi-wkt "WKT"` — a WKT `POLYGON` or `MULTIPOLYGON` string.
+
+```bash
+uv run insar-prep prepare \
+  --cart tests/fixtures/asf/urls.txt \
+  --region-name shiliushubao_demo \
+  --output-root ./workspace \
+  --aoi-geojson ./aoi.geojson \
+  --dem-plan \
+  --gacos-plan
+```
+
+For GeoJSON/WKT inputs the AOI's bounding box (its bounds) becomes the Processing
+AOI; the existing per-product download buffers are then applied as before.
+
+Constraints:
+
+- Coordinates must be **WGS84 longitude/latitude (EPSG:4326)** only. A GeoJSON
+  `crs` member that is not EPSG:4326 is rejected, and no coordinate transforms are
+  performed.
+- Longitudes must be within `[-180, 180]` and latitudes within `[-90, 90]`.
+- Only `Polygon` / `MultiPolygon` geometries are accepted (no points/lines, no
+  `GeometryCollection`).
+- `shapefile`, `KML`, and `GeoPackage` inputs are **not** supported.
 
 ## Where the report is written
 
