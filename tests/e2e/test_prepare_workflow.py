@@ -125,10 +125,12 @@ def test_full_offline_prepare_workflow(
     reports = workspace / safe / "07_reports"
     json_path = reports / f"{safe}_data_preparation_report.json"
     md_path = reports / f"{safe}_data_preparation_report.md"
+    html_path = reports / f"{safe}_data_preparation_report.html"
     manifest_path = reports / f"{safe}_manifest.csv"
     warnings_path = reports / f"{safe}_warnings.csv"
     assert json_path.exists()
     assert md_path.exists()
+    assert html_path.exists()
     assert manifest_path.exists()
     assert warnings_path.exists()
     assert json_path.parent.name == "07_reports"
@@ -186,10 +188,22 @@ def test_full_offline_prepare_workflow(
     out = capsys.readouterr().out
     assert str(json_path) in out
     assert str(md_path) in out
+    assert "HTML:" in out
+    assert str(html_path) in out
     assert "Manifest:" in out
     assert str(manifest_path) in out
     assert "Warnings:" in out
     assert str(warnings_path) in out
+
+    # The HTML report is a self-contained static page mirroring the report sections.
+    html = html_path.read_text(encoding="utf-8")
+    assert "<!DOCTYPE html>" in html
+    assert "<style>" in html  # CSS is inlined, not linked
+    assert "<script" not in html  # no JavaScript
+    assert "<link" not in html  # no external stylesheet/CDN
+    for expected in _EXPECTED_SECTIONS:
+        assert expected in html
+    assert "Next actions" in html
 
 
 def test_prepare_workflow_handles_output_root_with_spaces(
@@ -218,7 +232,8 @@ def test_prepare_workflow_handles_output_root_with_spaces(
     reports = workspace / safe / "07_reports"
     assert (reports / f"{safe}_data_preparation_report.json").exists()
     assert (reports / f"{safe}_data_preparation_report.md").exists()
-    # The manifest and warnings are produced even with no optional modules.
+    # The HTML, manifest, and warnings are produced even with no optional modules.
+    assert (reports / f"{safe}_data_preparation_report.html").exists()
     assert (reports / f"{safe}_manifest.csv").exists()
     assert (reports / f"{safe}_warnings.csv").exists()
     # The space stays in the user-chosen output root, never in the safe names.
@@ -276,19 +291,23 @@ def test_prepare_warnings_csv_flags_missing_gacos(
 
 
 def _assert_all_reports(workspace: Path, region: str, out: str) -> None:
-    """Assert the four report files exist and the success stdout lists them."""
+    """Assert the five report files exist and the success stdout lists them."""
     safe = sarscape_safe_name(region)
     reports = workspace / safe / "07_reports"
     json_path = reports / f"{safe}_data_preparation_report.json"
     md_path = reports / f"{safe}_data_preparation_report.md"
+    html_path = reports / f"{safe}_data_preparation_report.html"
     manifest_path = reports / f"{safe}_manifest.csv"
     warnings_path = reports / f"{safe}_warnings.csv"
     assert json_path.exists()
     assert md_path.exists()
+    assert html_path.exists()
     assert manifest_path.exists()
     assert warnings_path.exists()
     assert str(json_path) in out
     assert str(md_path) in out
+    assert "HTML:" in out
+    assert str(html_path) in out
     assert "Manifest:" in out
     assert str(manifest_path) in out
     assert "Warnings:" in out

@@ -40,6 +40,7 @@ from insar_prep.providers.gacos import (
 from insar_prep.providers.orbit import match_orbits_for_scenes, scan_orbit_directory
 from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.reporting.generator import build_data_preparation_report, save_report
+from insar_prep.reporting.html import html_report_path_for, save_report_html
 from insar_prep.reporting.manifest import (
     build_manifest_rows,
     manifest_path_for,
@@ -371,6 +372,10 @@ def run_prepare(args: argparse.Namespace) -> int:
         gacos_import_report=gacos_import_report,
     )
     output = save_report(report, args.output_root)
+    # Write a self-contained HTML view alongside the JSON + Markdown report,
+    # reusing the same report object (no business logic is re-run).
+    html_path = html_report_path_for(output.json_path.parent, region_safe_name)
+    save_report_html(report, html_path)
 
     # Write a flat manifest.csv and a warnings.csv alongside the JSON + Markdown
     # report, reusing the objects already built above (no re-parsing, re-scanning,
@@ -411,9 +416,10 @@ def run_prepare(args: argparse.Namespace) -> int:
         return _EXIT_ERROR
 
     logger.info(
-        "wrote data preparation report: %s, %s, manifest %s and warnings %s",
+        "wrote data preparation report: %s, %s, %s, manifest %s and warnings %s",
         output.json_path,
         output.markdown_path,
+        html_path,
         manifest_path,
         warnings_path,
     )
@@ -422,6 +428,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         "Data preparation report written:\n"
         f"JSON: {output.json_path}\n"
         f"Markdown: {output.markdown_path}\n"
+        f"HTML: {html_path}\n"
         f"Manifest: {manifest_path}\n"
         f"Warnings: {warnings_path}\n"
     )

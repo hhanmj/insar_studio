@@ -136,6 +136,7 @@ All outputs are written, with SARscape-safe names, under:
 <output_root>/<region_safe_name>/07_reports/
   <region_safe_name>_data_preparation_report.json
   <region_safe_name>_data_preparation_report.md
+  <region_safe_name>_data_preparation_report.html
   <region_safe_name>_manifest.csv
   <region_safe_name>_warnings.csv
 ```
@@ -144,6 +145,12 @@ The report consolidates each enabled module into its own section (Scene
 consistency, Orbit matching, DEM planning, DEM conversion, GACOS request
 planning, GACOS import check) plus an aggregated **Next actions** checklist and an
 overall `ready` / `ready_with_warnings` / `blocked` status.
+
+The `.html` report is a **self-contained static page** for browsing the same
+information in a web browser: it mirrors the JSON/Markdown report (summary cards
+plus one section per module), inlines its own minimal CSS, and references **no**
+external network, CSS/JS, or CDN resources. It is a read-only view, not a GUI, and
+no official release/installer is implied.
 
 The `manifest.csv` is a flat, row-based inventory of this `prepare` run, with the
 fixed columns `section,item_type,item_id,item_name,status,path,value,notes`. It

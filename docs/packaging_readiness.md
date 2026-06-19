@@ -60,6 +60,8 @@ All under the user-supplied `--output-root` (never inside the exe):
 
 - `<output_root>/<region_safe_name>/07_reports/<region_safe_name>_data_preparation_report.json`
 - the matching `.md` report.
+- the matching `.html` report (a self-contained static page added in Task 031;
+  inline CSS, no external network/CSS/JS/CDN).
 - `<output_root>/<region_safe_name>/07_reports/<region_safe_name>_manifest.csv`
   (the flat prepare-run manifest added in Task 026).
 - `<output_root>/<region_safe_name>/07_reports/<region_safe_name>_warnings.csv`

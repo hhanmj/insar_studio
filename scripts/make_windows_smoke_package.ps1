@@ -119,7 +119,7 @@ Open PowerShell in this folder and run:
 ```
 
 This runs the offline `prepare` workflow three times - once each for `--bbox`,
-`--aoi-geojson`, and `--aoi-wkt` - and verifies every run produces the four report
+`--aoi-geojson`, and `--aoi-wkt` - and verifies every run produces the five report
 files. The three AOI sources are mutually exclusive, so each run uses exactly one.
 
 Or run the CLI manually (swap `--bbox` for `--aoi-geojson .\input\aoi.geojson`, or
@@ -150,11 +150,12 @@ output\shiliushubao_demo_geojson\07_reports\
 output\shiliushubao_demo_wkt\07_reports\
 ```
 
-Each `07_reports\` directory contains the four report files:
+Each `07_reports\` directory contains the five report files:
 
 ```text
 <safe_name>_data_preparation_report.json
 <safe_name>_data_preparation_report.md
+<safe_name>_data_preparation_report.html
 <safe_name>_manifest.csv
 <safe_name>_warnings.csv
 ```
@@ -225,16 +226,20 @@ function Invoke-PrepareSmoke([string]$Label, [string]$Region, [string]$SafeName,
     $allArgs = $common + $AoiArgs
     $out = (& $exe @allArgs 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) { throw "$Label prepare failed (exit $LASTEXITCODE)" }
-    foreach ($token in @("JSON:", "Markdown:", "Manifest:", "Warnings:")) {
+    foreach ($token in @("JSON:", "Markdown:", "HTML:", "Manifest:", "Warnings:")) {
         if ($out -notmatch [regex]::Escape($token)) { throw "$Label stdout missing $token" }
     }
     $reportDir = Join-Path $PSScriptRoot "output\$SafeName\07_reports"
     $json = Join-Path $reportDir "$($SafeName)_data_preparation_report.json"
     $md = Join-Path $reportDir "$($SafeName)_data_preparation_report.md"
+    $html = Join-Path $reportDir "$($SafeName)_data_preparation_report.html"
     $manifest = Join-Path $reportDir "$($SafeName)_manifest.csv"
     $warnings = Join-Path $reportDir "$($SafeName)_warnings.csv"
-    foreach ($file in @($json, $md, $manifest, $warnings)) {
+    foreach ($file in @($json, $md, $html, $manifest, $warnings)) {
         if (-not (Test-Path $file)) { throw "$Label report file missing: $file" }
+    }
+    if ((Get-Content $html -TotalCount 1) -notmatch "(?i)<!doctype html>") {
+        throw "$Label HTML report is not a valid HTML5 document"
     }
     if ((Get-Content $manifest -TotalCount 1) -ne $manifestHeader) { throw "$Label manifest header drifted" }
     if ((Get-Content $warnings -TotalCount 1) -ne $warningsHeader) { throw "$Label warnings header drifted" }
@@ -242,7 +247,7 @@ function Invoke-PrepareSmoke([string]$Label, [string]$Region, [string]$SafeName,
     foreach ($section in @("workflow", "scene", "orbit", "dem", "gacos", "report")) {
         if ($manifestText -notmatch "(?m)^$section,") { throw "$Label manifest missing section: $section" }
     }
-    Write-Host "[OK] $Label prepare: JSON + Markdown + manifest + warnings present" -ForegroundColor Green
+    Write-Host "[OK] $Label prepare: JSON + Markdown + HTML + manifest + warnings present" -ForegroundColor Green
 }
 
 Invoke-PrepareSmoke "bbox" "Shiliushubao Demo BBox" "shiliushubao_demo_bbox" @("--bbox", "110.1", "30.8", "110.6", "31.2")

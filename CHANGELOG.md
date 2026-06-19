@@ -333,6 +333,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   business-module, CLI, test-logic, or `pyproject` version changes; no new
   dependencies; build/`dist`/`*.spec`/`*.exe` and `smoke_package/` stay
   git-ignored and uncommitted.
+- `insar-prep prepare` (Task 031) now also writes a self-contained HTML report
+  next to the JSON + Markdown report, `manifest.csv`, and `warnings.csv` in
+  `07_reports`, named `<region_safe_name>_data_preparation_report.html`. A new
+  offline `src/insar_prep/reporting/html.py` adds `render_report_html`,
+  `save_report_html`, and `html_report_path_for` (standard-library `html.escape`
+  plus string building only — no Jinja2/Markdown/pandas/plotly; no new
+  dependency). The HTML is a static HTML5 page (UTF-8, inline minimal CSS, no
+  external CSS/JS/CDN, no network, no PDF): a header, summary cards
+  (status/sections/errors/warnings), and one section per module (Scene
+  consistency, Orbit matching, DEM planning/conversion, GACOS request planning,
+  GACOS import check, Next actions) with key-value items and an issue table. It
+  reuses the same `DataPreparationReport` object (no business logic re-run),
+  HTML-escapes every user-controllable value, and is credential-masked via
+  `mask_text` before writing. The success stdout now also prints the `HTML:` path
+  (order: JSON, Markdown, HTML, Manifest, Warnings); the Windows smoke test
+  (`scripts/make_windows_smoke_package.ps1` → `run_smoke_test.ps1`) verifies the
+  HTML across all three AOI runs, and `docs/windows_exe_smoke_test.md`,
+  `docs/packaging_readiness.md`, and `README.md` document the new output. No
+  business-module changes (ASF/AOI/DEM/GACOS/orbit/queue/core models and
+  `manifest.py`/`warnings.py` untouched); no CLI-flag or `pyproject` version
+  changes; the version stays `0.1.0`.
 
 ### Release readiness
 

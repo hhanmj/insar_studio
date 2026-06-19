@@ -76,10 +76,11 @@ runs (output under `shiliushubao_demo_bbox`, `shiliushubao_demo_geojson`, and
 
 - the exe exits with code `0` for every command;
 - `prepare --help` advertises `--bbox`, `--aoi-geojson`, and `--aoi-wkt`;
-- the four report files exist in each `07_reports\` directory: the JSON and
-  Markdown reports, `<safe_name>_manifest.csv`, and `<safe_name>_warnings.csv`;
-- each run's stdout reports a `JSON:`, `Markdown:`, `Manifest:`, and `Warnings:`
-  path;
+- the five report files exist in each `07_reports\` directory: the JSON, Markdown,
+  and HTML reports, `<safe_name>_manifest.csv`, and `<safe_name>_warnings.csv`;
+- each HTML report begins with a `<!doctype html>` declaration;
+- each run's stdout reports a `JSON:`, `Markdown:`, `HTML:`, `Manifest:`, and
+  `Warnings:` path;
 - each manifest's first line is the fixed header
   `section,item_type,item_id,item_name,status,path,value,notes` and inventories
   every workflow section (`workflow`, `scene`, `orbit`, `dem`, `gacos`, `report`);
@@ -89,9 +90,9 @@ runs (output under `shiliushubao_demo_bbox`, `shiliushubao_demo_geojson`, and
 - the `input\gacos` files were not moved, deleted, or modified.
 
 The `manifest.csv` is produced by the `prepare` workflow added in Task 026, the
-`warnings.csv` problem summary by Task 028, and the `--aoi-geojson` / `--aoi-wkt`
-AOI sources by Task 029; this smoke test (Task 030) verifies the rebuilt exe
-carries all of them.
+`warnings.csv` problem summary by Task 028, the `--aoi-geojson` / `--aoi-wkt` AOI
+sources by Task 029, and the static HTML report by Task 031; this smoke test
+verifies the rebuilt exe carries all of them.
 
 ## 6. FAQ / troubleshooting
 

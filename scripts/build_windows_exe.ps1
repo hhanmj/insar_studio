@@ -15,6 +15,29 @@
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-Native {
+    <#
+        Run a native command (uv, PyInstaller, the exe) and decide success solely
+        by its process exit code. Native tools may print warnings/deprecations to
+        stderr without failing (e.g. PyInstaller's "running as admin" deprecation);
+        under $ErrorActionPreference = "Stop" Windows PowerShell turns that stderr
+        into a terminating NativeCommandError and would abort an otherwise-
+        successful build. Relax the preference to "Continue" only while the command
+        runs so warnings stay visible but never fail the step; the caller still
+        checks $LASTEXITCODE, and the global "Stop" preference keeps cmdlet errors
+        (Remove-Item, New-Item, ...) fatal everywhere else.
+    #>
+    param([Parameter(Mandatory = $true)][scriptblock]$Body)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Body
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Invoke-Step {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -22,7 +45,7 @@ function Invoke-Step {
     )
     Write-Host ""
     Write-Host "== $Name ==" -ForegroundColor Cyan
-    & $Body
+    Invoke-Native $Body
     if ($LASTEXITCODE -ne 0) {
         throw "$Name failed (exit code $LASTEXITCODE)"
     }
@@ -72,7 +95,7 @@ if (Test-Path $demo) { Remove-Item -Recurse -Force $demo }
 New-Item -ItemType Directory -Force -Path $demo | Out-Null
 try {
     $cart = Join-Path $RepoRoot "tests\fixtures\asf\urls.txt"
-    & $exe prepare --cart $cart --region-name smoke_demo --output-root $demo
+    Invoke-Native { & $exe prepare --cart $cart --region-name smoke_demo --output-root $demo }
     if ($LASTEXITCODE -ne 0) { throw "exe prepare failed (exit $LASTEXITCODE)" }
     $reportDir = Join-Path $demo "smoke_demo\07_reports"
     $json = Join-Path $reportDir "smoke_demo_data_preparation_report.json"
