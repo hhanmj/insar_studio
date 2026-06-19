@@ -219,6 +219,9 @@ URL a non-zero exit (the plan is still written).
   masked for tokens, passwords, API keys, `Authorization`/`Bearer`/`Cookie`
   headers, session ids, and presigned-URL signatures, while ordinary text and
   Windows paths are left intact.
+- A downloader **interface** exists for future development (an `AsfDownloader`
+  protocol with an offline `FakeAsfDownloader` for tests); the real downloader is
+  an intentional not-implemented stub, so no real network download can run yet.
 - **Do not put credentials into project files.** When real download support
   arrives, Earthdata Login credentials will come from the OS keyring, environment
   variables, an interactive prompt, or a user-managed `.netrc` **outside** the

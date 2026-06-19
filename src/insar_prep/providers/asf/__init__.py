@@ -25,6 +25,14 @@ from insar_prep.providers.asf.download_plan import (
     build_asf_download_plan,
     write_asf_download_plan,
 )
+from insar_prep.providers.asf.downloader import (
+    AsfDownloader,
+    DownloadOutcome,
+    DownloadRequest,
+    DownloadResult,
+    FakeAsfDownloader,
+    RealAsfDownloader,
+)
 from insar_prep.providers.asf.scene_parser import deduplicate_scenes, parse_scene_name
 
 __all__ = [
@@ -33,7 +41,13 @@ __all__ = [
     "SLC_SUBDIR",
     "AsfDownloadPlan",
     "AsfDownloadPlanItem",
+    "AsfDownloader",
     "AsfPlanStatus",
+    "DownloadOutcome",
+    "DownloadRequest",
+    "DownloadResult",
+    "FakeAsfDownloader",
+    "RealAsfDownloader",
     "asf_download_plan_paths",
     "build_asf_download_plan",
     "deduplicate_scenes",

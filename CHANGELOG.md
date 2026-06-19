@@ -424,6 +424,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows-path and non-secret-text preservation; existing `test_logging.py`
   behavior is unchanged. `README.md` notes the hardened redaction. No new
   dependency; no CLI change; the version stays `0.1.0`.
+- Fake ASF downloader interface and no-network guards (Task 035). New
+  `src/insar_prep/providers/asf/downloader.py` defines the downloader interface a
+  future real downloader will implement (`AsfDownloader` protocol,
+  `DownloadRequest`, `DownloadResult`, `DownloadOutcome`) plus a
+  `FakeAsfDownloader` for offline tests of success/failure/interrupted paths. The
+  fake never opens a socket, reads credentials, or writes a real archive: by
+  default it writes nothing, and with `write_placeholder=True` it writes only a
+  tiny `.fake`/`.part` text marker (never `.zip`/`.SAFE`). `RealAsfDownloader` is
+  a deliberate `NotImplementedError` stub so real, credentialed download can
+  never run accidentally — it stays a separate, later, user-authorized task.
+  Added `tests/unit/test_asf_fake_downloader.py` and
+  `tests/e2e/test_no_network_guards.py` (socket-monkeypatched) proving the
+  planner CLI and the fake downloader open no socket, that the guard itself
+  blocks network access, and that no `.zip`/`.SAFE` is produced. No
+  requests/aiohttp/httpx or any new dependency; no CLI change; the version stays
+  `0.1.0`.
 
 ### Release readiness
 
