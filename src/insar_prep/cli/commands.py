@@ -25,6 +25,11 @@ from insar_prep.core.naming import sarscape_safe_name
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 from insar_prep.processing.aoi_import import load_aoi_from_geojson, load_aoi_from_wkt
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
+from insar_prep.providers.asf.download_plan import (
+    build_asf_download_plan,
+    write_asf_download_plan,
+)
+from insar_prep.providers.asf.scene_parser import deduplicate_scenes
 from insar_prep.providers.dem import (
     DemProvider,
     create_dem_conversion_plan,
@@ -432,4 +437,94 @@ def run_prepare(args: argparse.Namespace) -> int:
         f"Manifest: {manifest_path}\n"
         f"Warnings: {warnings_path}\n"
     )
+    return _EXIT_OK
+
+
+def add_plan_asf_downloads_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the offline ``plan-asf-downloads`` dry-run subcommand."""
+    parser = subparsers.add_parser(
+        "plan-asf-downloads",
+        help="Plan (dry-run) the ASF SLC downloads implied by a local cart. No network.",
+        description=(
+            "Offline dry-run: read a local ASF cart, and write an ASF SLC download "
+            "*plan* (JSON + CSV) listing the expected filenames and intended local "
+            "paths. It never downloads data, contacts ASF/Earthdata, or reads "
+            "credentials, and no account is required to run it."
+        ),
+    )
+    parser.add_argument(
+        "--cart",
+        required=True,
+        help="Path to a local ASF cart file (.py/.txt/.csv/.geojson/.json).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        required=True,
+        help="Directory for the plan; outputs go under <output-dir>/asf_download_plan/.",
+    )
+    parser.add_argument(
+        "--region-name",
+        dest="region_name",
+        default=None,
+        help="Optional human-readable region name (recorded as a SARscape-safe name).",
+    )
+    parser.add_argument(
+        "--require-urls",
+        dest="require_urls",
+        action="store_true",
+        help="Exit non-zero if any scene has no download URL (still writes the plan).",
+    )
+    return parser
+
+
+def run_plan_asf_downloads(args: argparse.Namespace) -> int:
+    """Run the offline ASF download dry-run planner. Returns a process exit code."""
+    cart_path = Path(args.cart)
+    try:
+        scenes = parse_asf_cart_file(cart_path)
+    except InsarPrepError as exc:
+        logger.error("failed to parse ASF cart %s: %s", cart_path, exc)
+        return _EXIT_ERROR
+
+    # One plan entry per unique granule (a cart may list a granule more than once).
+    unique_scenes, _duplicates = deduplicate_scenes(scenes)
+
+    region_safe_name = ""
+    if args.region_name:
+        try:
+            region_safe_name = sarscape_safe_name(args.region_name)
+        except ValueError as exc:
+            logger.error("invalid region name %r: %s", args.region_name, exc)
+            return _EXIT_ERROR
+
+    plan = build_asf_download_plan(
+        scenes=unique_scenes,
+        output_dir=args.output_dir,
+        source_cart=cart_path,
+        region_safe_name=region_safe_name,
+    )
+    try:
+        json_path, csv_path = write_asf_download_plan(plan, args.output_dir)
+    except InsarPrepError as exc:
+        logger.error("failed to write ASF download plan: %s", exc)
+        return _EXIT_ERROR
+
+    logger.info(
+        "wrote ASF download plan: %s and %s (%d scenes, %d planned, %d missing url)",
+        json_path,
+        csv_path,
+        plan.scene_count,
+        plan.planned_count,
+        plan.missing_url_count,
+    )
+    # User-facing confirmation on stdout (no print(); Ruff T20 stays satisfied).
+    sys.stdout.write(f"ASF download plan written:\nJSON: {json_path}\nCSV: {csv_path}\n")
+    # Real download is not implemented; this is a plan only.
+    if args.require_urls and plan.missing_url_count > 0:
+        logger.error(
+            "%d scene(s) have no download URL and --require-urls was set",
+            plan.missing_url_count,
+        )
+        return _EXIT_ERROR
     return _EXIT_OK

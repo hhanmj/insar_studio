@@ -180,16 +180,43 @@ The current offline MVP never performs any of the following:
 It also never reads accounts, stores credentials, or moves / deletes / renames
 your input files.
 
-### Planned ASF downloads (not yet implemented)
+### ASF downloads: offline dry-run planning (no real download yet)
 
 - **Real ASF / Sentinel-1 SLC download is not yet implemented.** The current
-  version cannot download SAR data; it only parses local carts and plans.
-- The **credential-safe design** for a future downloader is documented in
+  version cannot download SAR data.
+- It can, however, **plan** the downloads offline. `plan-asf-downloads` reads a
+  local ASF cart and writes a download *plan* (JSON + CSV) listing the expected
+  filenames and intended local paths — **without** downloading anything,
+  contacting ASF/Earthdata, or reading credentials. No account is required:
+
+```bash
+uv run insar-prep plan-asf-downloads \
+  --cart tests/fixtures/asf/urls.txt \
+  --output-dir ./workspace
+```
+
+This writes, under the chosen output directory:
+
+```text
+<output-dir>/asf_download_plan/
+  asf_download_plan.json
+  asf_download_plan.csv
+```
+
+The CSV has the fixed header
+`scene_id,platform,acquisition_datetime,product,beam,polarization,url_status,expected_filename,planned_path,status,credential_required,notes`.
+Each scene is `PLANNED` (a download URL is present) or `MISSING_URL`, the
+intended SLC path is recorded as `<output-dir>/02_slc/<expected_filename>` (never
+created), and `credential_required` is always `yes`. URLs, query strings, and
+tokens are **never** written to the plan. Pass `--require-urls` to make a missing
+URL a non-zero exit (the plan is still written).
+
+- The **credential-safe design** for a future real downloader is documented in
   [`docs/asf_download_credential_design.md`](docs/asf_download_credential_design.md)
   (default `dry-run`, explicit opt-in for real download, strict log/report
   redaction, and credentials kept out of the repository).
-- **Do not put credentials into project files.** When download support arrives,
-  Earthdata Login credentials will come from the OS keyring, environment
+- **Do not put credentials into project files.** When real download support
+  arrives, Earthdata Login credentials will come from the OS keyring, environment
   variables, an interactive prompt, or a user-managed `.netrc` **outside** the
   project — never from a committed `.env`, config JSON, or a command-line flag.
 

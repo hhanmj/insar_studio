@@ -9,7 +9,12 @@ from __future__ import annotations
 import argparse
 
 from insar_prep import __version__
-from insar_prep.cli.commands import add_prepare_subparser, run_prepare
+from insar_prep.cli.commands import (
+    add_plan_asf_downloads_subparser,
+    add_prepare_subparser,
+    run_plan_asf_downloads,
+    run_prepare,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", metavar="command")
     add_prepare_subparser(subparsers)
+    add_plan_asf_downloads_subparser(subparsers)
     return parser
 
 
@@ -34,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "prepare":
         return run_prepare(args)
+    if args.command == "plan-asf-downloads":
+        return run_plan_asf_downloads(args)
     # No subcommand: show help so the command is informative.
     parser.print_help()
     return 0

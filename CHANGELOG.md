@@ -372,12 +372,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   close — bearer tokens, cookie values, presigned S3/data-pool query params, URL
   userinfo, `.netrc` lines), the download modes (`dry-run` default vs explicit
   `real`), dry-run / real-download / file-integrity / error-handling behavior, a
-  CLI proposal (recommend a separate `download-asf` subcommand over folding into
-  `prepare`), an offline-by-default test strategy (fake credentials,
-  socket-monkeypatched, opt-in real-download marker excluded from CI), and a
-  Task 033–038 breakdown. `README.md` notes that real ASF download is not yet
-  implemented and links the design. No changes to `src/`, `tests/`,
+  CLI proposal (recommend dedicated `plan-asf-downloads` / `download-asf`
+  subcommands over folding into `prepare`), an offline-by-default test strategy
+  (fake credentials, socket-monkeypatched, opt-in real-download marker excluded
+  from CI), and a Task 033–036 breakdown (with real download deferred to a later,
+  separately-authorized task). `README.md` notes that real ASF download is not
+  yet implemented and links the design. No changes to `src/`, `tests/`,
   `pyproject.toml`, `uv.lock`, or scripts; no new dependency; the version stays
+  `0.1.0`.
+- `insar-prep plan-asf-downloads` (Task 033): an offline ASF SLC download
+  *dry-run planner*. It reads a local ASF cart and writes
+  `asf_download_plan.json` + `asf_download_plan.csv` under
+  `<output-dir>/asf_download_plan/`, listing per scene the platform, acquisition
+  time, product/beam/polarization, `url_status`, `expected_filename`, intended
+  `<output-dir>/02_slc/<expected_filename>` path, a `PLANNED`/`MISSING_URL`
+  status, and a `credential_required` flag (always `yes`). New
+  `src/insar_prep/providers/asf/download_plan.py` adds `build_asf_download_plan`,
+  `write_asf_download_plan`, and `asf_download_plan_paths` (standard-library
+  `csv` + the existing pydantic/`mask_text` only — no new dependency). It never
+  downloads data, contacts ASF/Earthdata, reads credentials, or creates the
+  `02_slc/` directory or any `.zip`/`.SAFE`; URLs, query strings, and tokens are
+  never written to the plan (only a present/missing flag and the granule-derived
+  filename), and every cell is `mask_text`-masked before writing. The CSV header
+  is fixed
+  (`scene_id,platform,acquisition_datetime,product,beam,polarization,url_status,expected_filename,planned_path,status,credential_required,notes`).
+  Missing URLs are reported as `MISSING_URL` with exit code `0` unless
+  `--require-urls` is passed (then the plan is still written but the command exits
+  non-zero). The success stdout prints the JSON + CSV plan paths (via
+  `sys.stdout.write`, no `print()`). Added `tests/unit/test_asf_download_plan.py`
+  and `tests/e2e/test_asf_download_plan_cli.py` (socket-monkeypatched offline
+  checks, header/round-trip, no-leak, and no-large-file assertions); `README.md`
+  documents the new subcommand. No business-module changes beyond the new ASF
+  planner and CLI wiring; no `pyproject` version change; the version stays
   `0.1.0`.
 
 ### Release readiness
