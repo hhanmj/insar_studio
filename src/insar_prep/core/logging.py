@@ -19,13 +19,35 @@ from insar_prep.core.events import Event, EventType
 _HUMAN_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 _DATEFMT = "%Y-%m-%dT%H:%M:%SZ"
 
-# Matches "<key><sep><value>" for common secret keys (token, password, api_key,
-# cookie, authorization, ...) in plain, key=value, and JSON "key":"value" forms.
+# Matches "<key><sep><value>" for common secret keys in plain, key=value, JSON
+# "key":"value", and URL ?key=value / &key=value query forms. The value class
+# includes +/= so base64 tokens and presigned-URL signatures are fully masked.
+# Authorization / Bearer / Cookie are handled by dedicated patterns below so the
+# header structure (scheme word) survives while the secret itself is masked. A
+# leading \b plus a required [:=] separator means Windows paths such as
+# C:\Users\...\token_cache\file.zip are never mis-redacted (no separator follows
+# the keyword), and only the credential -- not the key -- is rewritten.
 _SECRET_KEY_RE = re.compile(
-    r"(?i)(token|password|passwd|pwd|secret|api[_-]?key|apikey|cookie|authorization)"
-    r"(\"?\s*[:=]\s*\"?)"
-    r"([A-Za-z0-9._\-]+)"
+    r"(?i)\b("
+    r"access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|"
+    r"api[_-]?token|token|password|passwd|pwd|secret|sessionid|session|"
+    r"credentials?|x-amz-security-token|x-amz-signature|x-amz-credential|"
+    r"signature|awsaccesskeyid"
+    r")(\"?\s*[:=]\s*\"?)([A-Za-z0-9._+/=\-]+)"
 )
+
+# "Authorization: <scheme> <token>" or "Authorization: <token>". The scheme word
+# (Bearer/Basic/Token/Negotiate) is preserved; the credential after it is masked.
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)\b(authorization\s*[:=]\s*)(bearer\s+|basic\s+|token\s+|negotiate\s+)?"
+    r"([A-Za-z0-9._+/=\-]{2,})"
+)
+
+# A bare "Bearer <token>" anywhere (e.g. not preceded by an Authorization key).
+_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._+/=\-]{2,})")
+
+# A Cookie header: mask the entire cookie payload through the end of the line.
+_COOKIE_RE = re.compile(r"(?i)\b(cookie\s*[:=]\s*)([^\r\n]+)")
 
 
 def mask_secret(value: str) -> str:
@@ -36,12 +58,30 @@ def mask_secret(value: str) -> str:
 
 
 def mask_text(text: str) -> str:
-    """Redact credential-like substrings (token/password/api_key/...) in text."""
+    """Redact credential-like substrings in arbitrary text.
 
-    def _replace(match: re.Match[str]) -> str:
+    Covers ``key<sep>value`` secrets (token/password/api_key/secret/session/
+    signature/presigned-URL params, in plain, ``key=value``, JSON, and URL-query
+    forms), ``Authorization`` headers (with or without a Bearer/Basic scheme),
+    bare ``Bearer`` tokens, and ``Cookie`` headers. Only the credential is
+    masked; surrounding text -- keys, scheme words, and Windows paths -- is
+    preserved.
+    """
+
+    def _mask_keyed(match: re.Match[str]) -> str:
         return f"{match.group(1)}{match.group(2)}{mask_secret(match.group(3))}"
 
-    return _SECRET_KEY_RE.sub(_replace, text)
+    def _mask_auth(match: re.Match[str]) -> str:
+        scheme = match.group(2) or ""
+        return f"{match.group(1)}{scheme}{mask_secret(match.group(3))}"
+
+    def _mask_value2(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{mask_secret(match.group(2))}"
+
+    masked = _AUTH_HEADER_RE.sub(_mask_auth, text)
+    masked = _BEARER_RE.sub(_mask_value2, masked)
+    masked = _COOKIE_RE.sub(_mask_value2, masked)
+    return _SECRET_KEY_RE.sub(_mask_keyed, masked)
 
 
 class _MaskingFilter(logging.Filter):

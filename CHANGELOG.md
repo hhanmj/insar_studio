@@ -405,6 +405,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documents the new subcommand. No business-module changes beyond the new ASF
   planner and CLI wiring; no `pyproject` version change; the version stays
   `0.1.0`.
+- Credential redaction hardening (Task 034). Strengthened the existing
+  `mask_text` in `src/insar_prep/core/logging.py` (still the single source of
+  truth behind the logging `_MaskingFilter` and every report/manifest/warnings/
+  HTML/ASF-plan writer) so it now also masks: `Authorization` headers (with or
+  without a `Bearer`/`Basic`/`Token`/`Negotiate` scheme, keeping only the scheme
+  word), bare `Bearer <token>` strings, `Cookie` headers (whole payload), and a
+  broader key set — `session`/`sessionid`, `access_token`/`refresh_token`/
+  `id_token`, `credentials`, and presigned-URL params (`X-Amz-Signature`,
+  `X-Amz-Credential`, `X-Amz-Security-Token`, `Signature`, `AWSAccessKeyId`) — in
+  plain, `key=value`, JSON, and URL-query forms, with a value class that includes
+  `+`/`/`/`=` so base64 tokens and signatures are fully masked. A required `[:=]`
+  separator after each keyword means Windows paths (e.g.
+  `C:\...\tokens\file.zip`) are never mis-redacted. Added
+  `tests/unit/test_redaction.py` (fake secrets only; no real credentials, no
+  environment reads, no network) proving redaction across `mask_text` forms and
+  the report JSON/Markdown/HTML, `manifest.csv`, and `warnings.csv` writers, plus
+  Windows-path and non-secret-text preservation; existing `test_logging.py`
+  behavior is unchanged. `README.md` notes the hardened redaction. No new
+  dependency; no CLI change; the version stays `0.1.0`.
 
 ### Release readiness
 

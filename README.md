@@ -215,6 +215,10 @@ URL a non-zero exit (the plan is still written).
   [`docs/asf_download_credential_design.md`](docs/asf_download_credential_design.md)
   (default `dry-run`, explicit opt-in for real download, strict log/report
   redaction, and credentials kept out of the repository).
+- **Redaction is hardened**: logs, reports (JSON/Markdown/HTML), and CSVs are
+  masked for tokens, passwords, API keys, `Authorization`/`Bearer`/`Cookie`
+  headers, session ids, and presigned-URL signatures, while ordinary text and
+  Windows paths are left intact.
 - **Do not put credentials into project files.** When real download support
   arrives, Earthdata Login credentials will come from the OS keyring, environment
   variables, an interactive prompt, or a user-managed `.netrc` **outside** the
