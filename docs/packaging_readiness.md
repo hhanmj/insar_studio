@@ -189,3 +189,24 @@ Rebuilt `dist/insar-prep.exe` from the current code (which includes the Task 026
 - Still offline only; no installer, signing, upload, or release. Build artifacts
   (`build/`, `dist/`, `*.spec`, `*.exe`) and `smoke_package/` remain git-ignored
   and were not committed.
+
+## 12. Task 030 rebuild + AOI import smoke verification
+
+Rebuilt `dist/insar-prep.exe` from the current code (which includes the Task 029
+`--aoi-geojson` / `--aoi-wkt` AOI import) with `scripts/build_windows_exe.ps1` and
+re-ran the extended smoke package:
+
+- The rebuilt one-file exe is **~28 MB**; `--help`, `--version`
+  (`insar-prep 0.1.0`), and `prepare --help` all exit 0, and `prepare --help` now
+  advertises the mutually exclusive `--bbox | --aoi-geojson | --aoi-wkt` group.
+- `scripts/make_windows_smoke_package.ps1` now also writes an EPSG:4326 Polygon
+  `input/aoi.geojson` sample, and the generated `run_smoke_test.ps1` runs the full
+  offline `prepare` workflow **three times** — once per AOI source (`--bbox`,
+  `--aoi-geojson`, `--aoi-wkt`) — asserting for each run the four report files
+  (JSON, Markdown, `manifest.csv`, `warnings.csv`), the fixed manifest/warnings
+  headers, the manifest section coverage, and a `JSON:`/`Markdown:`/`Manifest:`/
+  `Warnings:` stdout line, plus the shared no-`.tif` and untouched-GACOS-inputs
+  checks. `SMOKE TEST PASSED` on this machine.
+- Still offline only; no installer, signing, upload, or release. Build artifacts
+  (`build/`, `dist/`, `*.spec`, `*.exe`) and `smoke_package/` remain git-ignored
+  and were not committed.

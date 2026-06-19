@@ -37,6 +37,7 @@ smoke_package/
     ├── run_smoke_test.ps1
     ├── input/
     │   ├── asf_urls.txt
+    │   ├── aoi.geojson
     │   ├── orbits/
     │   │   ├── S1A_OPER_AUX_POEORB_OPOD_20240102T120000_V20240101T000000_20240102T235959.EOF
     │   │   └── S1B_OPER_AUX_POEORB_OPOD_20240114T120000_V20240113T000000_20240114T235959.EOF
@@ -50,7 +51,9 @@ smoke_package/
 
 The orbit and GACOS sample dates (2024-01-01, 2024-01-13) match the two scenes in
 `asf_urls.txt`. The EOF files are empty on purpose — the orbit matcher parses the
-filename only — and the GACOS files contain tiny placeholder text.
+filename only — and the GACOS files contain tiny placeholder text. `aoi.geojson`
+is an EPSG:4326 Polygon `Feature` whose bounds equal the demo `--bbox`
+(110.1 30.8 110.6 31.2); it drives the `--aoi-geojson` smoke run.
 
 ## 4. Run the smoke test
 
@@ -59,32 +62,36 @@ cd smoke_package\insar_prep_windows_smoke
 .\run_smoke_test.ps1
 ```
 
-The script runs the exe `--help`, `--version`, and `prepare --help`, then the full
-offline `prepare` workflow with orbit matching, DEM planning, GACOS request
-planning, and GACOS import checking enabled.
+The script runs the exe `--help`, `--version`, and `prepare --help` (asserting the
+help advertises `--bbox`, `--aoi-geojson`, and `--aoi-wkt`), then the full offline
+`prepare` workflow **three times** — once per AOI source (`--bbox`,
+`--aoi-geojson`, `--aoi-wkt`) — each with orbit matching, DEM planning, GACOS
+request planning, and GACOS import checking enabled.
 
 ## 5. Expected output
 
-The script reports `SMOKE TEST PASSED` after confirming:
+The script reports `SMOKE TEST PASSED` after confirming, for each of the three AOI
+runs (output under `shiliushubao_demo_bbox`, `shiliushubao_demo_geojson`, and
+`shiliushubao_demo_wkt`):
 
 - the exe exits with code `0` for every command;
-- the reports exist at
-  `output\shiliushubao_demo\07_reports\shiliushubao_demo_data_preparation_report.json`,
-  the matching `.md`, `shiliushubao_demo_manifest.csv`, and
-  `shiliushubao_demo_warnings.csv`;
-- the `prepare` stdout reports both a `Manifest:` and a `Warnings:` path;
-- the manifest's first line is the fixed header
-  `section,item_type,item_id,item_name,status,path,value,notes`;
-- the manifest inventories every workflow section (`workflow`, `scene`, `orbit`,
-  `dem`, `gacos`, `report`);
-- the warnings' first line is the fixed header
+- `prepare --help` advertises `--bbox`, `--aoi-geojson`, and `--aoi-wkt`;
+- the four report files exist in each `07_reports\` directory: the JSON and
+  Markdown reports, `<safe_name>_manifest.csv`, and `<safe_name>_warnings.csv`;
+- each run's stdout reports a `JSON:`, `Markdown:`, `Manifest:`, and `Warnings:`
+  path;
+- each manifest's first line is the fixed header
+  `section,item_type,item_id,item_name,status,path,value,notes` and inventories
+  every workflow section (`workflow`, `scene`, `orbit`, `dem`, `gacos`, `report`);
+- each warnings' first line is the fixed header
   `severity,section,item_type,item_id,item_name,code,message,path,action`;
 - no real DEM `.tif` was produced;
 - the `input\gacos` files were not moved, deleted, or modified.
 
-The `manifest.csv` is produced by the `prepare` workflow added in Task 026 and the
-`warnings.csv` problem summary by Task 028; this smoke test verifies the rebuilt
-exe carries both outputs.
+The `manifest.csv` is produced by the `prepare` workflow added in Task 026, the
+`warnings.csv` problem summary by Task 028, and the `--aoi-geojson` / `--aoi-wkt`
+AOI sources by Task 029; this smoke test (Task 030) verifies the rebuilt exe
+carries all of them.
 
 ## 6. FAQ / troubleshooting
 

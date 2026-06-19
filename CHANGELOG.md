@@ -316,6 +316,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes to the ASF parser, DEM/GACOS/orbit modules, reporting manifest/warnings,
   queue, or core models; the `--bbox` behavior is unchanged; the version stays
   `0.1.0`.
+- Windows exe smoke test verifies the AOI import (Task 030): rebuilt the one-file
+  `dist/insar-prep.exe` from the current code with `scripts/build_windows_exe.ps1`
+  (full quality gate green; exe `--version` still `insar-prep 0.1.0`; ~28 MB) so
+  the frozen exe now carries the Task 029 `--aoi-geojson` / `--aoi-wkt` AOI import.
+  `scripts/make_windows_smoke_package.ps1` was extended to also write an EPSG:4326
+  Polygon `input/aoi.geojson` sample, and the generated `run_smoke_test.ps1` now
+  asserts `prepare --help` advertises `--bbox`/`--aoi-geojson`/`--aoi-wkt` and runs
+  the offline `prepare` workflow three times — once per AOI source (`--bbox`,
+  `--aoi-geojson`, `--aoi-wkt`) — checking for each run the four report files
+  (JSON, Markdown, `manifest.csv`, `warnings.csv`), the fixed manifest/warnings
+  headers, the manifest section coverage, and `JSON:`/`Markdown:`/`Manifest:`/
+  `Warnings:` stdout lines, alongside the existing no-`.tif` and
+  untouched-GACOS-input checks. `docs/windows_exe_smoke_test.md` and
+  `docs/packaging_readiness.md` document the AOI smoke coverage. Offline only; no
+  business-module, CLI, test-logic, or `pyproject` version changes; no new
+  dependencies; build/`dist`/`*.spec`/`*.exe` and `smoke_package/` stay
+  git-ignored and uncommitted.
 
 ### Release readiness
 

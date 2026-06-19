@@ -71,6 +71,27 @@ foreach ($stamp in @("20240101", "20240113")) {
         Set-Content -Path (Join-Path $gacosDir "$stamp.ztd.rsc") -Encoding utf8
 }
 
+# AOI GeoJSON sample (EPSG:4326 Polygon Feature) for the --aoi-geojson smoke run;
+# its bounds match the demo --bbox (110.1 30.8 110.6 31.2). WriteAllText emits
+# UTF-8 without a BOM so the exe's json parser reads it cleanly.
+$aoiGeojson = @'
+{
+  "type": "Feature",
+  "properties": {"name": "Shiliushubao Demo AOI"},
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [[
+      [110.1, 30.8],
+      [110.6, 30.8],
+      [110.6, 31.2],
+      [110.1, 31.2],
+      [110.1, 30.8]
+    ]]
+  }
+}
+'@
+[System.IO.File]::WriteAllText((Join-Path $inputDir "aoi.geojson"), $aoiGeojson)
+
 Write-Host "Writing README_SMOKE_TEST.md..." -ForegroundColor Cyan
 $readme = @'
 # insar-prep - Windows exe smoke test
@@ -82,8 +103,9 @@ installer. It lets you verify the offline `insar-prep` workflow on Windows
 ## Contents
 
 - `insar-prep.exe`           - the one-file CLI (no Python required)
-- `run_smoke_test.ps1`       - runs the exe and checks the output
+- `run_smoke_test.ps1`       - runs three AOI prepare smoke tests and checks output
 - `input\asf_urls.txt`       - sample ASF download-URL cart (2 scenes)
+- `input\aoi.geojson`        - sample EPSG:4326 Polygon AOI (for --aoi-geojson)
 - `input\orbits\*.EOF`       - sample Sentinel-1 orbit files (filenames only)
 - `input\gacos\*.ztd[.rsc]`  - sample GACOS products (placeholder text)
 - `output\`                  - where reports are written
@@ -96,7 +118,12 @@ Open PowerShell in this folder and run:
 .\run_smoke_test.ps1
 ```
 
-Or run the CLI manually:
+This runs the offline `prepare` workflow three times - once each for `--bbox`,
+`--aoi-geojson`, and `--aoi-wkt` - and verifies every run produces the four report
+files. The three AOI sources are mutually exclusive, so each run uses exactly one.
+
+Or run the CLI manually (swap `--bbox` for `--aoi-geojson .\input\aoi.geojson`, or
+`--aoi-wkt "POLYGON ((...))"`, to exercise the other AOI sources):
 
 ```powershell
 .\insar-prep.exe --help
@@ -114,11 +141,22 @@ Or run the CLI manually:
 
 ## Expected output
 
+`run_smoke_test.ps1` writes one report set per AOI source (region names are
+normalized to SARscape-safe snake_case):
+
 ```text
-output\shiliushubao_demo\07_reports\shiliushubao_demo_data_preparation_report.json
-output\shiliushubao_demo\07_reports\shiliushubao_demo_data_preparation_report.md
-output\shiliushubao_demo\07_reports\shiliushubao_demo_manifest.csv
-output\shiliushubao_demo\07_reports\shiliushubao_demo_warnings.csv
+output\shiliushubao_demo_bbox\07_reports\
+output\shiliushubao_demo_geojson\07_reports\
+output\shiliushubao_demo_wkt\07_reports\
+```
+
+Each `07_reports\` directory contains the four report files:
+
+```text
+<safe_name>_data_preparation_report.json
+<safe_name>_data_preparation_report.md
+<safe_name>_manifest.csv
+<safe_name>_warnings.csv
 ```
 
 The `manifest.csv` is a flat inventory of this run, with the fixed header
@@ -143,12 +181,15 @@ $readme | Set-Content -Path (Join-Path $pkgRoot "README_SMOKE_TEST.md") -Encodin
 
 Write-Host "Writing run_smoke_test.ps1..." -ForegroundColor Cyan
 $runner = @'
-# Offline smoke test for the insar-prep Windows exe.
+# Offline smoke test for the insar-prep Windows exe: bbox / GeoJSON / WKT AOI.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 $exe = Join-Path $PSScriptRoot "insar-prep.exe"
 if (-not (Test-Path $exe)) { throw "insar-prep.exe not found next to this script" }
+
+$manifestHeader = "section,item_type,item_id,item_name,status,path,value,notes"
+$warningsHeader = "severity,section,item_type,item_id,item_name,code,message,path,action"
 
 function Invoke-Checked([string]$Name, [scriptblock]$Body) {
     & $Body
@@ -158,61 +199,55 @@ function Invoke-Checked([string]$Name, [scriptblock]$Body) {
 
 Invoke-Checked "exe --help" { & $exe --help | Out-Null }
 Invoke-Checked "exe --version" { & $exe --version }
-Invoke-Checked "exe prepare --help" { & $exe prepare --help | Out-Null }
+
+# prepare --help must advertise all three mutually exclusive AOI sources.
+$prepareHelp = (& $exe prepare --help 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw "exe prepare --help failed (exit $LASTEXITCODE)" }
+foreach ($flag in @("--bbox", "--aoi-geojson", "--aoi-wkt")) {
+    if ($prepareHelp -notmatch [regex]::Escape($flag)) { throw "prepare --help missing $flag" }
+}
+Write-Host "[OK] prepare --help advertises --bbox / --aoi-geojson / --aoi-wkt" -ForegroundColor Green
 
 $gacos = Join-Path $PSScriptRoot "input\gacos"
 $before = Get-ChildItem $gacos | ForEach-Object { "$($_.Name):$($_.Length)" } | Sort-Object
 
-# Capture stdout so we can assert the printed report paths (incl. Manifest).
-$prepareOut = & $exe prepare `
-  --cart .\input\asf_urls.txt `
-  --region-name "Shiliushubao Demo" `
-  --output-root .\output `
-  --orbit-dir .\input\orbits `
-  --dem-plan `
-  --bbox 110.1 30.8 110.6 31.2 `
-  --gacos-plan `
-  --gacos-import-dir .\input\gacos 2>&1
-if ($LASTEXITCODE -ne 0) { throw "exe prepare (full offline workflow) failed (exit $LASTEXITCODE)" }
-$prepareText = ($prepareOut | Out-String)
-Write-Host "[OK] exe prepare (full offline workflow)" -ForegroundColor Green
-
-if ($prepareText -notmatch "Manifest:") { throw "stdout did not report a Manifest path" }
-Write-Host "[OK] stdout reports a Manifest path" -ForegroundColor Green
-
-if ($prepareText -notmatch "Warnings:") { throw "stdout did not report a Warnings path" }
-Write-Host "[OK] stdout reports a Warnings path" -ForegroundColor Green
-
-$reportDir = Join-Path $PSScriptRoot "output\shiliushubao_demo\07_reports"
-$json = Join-Path $reportDir "shiliushubao_demo_data_preparation_report.json"
-$md = Join-Path $reportDir "shiliushubao_demo_data_preparation_report.md"
-$manifest = Join-Path $reportDir "shiliushubao_demo_manifest.csv"
-$warnings = Join-Path $reportDir "shiliushubao_demo_warnings.csv"
-foreach ($file in @($json, $md, $manifest, $warnings)) {
-    if (-not (Test-Path $file)) { throw "Report file missing: $file" }
+function Invoke-PrepareSmoke([string]$Label, [string]$Region, [string]$SafeName, [string[]]$AoiArgs) {
+    $common = @(
+        "prepare",
+        "--cart", ".\input\asf_urls.txt",
+        "--region-name", $Region,
+        "--output-root", ".\output",
+        "--orbit-dir", ".\input\orbits",
+        "--dem-plan",
+        "--gacos-plan",
+        "--gacos-import-dir", ".\input\gacos"
+    )
+    $allArgs = $common + $AoiArgs
+    $out = (& $exe @allArgs 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw "$Label prepare failed (exit $LASTEXITCODE)" }
+    foreach ($token in @("JSON:", "Markdown:", "Manifest:", "Warnings:")) {
+        if ($out -notmatch [regex]::Escape($token)) { throw "$Label stdout missing $token" }
+    }
+    $reportDir = Join-Path $PSScriptRoot "output\$SafeName\07_reports"
+    $json = Join-Path $reportDir "$($SafeName)_data_preparation_report.json"
+    $md = Join-Path $reportDir "$($SafeName)_data_preparation_report.md"
+    $manifest = Join-Path $reportDir "$($SafeName)_manifest.csv"
+    $warnings = Join-Path $reportDir "$($SafeName)_warnings.csv"
+    foreach ($file in @($json, $md, $manifest, $warnings)) {
+        if (-not (Test-Path $file)) { throw "$Label report file missing: $file" }
+    }
+    if ((Get-Content $manifest -TotalCount 1) -ne $manifestHeader) { throw "$Label manifest header drifted" }
+    if ((Get-Content $warnings -TotalCount 1) -ne $warningsHeader) { throw "$Label warnings header drifted" }
+    $manifestText = Get-Content $manifest -Raw
+    foreach ($section in @("workflow", "scene", "orbit", "dem", "gacos", "report")) {
+        if ($manifestText -notmatch "(?m)^$section,") { throw "$Label manifest missing section: $section" }
+    }
+    Write-Host "[OK] $Label prepare: JSON + Markdown + manifest + warnings present" -ForegroundColor Green
 }
-Write-Host "[OK] JSON + Markdown + manifest + warnings reports present" -ForegroundColor Green
 
-# The manifest header is a fixed contract; do not let it drift.
-$expectedHeader = "section,item_type,item_id,item_name,status,path,value,notes"
-$header = Get-Content $manifest -TotalCount 1
-if ($header -ne $expectedHeader) { throw "Unexpected manifest header: $header" }
-Write-Host "[OK] manifest header is the fixed 8-column contract" -ForegroundColor Green
-
-# Every workflow section must be inventoried (each is the first CSV column).
-$manifestText = Get-Content $manifest -Raw
-foreach ($section in @("workflow", "scene", "orbit", "dem", "gacos", "report")) {
-    if ($manifestText -notmatch "(?m)^$section,") { throw "manifest missing section: $section" }
-}
-Write-Host "[OK] manifest covers workflow/scene/orbit/dem/gacos/report" -ForegroundColor Green
-
-# warnings.csv is the problem summary; its header is a fixed contract too.
-$expectedWarningsHeader = "severity,section,item_type,item_id,item_name,code,message,path,action"
-$warningsHeader = Get-Content $warnings -TotalCount 1
-if ($warningsHeader -ne $expectedWarningsHeader) {
-    throw "Unexpected warnings header: $warningsHeader"
-}
-Write-Host "[OK] warnings header is the fixed 9-column contract" -ForegroundColor Green
+Invoke-PrepareSmoke "bbox" "Shiliushubao Demo BBox" "shiliushubao_demo_bbox" @("--bbox", "110.1", "30.8", "110.6", "31.2")
+Invoke-PrepareSmoke "geojson" "Shiliushubao Demo GeoJSON" "shiliushubao_demo_geojson" @("--aoi-geojson", ".\input\aoi.geojson")
+Invoke-PrepareSmoke "wkt" "Shiliushubao Demo WKT" "shiliushubao_demo_wkt" @("--aoi-wkt", "POLYGON ((110.1 30.8, 110.6 30.8, 110.6 31.2, 110.1 31.2, 110.1 30.8))")
 
 if (Get-ChildItem -Path $PSScriptRoot -Recurse -Filter *.tif -ErrorAction SilentlyContinue) {
     throw "Unexpected .tif produced by the offline smoke test"
