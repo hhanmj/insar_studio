@@ -60,6 +60,8 @@ All under the user-supplied `--output-root` (never inside the exe):
 
 - `<output_root>/<region_safe_name>/07_reports/<region_safe_name>_data_preparation_report.json`
 - the matching `.md` report.
+- `<output_root>/<region_safe_name>/07_reports/<region_safe_name>_manifest.csv`
+  (the flat prepare-run manifest added in Task 026).
 
 File logging (`app.log` / `task.log` / `events.jsonl` / `errors.log`) is written
 **only** when `configure_region_logging` / `configure_global_logging` is called;
@@ -165,3 +167,23 @@ Observations / follow-ups:
   extraction; evaluate if startup latency matters.
 - Build ran from an elevated shell (PyInstaller prints a deprecation notice);
   prefer a non-admin terminal for future builds.
+
+## 11. Task 027 rebuild + manifest verification
+
+Rebuilt `dist/insar-prep.exe` from the current code (which includes the Task 026
+`manifest.csv`) with `scripts/build_windows_exe.ps1` and re-ran the smoke package:
+
+- The rebuilt one-file exe is **~28 MB**; `--help`, `--version`
+  (`insar-prep 0.1.0`), and `prepare --help` all exit 0.
+- The build's offline `prepare` smoke run now also prints the `Manifest:` path,
+  confirming the frozen exe carries the manifest output.
+- `scripts/make_windows_smoke_package.ps1` was extended so the generated
+  `run_smoke_test.ps1` additionally asserts: the `prepare` stdout contains
+  `Manifest:`; `<region>_manifest.csv` exists in `07_reports`; the manifest's
+  first line is the fixed header
+  `section,item_type,item_id,item_name,status,path,value,notes`; and the manifest
+  inventories the `workflow`, `scene`, `orbit`, `dem`, `gacos`, and `report`
+  sections — alongside the existing no-`.tif` and untouched-GACOS-inputs checks.
+- Still offline only; no installer, signing, upload, or release. Build artifacts
+  (`build/`, `dist/`, `*.spec`, `*.exe`) and `smoke_package/` remain git-ignored
+  and were not committed.

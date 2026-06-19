@@ -117,7 +117,12 @@ Or run the CLI manually:
 ```text
 output\shiliushubao_demo\07_reports\shiliushubao_demo_data_preparation_report.json
 output\shiliushubao_demo\07_reports\shiliushubao_demo_data_preparation_report.md
+output\shiliushubao_demo\07_reports\shiliushubao_demo_manifest.csv
 ```
+
+The `manifest.csv` is a flat inventory of this run, with the fixed header
+`section,item_type,item_id,item_name,status,path,value,notes` and rows for the
+workflow, scenes, orbit/DEM/GACOS modules, and the generated report files.
 
 The run is fully offline: it never downloads data; contacts ASF, OpenTopography,
 or GACOS; creates a real DEM `.tif`; or moves/deletes your input files.
@@ -154,24 +159,44 @@ Invoke-Checked "exe prepare --help" { & $exe prepare --help | Out-Null }
 $gacos = Join-Path $PSScriptRoot "input\gacos"
 $before = Get-ChildItem $gacos | ForEach-Object { "$($_.Name):$($_.Length)" } | Sort-Object
 
-Invoke-Checked "exe prepare (full offline workflow)" {
-    & $exe prepare `
-      --cart .\input\asf_urls.txt `
-      --region-name "Shiliushubao Demo" `
-      --output-root .\output `
-      --orbit-dir .\input\orbits `
-      --dem-plan `
-      --bbox 110.1 30.8 110.6 31.2 `
-      --gacos-plan `
-      --gacos-import-dir .\input\gacos
-}
+# Capture stdout so we can assert the printed report paths (incl. Manifest).
+$prepareOut = & $exe prepare `
+  --cart .\input\asf_urls.txt `
+  --region-name "Shiliushubao Demo" `
+  --output-root .\output `
+  --orbit-dir .\input\orbits `
+  --dem-plan `
+  --bbox 110.1 30.8 110.6 31.2 `
+  --gacos-plan `
+  --gacos-import-dir .\input\gacos 2>&1
+if ($LASTEXITCODE -ne 0) { throw "exe prepare (full offline workflow) failed (exit $LASTEXITCODE)" }
+$prepareText = ($prepareOut | Out-String)
+Write-Host "[OK] exe prepare (full offline workflow)" -ForegroundColor Green
+
+if ($prepareText -notmatch "Manifest:") { throw "stdout did not report a Manifest path" }
+Write-Host "[OK] stdout reports a Manifest path" -ForegroundColor Green
 
 $reportDir = Join-Path $PSScriptRoot "output\shiliushubao_demo\07_reports"
 $json = Join-Path $reportDir "shiliushubao_demo_data_preparation_report.json"
 $md = Join-Path $reportDir "shiliushubao_demo_data_preparation_report.md"
-if (-not (Test-Path $json)) { throw "JSON report missing: $json" }
-if (-not (Test-Path $md)) { throw "Markdown report missing: $md" }
-Write-Host "[OK] JSON + Markdown reports present" -ForegroundColor Green
+$manifest = Join-Path $reportDir "shiliushubao_demo_manifest.csv"
+foreach ($file in @($json, $md, $manifest)) {
+    if (-not (Test-Path $file)) { throw "Report file missing: $file" }
+}
+Write-Host "[OK] JSON + Markdown + manifest reports present" -ForegroundColor Green
+
+# The manifest header is a fixed contract; do not let it drift.
+$expectedHeader = "section,item_type,item_id,item_name,status,path,value,notes"
+$header = Get-Content $manifest -TotalCount 1
+if ($header -ne $expectedHeader) { throw "Unexpected manifest header: $header" }
+Write-Host "[OK] manifest header is the fixed 8-column contract" -ForegroundColor Green
+
+# Every workflow section must be inventoried (each is the first CSV column).
+$manifestText = Get-Content $manifest -Raw
+foreach ($section in @("workflow", "scene", "orbit", "dem", "gacos", "report")) {
+    if ($manifestText -notmatch "(?m)^$section,") { throw "manifest missing section: $section" }
+}
+Write-Host "[OK] manifest covers workflow/scene/orbit/dem/gacos/report" -ForegroundColor Green
 
 if (Get-ChildItem -Path $PSScriptRoot -Recurse -Filter *.tif -ErrorAction SilentlyContinue) {
     throw "Unexpected .tif produced by the offline smoke test"

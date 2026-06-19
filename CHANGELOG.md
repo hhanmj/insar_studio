@@ -259,6 +259,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ReportError` (`REP001`) on write failure. The success stdout now also prints
   the `Manifest:` path; `README.md` documents the new output. No business-module,
   CLI-flag, or `pyproject` version changes; the version stays `0.1.0`.
+- Windows exe smoke test verifies the manifest output (Task 027): rebuilt the
+  one-file `dist/insar-prep.exe` from the current code with
+  `scripts/build_windows_exe.ps1` (full quality gate green; exe `--version` still
+  `insar-prep 0.1.0`; ~28 MB) so the frozen exe now carries the Task 026
+  `manifest.csv`. `scripts/make_windows_smoke_package.ps1` was extended so the
+  generated `run_smoke_test.ps1` captures the `prepare` stdout and additionally
+  asserts: stdout reports a `Manifest:` path; `<region>_manifest.csv` exists in
+  `07_reports`; the manifest's first line is the fixed header
+  `section,item_type,item_id,item_name,status,path,value,notes`; and the manifest
+  inventories the `workflow`, `scene`, `orbit`, `dem`, `gacos`, and `report`
+  sections (alongside the existing no-`.tif` and untouched-GACOS-input checks).
+  `docs/windows_exe_smoke_test.md` and `docs/packaging_readiness.md` document the
+  manifest verification. Offline only; no business-module, CLI, test-logic, or
+  `pyproject` version changes; no new dependencies; build/`dist`/`*.spec`/`*.exe`
+  and `smoke_package/` stay git-ignored and uncommitted.
 
 ### Release readiness
 
