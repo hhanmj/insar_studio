@@ -10,6 +10,7 @@ deleting, or modifying the user's GACOS products.
 
 from __future__ import annotations
 
+import csv
 import json
 import socket
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 
 from insar_prep.cli.main import main
 from insar_prep.core.naming import sarscape_safe_name
+from insar_prep.reporting.manifest import MANIFEST_COLUMNS
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 URLS_CART = FIXTURES / "asf" / "urls.txt"
@@ -110,9 +112,12 @@ def test_full_offline_prepare_workflow(
     reports = workspace / safe / "07_reports"
     json_path = reports / f"{safe}_data_preparation_report.json"
     md_path = reports / f"{safe}_data_preparation_report.md"
+    manifest_path = reports / f"{safe}_manifest.csv"
     assert json_path.exists()
     assert md_path.exists()
+    assert manifest_path.exists()
     assert json_path.parent.name == "07_reports"
+    assert manifest_path.parent.name == "07_reports"
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
     sections = {section["title"]: section for section in data["sections"]}
@@ -122,6 +127,17 @@ def test_full_offline_prepare_workflow(
     markdown = md_path.read_text(encoding="utf-8")
     for expected in _EXPECTED_SECTIONS:
         assert f"## {expected}" in markdown
+
+    # The manifest is a flat CSV inventory of this run, with a stable header and
+    # rows for the scenes, every enabled module, and the generated report files.
+    with manifest_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == MANIFEST_COLUMNS
+        manifest_rows = list(reader)
+    manifest_sections = {row["section"] for row in manifest_rows}
+    assert {"scene", "orbit", "dem", "gacos", "report"} <= manifest_sections
+    report_item_types = {row["item_type"] for row in manifest_rows if row["section"] == "report"}
+    assert {"json_report", "markdown_report", "manifest_csv"} <= report_item_types
 
     # Orbit matching and GACOS import both reach a "ready" state with these inputs.
     assert sections["Orbit matching"]["summary"]["matched"] == 2
@@ -138,10 +154,12 @@ def test_full_offline_prepare_workflow(
     assert not (workspace / safe / "05_atmosphere").exists()
     assert not (workspace / safe / "06_sarscape_ready").exists()
 
-    # The CLI prints both report paths on success.
+    # The CLI prints the JSON, Markdown, and manifest paths on success.
     out = capsys.readouterr().out
     assert str(json_path) in out
     assert str(md_path) in out
+    assert "Manifest:" in out
+    assert str(manifest_path) in out
 
 
 def test_prepare_workflow_handles_output_root_with_spaces(
@@ -170,6 +188,8 @@ def test_prepare_workflow_handles_output_root_with_spaces(
     reports = workspace / safe / "07_reports"
     assert (reports / f"{safe}_data_preparation_report.json").exists()
     assert (reports / f"{safe}_data_preparation_report.md").exists()
+    # The manifest is produced even with no optional modules and a spaced root.
+    assert (reports / f"{safe}_manifest.csv").exists()
     # The space stays in the user-chosen output root, never in the safe names.
     assert " " in str(workspace)
     assert " " not in safe

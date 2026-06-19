@@ -95,18 +95,26 @@ or `--region-name` never leak into generated names.
 
 ## Where the report is written
 
-Both reports are written, with SARscape-safe names, under:
+All outputs are written, with SARscape-safe names, under:
 
 ```text
 <output_root>/<region_safe_name>/07_reports/
   <region_safe_name>_data_preparation_report.json
   <region_safe_name>_data_preparation_report.md
+  <region_safe_name>_manifest.csv
 ```
 
 The report consolidates each enabled module into its own section (Scene
 consistency, Orbit matching, DEM planning, DEM conversion, GACOS request
 planning, GACOS import check) plus an aggregated **Next actions** checklist and an
 overall `ready` / `ready_with_warnings` / `blocked` status.
+
+The `manifest.csv` is a flat, row-based inventory of this `prepare` run, with the
+fixed columns `section,item_type,item_id,item_name,status,path,value,notes`. It
+lists the parsed scenes, each enabled module's plan/check results (orbit, DEM,
+GACOS), and the generated report files; optional modules that were not run appear
+as a single `SKIPPED` row. It is a preparation-run inventory, **not** a SARscape
+project file, and it never implies any real download was performed.
 
 ## What this tool does **not** do (by design)
 

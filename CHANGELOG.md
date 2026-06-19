@@ -243,6 +243,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new dependencies; no exe / zip / smoke package generated; no real release, tag,
   or upload; the full `pytest`, `ruff check`, and `ruff format --check` quality
   gate stays green.
+- `insar-prep prepare` (Task 026) now also writes a flat `manifest.csv` next to
+  the JSON + Markdown report in `07_reports`, named
+  `<region_safe_name>_manifest.csv`. A new offline `src/insar_prep/reporting/
+  manifest.py` adds `ManifestRow`, `build_manifest_rows`, `write_manifest_csv`,
+  and `manifest_path_for` (standard-library `csv` only; no new dependencies). The
+  manifest has the fixed columns
+  `section,item_type,item_id,item_name,status,path,value,notes` and inventories
+  the workflow (region, generated time), parsed scenes, orbit matches, DEM
+  request/conversion plans, GACOS request dates and import-check dates, and the
+  generated report files; optional modules that were not run contribute a single
+  `SKIPPED` row. It reuses the objects already built during the run (no
+  re-parsing, re-scanning, or downloads), writes every cell credential-masked via
+  `mask_text`, uses `newline=""` for cross-platform-stable CSV, and raises
+  `ReportError` (`REP001`) on write failure. The success stdout now also prints
+  the `Manifest:` path; `README.md` documents the new output. No business-module,
+  CLI-flag, or `pyproject` version changes; the version stays `0.1.0`.
 
 ### Release readiness
 

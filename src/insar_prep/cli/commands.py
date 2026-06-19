@@ -37,6 +37,11 @@ from insar_prep.providers.gacos import (
 from insar_prep.providers.orbit import match_orbits_for_scenes, scan_orbit_directory
 from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.reporting.generator import build_data_preparation_report, save_report
+from insar_prep.reporting.manifest import (
+    build_manifest_rows,
+    manifest_path_for,
+    write_manifest_csv,
+)
 
 logger = get_logger("cli.prepare")
 
@@ -309,15 +314,42 @@ def run_prepare(args: argparse.Namespace) -> int:
         gacos_import_report=gacos_import_report,
     )
     output = save_report(report, args.output_root)
+
+    # Write a flat manifest.csv alongside the JSON + Markdown report, reusing the
+    # objects already built above (no re-parsing, re-scanning, or downloads).
+    try:
+        manifest_path = manifest_path_for(output.json_path.parent, region_safe_name)
+        manifest_rows = build_manifest_rows(
+            region_id=region_id,
+            region_safe_name=region_safe_name,
+            report=report,
+            scenes=scenes,
+            scene_check_report=scene_report,
+            orbit_match_report=orbit_report,
+            dem_planning_report=dem_planning_report,
+            dem_conversion_report=dem_conversion_report,
+            gacos_planning_report=gacos_planning_report,
+            gacos_import_report=gacos_import_report,
+            json_report_path=output.json_path,
+            markdown_report_path=output.markdown_path,
+            manifest_csv_path=manifest_path,
+        )
+        write_manifest_csv(manifest_path, manifest_rows)
+    except InsarPrepError as exc:
+        logger.error("failed to write manifest CSV: %s", exc)
+        return _EXIT_ERROR
+
     logger.info(
-        "wrote data preparation report: %s and %s",
+        "wrote data preparation report: %s, %s and manifest %s",
         output.json_path,
         output.markdown_path,
+        manifest_path,
     )
     # User-facing confirmation on stdout (no print(); Ruff T20 stays satisfied).
     sys.stdout.write(
         "Data preparation report written:\n"
         f"JSON: {output.json_path}\n"
         f"Markdown: {output.markdown_path}\n"
+        f"Manifest: {manifest_path}\n"
     )
     return _EXIT_OK

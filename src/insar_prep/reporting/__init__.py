@@ -14,6 +14,14 @@ from insar_prep.reporting.generator import (
     render_report_markdown,
     save_report,
 )
+from insar_prep.reporting.manifest import (
+    MANIFEST_COLUMNS,
+    MANIFEST_FILENAME_SUFFIX,
+    ManifestRow,
+    build_manifest_rows,
+    manifest_path_for,
+    write_manifest_csv,
+)
 from insar_prep.reporting.types import (
     DataPreparationReport,
     ReportIssue,
@@ -23,13 +31,19 @@ from insar_prep.reporting.types import (
 )
 
 __all__ = [
+    "MANIFEST_COLUMNS",
+    "MANIFEST_FILENAME_SUFFIX",
     "REPORTS_SUBDIR",
     "DataPreparationReport",
+    "ManifestRow",
     "ReportIssue",
     "ReportOutput",
     "ReportSection",
     "ReportStatus",
     "build_data_preparation_report",
+    "build_manifest_rows",
+    "manifest_path_for",
     "render_report_markdown",
     "save_report",
+    "write_manifest_csv",
 ]
