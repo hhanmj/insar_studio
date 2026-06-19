@@ -118,11 +118,15 @@ Or run the CLI manually:
 output\shiliushubao_demo\07_reports\shiliushubao_demo_data_preparation_report.json
 output\shiliushubao_demo\07_reports\shiliushubao_demo_data_preparation_report.md
 output\shiliushubao_demo\07_reports\shiliushubao_demo_manifest.csv
+output\shiliushubao_demo\07_reports\shiliushubao_demo_warnings.csv
 ```
 
 The `manifest.csv` is a flat inventory of this run, with the fixed header
 `section,item_type,item_id,item_name,status,path,value,notes` and rows for the
-workflow, scenes, orbit/DEM/GACOS modules, and the generated report files.
+workflow, scenes, orbit/DEM/GACOS modules, and the generated report files. The
+`warnings.csv` summarizes only the problems (WARNING/ERROR), with the fixed
+header `severity,section,item_type,item_id,item_name,code,message,path,action`;
+when nothing is wrong it contains a single INFO "no warnings" summary row.
 
 The run is fully offline: it never downloads data; contacts ASF, OpenTopography,
 or GACOS; creates a real DEM `.tif`; or moves/deletes your input files.
@@ -176,14 +180,18 @@ Write-Host "[OK] exe prepare (full offline workflow)" -ForegroundColor Green
 if ($prepareText -notmatch "Manifest:") { throw "stdout did not report a Manifest path" }
 Write-Host "[OK] stdout reports a Manifest path" -ForegroundColor Green
 
+if ($prepareText -notmatch "Warnings:") { throw "stdout did not report a Warnings path" }
+Write-Host "[OK] stdout reports a Warnings path" -ForegroundColor Green
+
 $reportDir = Join-Path $PSScriptRoot "output\shiliushubao_demo\07_reports"
 $json = Join-Path $reportDir "shiliushubao_demo_data_preparation_report.json"
 $md = Join-Path $reportDir "shiliushubao_demo_data_preparation_report.md"
 $manifest = Join-Path $reportDir "shiliushubao_demo_manifest.csv"
-foreach ($file in @($json, $md, $manifest)) {
+$warnings = Join-Path $reportDir "shiliushubao_demo_warnings.csv"
+foreach ($file in @($json, $md, $manifest, $warnings)) {
     if (-not (Test-Path $file)) { throw "Report file missing: $file" }
 }
-Write-Host "[OK] JSON + Markdown + manifest reports present" -ForegroundColor Green
+Write-Host "[OK] JSON + Markdown + manifest + warnings reports present" -ForegroundColor Green
 
 # The manifest header is a fixed contract; do not let it drift.
 $expectedHeader = "section,item_type,item_id,item_name,status,path,value,notes"
@@ -197,6 +205,14 @@ foreach ($section in @("workflow", "scene", "orbit", "dem", "gacos", "report")) 
     if ($manifestText -notmatch "(?m)^$section,") { throw "manifest missing section: $section" }
 }
 Write-Host "[OK] manifest covers workflow/scene/orbit/dem/gacos/report" -ForegroundColor Green
+
+# warnings.csv is the problem summary; its header is a fixed contract too.
+$expectedWarningsHeader = "severity,section,item_type,item_id,item_name,code,message,path,action"
+$warningsHeader = Get-Content $warnings -TotalCount 1
+if ($warningsHeader -ne $expectedWarningsHeader) {
+    throw "Unexpected warnings header: $warningsHeader"
+}
+Write-Host "[OK] warnings header is the fixed 9-column contract" -ForegroundColor Green
 
 if (Get-ChildItem -Path $PSScriptRoot -Recurse -Filter *.tif -ErrorAction SilentlyContinue) {
     throw "Unexpected .tif produced by the offline smoke test"

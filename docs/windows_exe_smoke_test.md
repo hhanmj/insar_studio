@@ -70,17 +70,21 @@ The script reports `SMOKE TEST PASSED` after confirming:
 - the exe exits with code `0` for every command;
 - the reports exist at
   `output\shiliushubao_demo\07_reports\shiliushubao_demo_data_preparation_report.json`,
-  the matching `.md`, and `shiliushubao_demo_manifest.csv`;
-- the `prepare` stdout reports a `Manifest:` path;
+  the matching `.md`, `shiliushubao_demo_manifest.csv`, and
+  `shiliushubao_demo_warnings.csv`;
+- the `prepare` stdout reports both a `Manifest:` and a `Warnings:` path;
 - the manifest's first line is the fixed header
   `section,item_type,item_id,item_name,status,path,value,notes`;
 - the manifest inventories every workflow section (`workflow`, `scene`, `orbit`,
   `dem`, `gacos`, `report`);
+- the warnings' first line is the fixed header
+  `severity,section,item_type,item_id,item_name,code,message,path,action`;
 - no real DEM `.tif` was produced;
 - the `input\gacos` files were not moved, deleted, or modified.
 
-The `manifest.csv` is produced by the `prepare` workflow added in Task 026; this
-smoke test (Task 027) verifies the rebuilt exe carries that output.
+The `manifest.csv` is produced by the `prepare` workflow added in Task 026 and the
+`warnings.csv` problem summary by Task 028; this smoke test verifies the rebuilt
+exe carries both outputs.
 
 ## 6. FAQ / troubleshooting
 

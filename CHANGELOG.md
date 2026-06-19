@@ -274,6 +274,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest verification. Offline only; no business-module, CLI, test-logic, or
   `pyproject` version changes; no new dependencies; build/`dist`/`*.spec`/`*.exe`
   and `smoke_package/` stay git-ignored and uncommitted.
+- `insar-prep prepare` (Task 028) now also writes a `warnings.csv` next to the
+  JSON + Markdown report and `manifest.csv` in `07_reports`, named
+  `<region_safe_name>_warnings.csv`. A new offline
+  `src/insar_prep/reporting/warnings.py` adds `WarningRow`, `build_warning_rows`,
+  `write_warnings_csv`, and `warnings_path_for` (standard-library `csv` only; no
+  new dependencies). Unlike the full `manifest.csv` inventory, `warnings.csv` is a
+  focused problem summary with the fixed columns
+  `severity,section,item_type,item_id,item_name,code,message,path,action`: it
+  aggregates only the `WARNING`/`ERROR` issues from the scene, orbit, DEM, and
+  GACOS sub-reports (plus the `SCENE_COVERAGE_NOT_CHECKED` limitation note),
+  excludes `OK`/selection/"ready" `INFO` notes, and adds an `action` hint per row;
+  when nothing is wrong it writes a single `INFO` "no warnings" summary row. It
+  reuses the objects already built during the run (no re-parsing, re-scanning, or
+  downloads), masks every cell via `mask_text`, uses `newline=""` for
+  cross-platform-stable CSV, and raises `ReportError` (`REP001`) on write failure.
+  The success stdout now also prints the `Warnings:` path; the Windows smoke test
+  (`scripts/make_windows_smoke_package.ps1` → `run_smoke_test.ps1`) and
+  `docs/windows_exe_smoke_test.md` verify `warnings.csv` and its header; `README.md`
+  documents the new output. No business-module, CLI-flag, or `pyproject` version
+  changes; the version stays `0.1.0`.
 
 ### Release readiness
 

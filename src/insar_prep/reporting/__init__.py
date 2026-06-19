@@ -29,21 +29,35 @@ from insar_prep.reporting.types import (
     ReportSection,
     ReportStatus,
 )
+from insar_prep.reporting.warnings import (
+    WARNINGS_COLUMNS,
+    WARNINGS_FILENAME_SUFFIX,
+    WarningRow,
+    build_warning_rows,
+    warnings_path_for,
+    write_warnings_csv,
+)
 
 __all__ = [
     "MANIFEST_COLUMNS",
     "MANIFEST_FILENAME_SUFFIX",
     "REPORTS_SUBDIR",
+    "WARNINGS_COLUMNS",
+    "WARNINGS_FILENAME_SUFFIX",
     "DataPreparationReport",
     "ManifestRow",
     "ReportIssue",
     "ReportOutput",
     "ReportSection",
     "ReportStatus",
+    "WarningRow",
     "build_data_preparation_report",
     "build_manifest_rows",
+    "build_warning_rows",
     "manifest_path_for",
     "render_report_markdown",
     "save_report",
+    "warnings_path_for",
     "write_manifest_csv",
+    "write_warnings_csv",
 ]

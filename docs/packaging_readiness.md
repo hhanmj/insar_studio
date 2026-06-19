@@ -62,6 +62,8 @@ All under the user-supplied `--output-root` (never inside the exe):
 - the matching `.md` report.
 - `<output_root>/<region_safe_name>/07_reports/<region_safe_name>_manifest.csv`
   (the flat prepare-run manifest added in Task 026).
+- `<output_root>/<region_safe_name>/07_reports/<region_safe_name>_warnings.csv`
+  (the prepare-run problem summary added in Task 028).
 
 File logging (`app.log` / `task.log` / `events.jsonl` / `errors.log`) is written
 **only** when `configure_region_logging` / `configure_global_logging` is called;

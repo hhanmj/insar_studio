@@ -102,6 +102,7 @@ All outputs are written, with SARscape-safe names, under:
   <region_safe_name>_data_preparation_report.json
   <region_safe_name>_data_preparation_report.md
   <region_safe_name>_manifest.csv
+  <region_safe_name>_warnings.csv
 ```
 
 The report consolidates each enabled module into its own section (Scene
@@ -115,6 +116,13 @@ lists the parsed scenes, each enabled module's plan/check results (orbit, DEM,
 GACOS), and the generated report files; optional modules that were not run appear
 as a single `SKIPPED` row. It is a preparation-run inventory, **not** a SARscape
 project file, and it never implies any real download was performed.
+
+The `warnings.csv` is a focused **problem summary** (not the full inventory), with
+the fixed columns
+`severity,section,item_type,item_id,item_name,code,message,path,action`. It lists
+only the `WARNING`/`ERROR` issues found (e.g. duplicate scenes, missing URLs,
+unmatched orbits, missing/empty GACOS products) plus an `action` hint for each;
+when nothing is wrong it contains a single `INFO` "no warnings" summary row.
 
 ## What this tool does **not** do (by design)
 

@@ -42,6 +42,11 @@ from insar_prep.reporting.manifest import (
     manifest_path_for,
     write_manifest_csv,
 )
+from insar_prep.reporting.warnings import (
+    build_warning_rows,
+    warnings_path_for,
+    write_warnings_csv,
+)
 
 logger = get_logger("cli.prepare")
 
@@ -315,8 +320,10 @@ def run_prepare(args: argparse.Namespace) -> int:
     )
     output = save_report(report, args.output_root)
 
-    # Write a flat manifest.csv alongside the JSON + Markdown report, reusing the
-    # objects already built above (no re-parsing, re-scanning, or downloads).
+    # Write a flat manifest.csv and a warnings.csv alongside the JSON + Markdown
+    # report, reusing the objects already built above (no re-parsing, re-scanning,
+    # or downloads). The manifest is the full inventory; warnings.csv summarizes
+    # only the problems.
     try:
         manifest_path = manifest_path_for(output.json_path.parent, region_safe_name)
         manifest_rows = build_manifest_rows(
@@ -335,15 +342,28 @@ def run_prepare(args: argparse.Namespace) -> int:
             manifest_csv_path=manifest_path,
         )
         write_manifest_csv(manifest_path, manifest_rows)
+
+        warnings_path = warnings_path_for(output.json_path.parent, region_safe_name)
+        warning_rows = build_warning_rows(
+            region_safe_name=region_safe_name,
+            scene_check_report=scene_report,
+            orbit_match_report=orbit_report,
+            dem_planning_report=dem_planning_report,
+            dem_conversion_report=dem_conversion_report,
+            gacos_planning_report=gacos_planning_report,
+            gacos_import_report=gacos_import_report,
+        )
+        write_warnings_csv(warnings_path, warning_rows)
     except InsarPrepError as exc:
-        logger.error("failed to write manifest CSV: %s", exc)
+        logger.error("failed to write CSV outputs: %s", exc)
         return _EXIT_ERROR
 
     logger.info(
-        "wrote data preparation report: %s, %s and manifest %s",
+        "wrote data preparation report: %s, %s, manifest %s and warnings %s",
         output.json_path,
         output.markdown_path,
         manifest_path,
+        warnings_path,
     )
     # User-facing confirmation on stdout (no print(); Ruff T20 stays satisfied).
     sys.stdout.write(
@@ -351,5 +371,6 @@ def run_prepare(args: argparse.Namespace) -> int:
         f"JSON: {output.json_path}\n"
         f"Markdown: {output.markdown_path}\n"
         f"Manifest: {manifest_path}\n"
+        f"Warnings: {warnings_path}\n"
     )
     return _EXIT_OK

@@ -20,6 +20,7 @@ import pytest
 from insar_prep.cli.main import main
 from insar_prep.core.naming import sarscape_safe_name
 from insar_prep.reporting.manifest import MANIFEST_COLUMNS
+from insar_prep.reporting.warnings import WARNINGS_COLUMNS
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 URLS_CART = FIXTURES / "asf" / "urls.txt"
@@ -113,11 +114,14 @@ def test_full_offline_prepare_workflow(
     json_path = reports / f"{safe}_data_preparation_report.json"
     md_path = reports / f"{safe}_data_preparation_report.md"
     manifest_path = reports / f"{safe}_manifest.csv"
+    warnings_path = reports / f"{safe}_warnings.csv"
     assert json_path.exists()
     assert md_path.exists()
     assert manifest_path.exists()
+    assert warnings_path.exists()
     assert json_path.parent.name == "07_reports"
     assert manifest_path.parent.name == "07_reports"
+    assert warnings_path.parent.name == "07_reports"
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
     sections = {section["title"]: section for section in data["sections"]}
@@ -139,6 +143,18 @@ def test_full_offline_prepare_workflow(
     report_item_types = {row["item_type"] for row in manifest_rows if row["section"] == "report"}
     assert {"json_report", "markdown_report", "manifest_csv"} <= report_item_types
 
+    # warnings.csv summarizes only problems, with a stable header. The mixed
+    # S1A/S1B stack always yields a SCENE_PLATFORM_MIXED warning here.
+    with warnings_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == WARNINGS_COLUMNS
+        warning_rows = list(reader)
+    warning_codes = {row["code"] for row in warning_rows}
+    assert "SCENE_PLATFORM_MIXED" in warning_codes
+    assert all(row["severity"] in ("INFO", "WARNING", "ERROR") for row in warning_rows)
+    # OK/ready notes never leak into the warnings summary.
+    assert "GACOS_IMPORT_READY" not in warning_codes
+
     # Orbit matching and GACOS import both reach a "ready" state with these inputs.
     assert sections["Orbit matching"]["summary"]["matched"] == 2
     gacos_import = sections["GACOS import check"]
@@ -154,12 +170,14 @@ def test_full_offline_prepare_workflow(
     assert not (workspace / safe / "05_atmosphere").exists()
     assert not (workspace / safe / "06_sarscape_ready").exists()
 
-    # The CLI prints the JSON, Markdown, and manifest paths on success.
+    # The CLI prints the JSON, Markdown, manifest, and warnings paths on success.
     out = capsys.readouterr().out
     assert str(json_path) in out
     assert str(md_path) in out
     assert "Manifest:" in out
     assert str(manifest_path) in out
+    assert "Warnings:" in out
+    assert str(warnings_path) in out
 
 
 def test_prepare_workflow_handles_output_root_with_spaces(
@@ -188,8 +206,58 @@ def test_prepare_workflow_handles_output_root_with_spaces(
     reports = workspace / safe / "07_reports"
     assert (reports / f"{safe}_data_preparation_report.json").exists()
     assert (reports / f"{safe}_data_preparation_report.md").exists()
-    # The manifest is produced even with no optional modules and a spaced root.
+    # The manifest and warnings are produced even with no optional modules.
     assert (reports / f"{safe}_manifest.csv").exists()
+    assert (reports / f"{safe}_warnings.csv").exists()
     # The space stays in the user-chosen output root, never in the safe names.
     assert " " in str(workspace)
     assert " " not in safe
+
+
+def test_prepare_warnings_csv_flags_missing_gacos(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A GACOS import dir missing a date must surface ERROR rows in warnings.csv."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    # Only the first expected date is present; the second is missing entirely.
+    gacos_dir = tmp_path / "gacos_products"
+    gacos_dir.mkdir(parents=True, exist_ok=True)
+    (gacos_dir / "20240101.ztd").write_text("ztd\n", encoding="utf-8")
+    (gacos_dir / "20240101.ztd.rsc").write_text("WIDTH 10\n", encoding="utf-8")
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+            "--gacos-import-dir",
+            str(gacos_dir),
+            "--bbox",
+            "110.1",
+            "30.8",
+            "110.6",
+            "31.2",
+        ]
+    )
+    assert code == 0
+
+    safe = sarscape_safe_name(region)
+    warnings_path = workspace / safe / "07_reports" / f"{safe}_warnings.csv"
+    with warnings_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == WARNINGS_COLUMNS
+        rows = list(reader)
+    codes = {row["code"] for row in rows}
+    assert "GACOS_ZTD_MISSING" in codes
+    assert any(row["severity"] == "ERROR" for row in rows)
+    # The missing-date rows carry an actionable next step and never leak OK notes.
+    missing = next(row for row in rows if row["code"] == "GACOS_ZTD_MISSING")
+    assert missing["action"]
+    assert "GACOS_IMPORT_READY" not in codes
