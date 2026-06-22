@@ -601,6 +601,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/packaging_readiness.md` documents the optional GUI extra. No network, no
   downloads, no real DEM/SLC/GACOS files; no new dependency; version stays
   `0.1.0`; the CLI is unchanged.
+- GUI Beta release readiness and user/smoke guides (Task 044), **documentation
+  only**. Added `docs/gui_beta_user_guide.md` (GUI Beta status; CLI vs `gui`-extra
+  installation; the `uv run --extra gui insar-prep gui` launch and the
+  `[GUI001]` missing-extra message; the four-zone window layout; the step-by-step
+  offline workflow Workspace → Project → Region → AOI → ASF cart → scene check →
+  offline planning → reports with the coded errors surfaced in the status bar —
+  `GUI002`/`GUI003`/`AOI001`/`ASF001`/`ORB001`/`GAC001`; the five-file
+  `07_reports` output set; and the current limitations) and
+  `docs/gui_beta_smoke_test.md` (a pre-delivery/pre-demo checklist: purpose,
+  preconditions, the automated CLI + `gui`-extra quality-gate commands, a manual
+  GUI click-through using the existing offline fixtures, the expected five-file
+  output, an explicit "what must not happen" list — no `.zip`/`.SAFE`/`.tif`, no
+  network, no credentials, no traceback — and troubleshooting). `README.md` links
+  both new docs from the Desktop GUI (beta) section and reiterates that there is no
+  official GUI release/installer/`.exe`. Documentation only: no changes to `src/`,
+  `tests/`, `pyproject.toml`, `uv.lock`, or scripts; no new dependency; no tag and
+  no version change (stays `0.1.0`); no exe/build/dist/smoke_package generated.
 
 ### Release readiness
 

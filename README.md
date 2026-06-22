@@ -313,7 +313,17 @@ status bar reflects the overall result. This completes the offline beta loop
 (Workspace → Project → Region → AOI → ASF cart → scene check → offline planning →
 reports). It performs no downloads and no network access, and — like the CLI — it
 does **not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
-conversion. Those remain intentionally deferred.
+conversion. Those remain intentionally deferred. There is **no** official GUI
+release, installer, or `.exe`; the GUI Beta runs from source via `uv`.
+
+For step-by-step install/launch/usage and a pre-delivery checklist, see:
+
+- [`docs/gui_beta_user_guide.md`](docs/gui_beta_user_guide.md) — GUI Beta user
+  guide (status, installation, launch, window layout, the offline workflow, and
+  current limitations).
+- [`docs/gui_beta_smoke_test.md`](docs/gui_beta_smoke_test.md) — GUI Beta
+  smoke-test checklist (the automated quality gate plus a manual click-through of
+  the offline closed loop).
 
 ## Packaging
 
