@@ -1,5 +1,13 @@
 # Release readiness — v0.1.0 (offline CLI MVP)
 
+> **Superseded.** The project version has since moved to **`0.12.0` (GUI Beta)**.
+> For the current readiness review see
+> [`release_readiness_v0_12_0_gui_beta.md`](release_readiness_v0_12_0_gui_beta.md).
+> This document is retained unchanged as the **v0.1.0 offline CLI MVP baseline**;
+> the `v0.1.0-offline-cli` tag suggestion below remains the baseline reference and
+> is not moved or deleted. Where this page says the version "stays `0.1.0`", read
+> it as the state *at the v0.1.0 baseline*, not the current version.
+
 This document captures the **release-readiness** state of `insar-prep` as the
 `v0.1.0 offline CLI MVP`. It is a readiness review only: it does **not** cut a
 release, build or upload an executable, create a GitHub Release, or change any

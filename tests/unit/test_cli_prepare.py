@@ -52,7 +52,7 @@ def test_version_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "insar-prep 0.1.0" in capsys.readouterr().out
+    assert "insar-prep 0.12.0" in capsys.readouterr().out
 
 
 def test_prepare_help_exits_zero() -> None:

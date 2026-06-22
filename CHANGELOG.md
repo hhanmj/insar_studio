@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet. Future work (for example real ASF/DEM/GACOS download authorization,
+the `v0.12.0-gui-beta` tag, and queue-panel wiring) is tracked in the development
+manual and the release-readiness docs; completed work is recorded under the
+released versions below.
+
+## [0.12.0] - 2026-06-23
+
+### v0.12.0 — GUI Beta
+
+This release marks the **GUI Beta** offline closed loop as a traceable baseline.
+It is a version / documentation / test alignment (no new business features); no
+GitHub Release is published and no tag is created here (the `v0.12.0-gui-beta` tag
+is planned for a later task). What this baseline includes:
+
+- **Offline CLI `prepare` workflow** (ASF cart → scene check → optional
+  orbit/DEM/GACOS planning → reports), fully local with no network.
+- **Five-file report set**: JSON, Markdown, self-contained HTML, `manifest.csv`,
+  and `warnings.csv` under `07_reports/`, with SARscape-safe names and credential
+  masking.
+- **AOI input**: manual bounding box, GeoJSON, and WKT (EPSG:4326 only).
+- **ASF cart import** of Vertex Python scripts, URL text, CSV, and GeoJSON.
+- **Scene consistency check** over the parsed scenes.
+- **Orbit / DEM / GACOS offline planning** (planning only; no `.tif`, no real
+  vertical-datum conversion, no GACOS web submission).
+- **PySide6 GUI Beta** (optional `gui` extra) driving the same offline closed
+  loop by calling the existing core interfaces only.
+- **GUI Beta user guide and smoke-test guide** under `docs/`.
+- Intentionally **no** real ASF/SLC/orbit/DEM download, **no** real DEM
+  vertical-datum conversion, and **no** GACOS web submission.
+
+The detailed, per-task history that comprises this release is listed below.
+
 ### Added
 
 - Core data models (Task 002) under `src/insar_prep/core/`: `Workspace`,
@@ -625,6 +657,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`docs/release_readiness_v0_1_0.md`](docs/release_readiness_v0_1_0.md). The
   version is unchanged and **no** official release is cut here. A future release
   would only need a deliberate tag plus an optional local build/publish step.
+- **v0.12.0 — GUI Beta.** Readiness reviewed in Task 045; see
+  [`docs/release_readiness_v0_12_0_gui_beta.md`](docs/release_readiness_v0_12_0_gui_beta.md).
+  The version is bumped to `0.12.0` and the status is GUI Beta; **no** GitHub
+  Release is cut and **no** tag is created here (the `v0.12.0-gui-beta` tag is
+  planned for Task 046, and the earlier `v0.1.0-offline-cli` baseline is retained).
 
 ## [0.1.0] - 2026-06-18
 

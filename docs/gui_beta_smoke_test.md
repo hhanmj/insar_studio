@@ -48,7 +48,7 @@ uv run ruff format --check .
 
 Expected:
 
-- `insar-prep --version` prints `insar-prep 0.1.0`.
+- `insar-prep --version` prints `insar-prep 0.12.0`.
 - `insar-prep gui --help` shows the GUI subcommand help (it works even without
   PySide6 installed).
 - `pytest` passes, including the offscreen GUI tests (they run, not skip, once the

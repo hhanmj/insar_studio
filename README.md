@@ -9,15 +9,20 @@ Sentinel-1 / InSAR beginners.
   local ASF carts, checks scene consistency, matches local precise orbits, plans
   DEM and GACOS requests, checks already-downloaded GACOS products, and writes a
   beginner-friendly data-preparation report.
-- The current version is an **offline CLI MVP**: every command runs locally with
-  no network, no downloads, and no GUI.
+- The current version (**v0.12.0 GUI Beta**) runs **offline**: the CLI `prepare`
+  workflow and an optional PySide6 GUI Beta both run locally with no network and
+  no downloads.
 
-> Status: **v0.1.0 — offline CLI MVP.** The `insar-prep prepare` workflow is
-> implemented end to end. A one-file Windows exe can be built *locally* for
-> testing, but no official release, installer, or GUI is published yet — those are
-> intentionally deferred. See
+> Current status: **v0.12.0 — GUI Beta.** The offline `insar-prep prepare` CLI
+> workflow is implemented end to end, and an optional PySide6 **GUI Beta** drives
+> the same offline closed loop (install it with `uv sync --extra gui`). Real
+> ASF/DEM/GACOS downloads and real DEM vertical-datum conversion are still **not**
+> implemented, and there is **no** official GUI release, installer, or `.exe`. A
+> one-file Windows CLI exe can be built *locally* for testing only. See
+> [`docs/release_readiness_v0_12_0_gui_beta.md`](docs/release_readiness_v0_12_0_gui_beta.md)
+> for the current readiness review, and
 > [`docs/release_readiness_v0_1_0.md`](docs/release_readiness_v0_1_0.md) for the
-> full release-readiness review and the supported / not-supported feature lists.
+> previous v0.1.0 offline CLI MVP baseline.
 
 ## Requirements
 
@@ -338,8 +343,10 @@ are never committed). See:
   PyInstaller command, and the build result.
 - [`docs/windows_exe_smoke_test.md`](docs/windows_exe_smoke_test.md) — how to
   generate and run the local Windows smoke-test package.
+- [`docs/release_readiness_v0_12_0_gui_beta.md`](docs/release_readiness_v0_12_0_gui_beta.md)
+  — the current v0.12.0 GUI Beta release-readiness review and checklist.
 - [`docs/release_readiness_v0_1_0.md`](docs/release_readiness_v0_1_0.md) — the
-  v0.1.0 offline CLI MVP release-readiness review and checklist.
+  previous v0.1.0 offline CLI MVP baseline release-readiness review (superseded).
 
 ## Development
 
