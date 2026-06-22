@@ -33,6 +33,13 @@ uv sync
 This creates the virtual environment and installs `insar-prep` plus its dev
 tools. After syncing, run the CLI via `uv run insar-prep ...`.
 
+The desktop GUI is optional and **not** installed by default. To include it,
+add the `gui` extra (this pulls in PySide6):
+
+```bash
+uv sync --extra gui
+```
+
 ## Basic commands
 
 ```bash
@@ -175,7 +182,9 @@ The current offline MVP never performs any of the following:
 - Submit, scrape, or automate the GACOS web service.
 - Perform real DEM vertical-datum conversion (it only *plans* the steps; no
   GDAL / rasterio / pyproj, no geoid download, no `.tif` files are created).
-- Provide a GUI.
+- Provide a full GUI workflow. (An optional GUI *skeleton* exists behind the
+  `gui` extra, but it is a read-only shell that runs no workflow, no downloads,
+  and no network access — see [Desktop GUI (beta)](#desktop-gui-beta).)
 
 It also never reads accounts, stores credentials, or moves / deletes / renames
 your input files.
@@ -242,6 +251,7 @@ Region names and generated paths are normalized to **SARscape-safe** names:
 ```text
 src/insar_prep/      # core package (importable as insar_prep)
   cli/               # command-line interface (`prepare` workflow)
+  gui/               # optional PySide6 desktop GUI (beta skeleton; `gui` extra)
   core/              # data models, naming, logging, errors, events
   processing/        # AOI handling
   providers/         # asf, orbit, dem, gacos (all offline/local)
@@ -257,6 +267,27 @@ tests/
 
 See `DEVELOPMENT_MANUAL.md`, `CURSOR_OPUS_GUIDE.md`, and
 `insar_prep_project_rules.mdc` for design, hard constraints, and the task roadmap.
+
+## Desktop GUI (beta)
+
+A desktop GUI is available as an early **beta skeleton**. It is optional: the
+offline CLI never needs it, and PySide6 is installed only via the `gui` extra.
+
+```bash
+uv sync --extra gui
+uv run --extra gui insar-prep gui
+```
+
+If PySide6 is not installed, `insar-prep gui` exits with a clear, single-line
+message (`PySide6 is required for the GUI. Install with: uv sync --extra gui`)
+and a non-zero status; every other CLI command keeps working without PySide6.
+
+The current GUI is a **read-only shell**. It shows the main-window layout — a
+Workspace / Project / Region tree, the Region workflow steps, a task-queue / log
+panel, and a warnings/errors status bar — but does **not** run any workflow yet.
+It performs no downloads and no network access, and — like the CLI — it does
+**not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
+conversion. Those remain intentionally deferred.
 
 ## Packaging
 

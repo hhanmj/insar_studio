@@ -28,6 +28,7 @@ def test_expected_codes_present() -> None:
         "GAC001",
         "GAC002",
         "REP001",
+        "GUI001",
     }
     assert {code.value for code in ErrorCode} == expected
 

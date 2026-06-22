@@ -18,6 +18,13 @@ dependencies = [
     "shapely>=2",
 ]
 
+[project.optional-dependencies]
+# Desktop GUI (beta skeleton). Optional: the offline CLI never needs PySide6.
+# Install with: uv sync --extra gui
+gui = [
+    "PySide6>=6.7",
+]
+
 [project.urls]
 Homepage = "https://github.com/hhanmj/insar_assistant"
 Repository = "https://github.com/hhanmj/insar_assistant"

@@ -11,6 +11,7 @@ API calls, no credentials, and no real DEM conversion. No ``print()`` is used
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,6 +23,7 @@ from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InputValidationError, InsarPrepError
 from insar_prep.core.logging import get_logger
 from insar_prep.core.naming import sarscape_safe_name
+from insar_prep.gui import PYSIDE6_MISSING_MESSAGE
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 from insar_prep.processing.aoi_import import load_aoi_from_geojson, load_aoi_from_wkt
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
@@ -528,3 +530,36 @@ def run_plan_asf_downloads(args: argparse.Namespace) -> int:
         )
         return _EXIT_ERROR
     return _EXIT_OK
+
+
+def add_gui_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``gui`` subcommand (PySide6 desktop GUI, beta skeleton)."""
+    parser = subparsers.add_parser(
+        "gui",
+        help="Launch the desktop GUI (beta skeleton; requires the optional 'gui' extra).",
+        description=(
+            "Launch the insar-prep desktop GUI (beta skeleton). It requires the "
+            "optional PySide6 dependency; install it with 'uv sync --extra gui'. The "
+            "GUI is offline and read-only: it performs no downloads and runs no "
+            "network access."
+        ),
+    )
+    return parser
+
+
+def run_gui(args: argparse.Namespace) -> int:
+    """Launch the PySide6 GUI. Returns a process exit code.
+
+    PySide6 is an optional dependency (the ``gui`` extra). Its availability is
+    checked without importing it, so a missing GUI extra yields a clear,
+    single-line message and a non-zero exit code instead of a traceback.
+    """
+    if importlib.util.find_spec("PySide6") is None:
+        # User-visible error carries a stable error code (manual section 30).
+        sys.stderr.write(f"[{ErrorCode.GUI001.value}] {PYSIDE6_MISSING_MESSAGE}\n")
+        return _EXIT_ERROR
+    # Imported lazily: this pulls in PySide6, so it must only run once the
+    # availability check above has passed.
+    from insar_prep.gui.app import launch_gui
+
+    return launch_gui()

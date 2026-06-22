@@ -455,6 +455,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new dry-run plan smoke. Offline only; no business-module, CLI, test-logic, or
   `pyproject` version changes; no new dependency; build/`dist`/`*.spec`/`*.exe`
   and `smoke_package/` stay git-ignored and uncommitted.
+- PySide6 GUI skeleton (Task 037): a new **optional** desktop GUI behind the
+  `gui` extra. A new `src/insar_prep/gui/` package adds the application launcher
+  (`app.py`: `create_application` / `launch_gui`), the `MainWindow`
+  (`main_window.py`) four-zone shell, and four placeholder widgets — `widgets/
+  project_tree.py` (Workspace / Project / Region tree), `widgets/workflow_steps.py`
+  (Region workflow steps), `widgets/queue_log_panel.py` (task queue + read-only
+  log), and `widgets/status_bar.py` (warnings/errors bar starting at `Ready`).
+  Shared plain constants (`WINDOW_TITLE`, `WORKFLOW_STEPS`,
+  `PYSIDE6_MISSING_MESSAGE`) live in `gui/__init__.py` so they import without
+  PySide6. A new `insar-prep gui` subcommand (`cli/commands.py` + `cli/main.py`)
+  launches it, checking PySide6 via `importlib.util.find_spec` *without*
+  importing it: when the `gui` extra is missing it writes a clear single-line
+  message tagged with the new `GUI001` error code (added to
+  `core/error_codes.py`) and exits non-zero (no traceback), and the GUI modules
+  are imported lazily only after that check passes. PySide6 is an optional dependency
+  (`[project.optional-dependencies] gui = ["PySide6>=6.7"]`; `uv.lock` updated),
+  so the plain CLI (`--help`, `--version`, `prepare --help`,
+  `plan-asf-downloads --help`) never needs it. The GUI is a read-only skeleton:
+  it holds no business logic, runs no workflow, and performs no network or
+  downloads — real ASF/DEM/GACOS download and DEM vertical-datum conversion stay
+  deferred. Added `tests/unit/test_gui_entry.py` (constants import without
+  PySide6, subcommand registration, `--help` for every command without PySide6,
+  the missing-extra error path via a monkeypatched `find_spec`, and a headless
+  `offscreen` `MainWindow` smoke test that skips when PySide6 is absent); the
+  existing suite stays green. `README.md` documents the GUI beta (install/launch
+  and the read-only scope). No business-module changes; no version change (stays
+  `0.1.0`); no exe/build/dist/spec/smoke_package generated.
 
 ### Release readiness
 

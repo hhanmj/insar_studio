@@ -34,6 +34,7 @@ class ErrorCode(StrEnum):
     GAC001 = "GAC001"
     GAC002 = "GAC002"
     REP001 = "REP001"
+    GUI001 = "GUI001"
 
 
 ERROR_CODE_MESSAGES: dict[ErrorCode, str] = {
@@ -58,4 +59,5 @@ ERROR_CODE_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.GAC001: "GACOS date list generation failed.",
     ErrorCode.GAC002: "GACOS product dates are incomplete.",
     ErrorCode.REP001: "Report generation failed.",
+    ErrorCode.GUI001: "GUI dependency (PySide6) is not installed.",
 }
