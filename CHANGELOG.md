@@ -537,6 +537,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   table population, the main-window import flow, and `ASF001`/`GUI002` errors).
   No downloads, no network, no SLC files; no new dependency; version stays
   `0.1.0`; the CLI is unchanged.
+- GUI scene consistency check (Task 041): a new
+  `src/insar_prep/gui/widgets/scene_check_panel.py` (`SceneCheckPanel`) adds a
+  *Run scene check* button plus an optional expected-polarization selector, runs
+  the existing core `check_scene_collection` over the current Region's scenes
+  (the GUI re-implements no checking logic), and displays the total scene count,
+  the error/warning counts, and the full issue list. `main_window.py` adds a
+  guarded `apply_run_scene_check` method that fetches the region's scenes
+  (`GUI002` when no region is selected) and links the resulting
+  `SceneCheckReport` to the bottom warnings/errors bar — showing the error count
+  when there are errors, the warning count when there are warnings, or `Ready`
+  when clean. Added `tests/unit/test_gui_scene_check_panel.py` (offscreen
+  PySide6: totals, empty-collection error, platform-mix warning, expected
+  polarization mismatch, and the main-window status linkage for error / warning /
+  ready / no-region cases). No network, no downloads; no new dependency; version
+  stays `0.1.0`; the CLI is unchanged.
 
 ### Release readiness
 

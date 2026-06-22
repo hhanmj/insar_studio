@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.models import Aoi, Scene
 from insar_prep.gui import WINDOW_TITLE
@@ -38,9 +39,11 @@ from insar_prep.gui.widgets.aoi_panel import AoiPanel
 from insar_prep.gui.widgets.asf_cart_panel import AsfCartPanel
 from insar_prep.gui.widgets.project_tree import ProjectTreeWidget
 from insar_prep.gui.widgets.queue_log_panel import QueueLogPanel
+from insar_prep.gui.widgets.scene_check_panel import SceneCheckPanel
 from insar_prep.gui.widgets.scene_table import SceneTableWidget
-from insar_prep.gui.widgets.status_bar import StatusBarWidget
+from insar_prep.gui.widgets.status_bar import READY_TEXT, StatusBarWidget
 from insar_prep.gui.widgets.workflow_steps import WorkflowStepsWidget
+from insar_prep.quality.types import CheckSeverity, SceneCheckReport
 
 
 class MainWindow(QMainWindow):
@@ -58,6 +61,8 @@ class MainWindow(QMainWindow):
         self.asf_cart_panel = AsfCartPanel()
         self.asf_cart_panel.import_button.clicked.connect(self._on_import_cart)
         self.scene_table = SceneTableWidget()
+        self.scene_check_panel = SceneCheckPanel()
+        self.scene_check_panel.run_button.clicked.connect(self._on_run_scene_check)
         self.queue_log_panel = QueueLogPanel()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -83,6 +88,7 @@ class MainWindow(QMainWindow):
         self.centre_layout.addWidget(self.aoi_panel)
         self.centre_layout.addWidget(self.asf_cart_panel)
         self.centre_layout.addWidget(self.scene_table)
+        self.centre_layout.addWidget(self.scene_check_panel)
         self.centre_layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -167,6 +173,34 @@ class MainWindow(QMainWindow):
         )
         return True
 
+    def apply_run_scene_check(self) -> SceneCheckReport | None:
+        """Run the scene consistency check on the current region's scenes."""
+        region = self.state.current_region()
+        if region is None:
+            self.status_bar_widget.set_status(
+                str(
+                    InsarPrepError(
+                        "create or select a region before running the scene check",
+                        code=ErrorCode.GUI002,
+                    )
+                )
+            )
+            return None
+        report = self.scene_check_panel.run_check(region.scenes)
+        self._show_report_status(report)
+        return report
+
+    def _show_report_status(self, report: SceneCheckReport) -> None:
+        """Link the scene-check report to the bottom warnings/errors bar."""
+        errors = sum(1 for issue in report.issues if issue.severity is CheckSeverity.ERROR)
+        warnings = sum(1 for issue in report.issues if issue.severity is CheckSeverity.WARNING)
+        if report.has_errors:
+            self.status_bar_widget.set_status(f"Scene check: {errors} error(s)")
+        elif report.has_warnings:
+            self.status_bar_widget.set_status(f"Scene check: {warnings} warning(s)")
+        else:
+            self.status_bar_widget.set_status(READY_TEXT)
+
     # --- dialog handlers ------------------------------------------------------
 
     def _on_new_workspace(self) -> None:
@@ -199,3 +233,6 @@ class MainWindow(QMainWindow):
             self.status_bar_widget.set_status(str(exc))
             return
         self.apply_import_scenes(scenes)
+
+    def _on_run_scene_check(self) -> None:
+        self.apply_run_scene_check()

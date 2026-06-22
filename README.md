@@ -295,9 +295,13 @@ tree marks a Region with `[AOI set]` once one is bound. An **ASF cart import**
 panel parses a locally exported ASF cart (Vertex Python script, URL text, CSV, or
 GeoJSON) with the same core parser as the CLI and lists the resulting scenes
 (scene id, platform, acquisition time, product, beam, polarization, and URL
-status) in a read-only table. It performs no downloads and no network access,
-and — like the CLI — it does **not** implement real ASF/DEM/GACOS downloads or
-real DEM vertical-datum conversion. Those remain intentionally deferred.
+status) in a read-only table. A **scene consistency check** panel runs the same
+core `check_scene_collection` over the imported scenes (with an optional expected
+polarization) and shows the total, the error/warning counts, and the issue list;
+the bottom warnings/errors bar reflects the result (error count, warning count,
+or `Ready`). It performs no downloads and no network access, and — like the CLI —
+it does **not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
+conversion. Those remain intentionally deferred.
 
 ## Packaging
 
