@@ -291,10 +291,13 @@ code). The centre **AOI panel** then defines the current Region's Processing AOI
 from a bounding box, a GeoJSON file, or a WKT string (the three sources are
 mutually exclusive); it reuses the same core AOI importers as the CLI — EPSG:4326
 lon/lat only, no Shapefile/KML/GeoPackage and no coordinate transforms — and the
-tree marks a Region with `[AOI set]` once one is bound. It performs no downloads
-and no network access, and — like the CLI — it does **not** implement real
-ASF/DEM/GACOS downloads or real DEM vertical-datum conversion. Those remain
-intentionally deferred.
+tree marks a Region with `[AOI set]` once one is bound. An **ASF cart import**
+panel parses a locally exported ASF cart (Vertex Python script, URL text, CSV, or
+GeoJSON) with the same core parser as the CLI and lists the resulting scenes
+(scene id, platform, acquisition time, product, beam, polarization, and URL
+status) in a read-only table. It performs no downloads and no network access,
+and — like the CLI — it does **not** implement real ASF/DEM/GACOS downloads or
+real DEM vertical-datum conversion. Those remain intentionally deferred.
 
 ## Packaging
 

@@ -521,6 +521,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/unit/test_gui_state.py`. No Shapefile/KML/GeoPackage, no coordinate
   transforms, no network, no downloads; no new dependency; version stays `0.1.0`;
   the CLI is unchanged.
+- GUI ASF cart import and scene list (Task 040): a new
+  `src/insar_prep/gui/widgets/asf_cart_panel.py` (`AsfCartPanel`) collects a local
+  ASF cart path and parses it into scenes through the existing core parser
+  `parse_asf_cart_file` (Vertex Python script / URL text / CSV / GeoJSON), with
+  empty-path and parser failures surfaced as a coded `ASF001` error; the GUI
+  re-implements no ASF parsing. A new
+  `src/insar_prep/gui/widgets/scene_table.py` (`SceneTableWidget`) renders the
+  parsed scenes read-only (scene id, platform, acquisition time, product, beam,
+  polarization, URL status). `main_window.py` hosts both in the centre column and
+  adds a guarded `apply_import_scenes` method that stores scenes on the current
+  region via `GuiState.set_current_region_scenes`, fills the table, and reports
+  the count (or `GUI002` when no region is selected) in the status bar. Added
+  `tests/unit/test_gui_asf_cart_panel.py` (offscreen PySide6: cart parsing,
+  table population, the main-window import flow, and `ASF001`/`GUI002` errors).
+  No downloads, no network, no SLC files; no new dependency; version stays
+  `0.1.0`; the CLI is unchanged.
 
 ### Release readiness
 
