@@ -216,3 +216,32 @@ re-ran the extended smoke package:
 - Still offline only; no installer, signing, upload, or release. Build artifacts
   (`build/`, `dist/`, `*.spec`, `*.exe`) and `smoke_package/` remain git-ignored
   and were not committed.
+
+## 13. Desktop GUI beta (Tasks 037-043) and packaging scope
+
+The optional PySide6 desktop GUI (`insar-prep gui`) completes its offline beta
+loop in Task 043: Workspace -> Project -> Region -> AOI (bbox / GeoJSON / WKT) ->
+ASF cart import -> scene consistency check -> offline orbit / DEM / GACOS planning
+-> five-file report generation (JSON, Markdown, HTML, `manifest.csv`,
+`warnings.csv`). The GUI calls the existing core interfaces only; it performs no
+downloads, no network access, and no real DEM vertical-datum conversion.
+
+Packaging scope and constraints:
+
+- **PySide6 is an optional extra**, declared as `[project.optional-dependencies]`
+  `gui` in `pyproject.toml` and installed with `uv sync --extra gui`. It is **not**
+  a runtime dependency of the offline CLI, and the current PyInstaller build
+  (`scripts/build_windows_exe.ps1`) freezes the **CLI only** -- PySide6 is not
+  bundled. Freezing the GUI (a much larger Qt bundle) is intentionally out of
+  scope for the `v0.1.0-offline-cli` line.
+- The Windows smoke package (`scripts/make_windows_smoke_package.ps1`) still
+  exercises the **frozen CLI exe** only and is intentionally left unchanged: the
+  GUI is not part of that artifact, so adding GUI steps there would be misleading.
+- The GUI is covered instead by offscreen PySide6 unit tests
+  (`tests/unit/test_gui_*.py`) and an end-to-end beta workflow smoke test
+  (`tests/e2e/test_gui_beta_workflow.py`) that runs with the network blocked and
+  asserts the five report files are produced with no `.tif` / `.zip` / `.SAFE`
+  data created. These run as part of `uv run pytest` (the GUI tests skip
+  automatically when the `gui` extra is not installed).
+- No GUI build artifacts are produced or committed; the version stays `0.1.0` and
+  the `v0.1.0-offline-cli` tag is unchanged.

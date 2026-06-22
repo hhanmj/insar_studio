@@ -579,6 +579,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and import check against a local temp directory, plus the AOI/scenes/region
   error cases). No network, no downloads, no real DEM conversion; no new
   dependency; version stays `0.1.0`; the CLI is unchanged.
+- GUI report generation and beta workflow smoke (Task 043): a new
+  `src/insar_prep/gui/widgets/report_panel.py` (`ReportPanel`) generates the same
+  five-file report set as the CLI — JSON, Markdown, HTML, `manifest.csv` and
+  `warnings.csv` — under a user-supplied output root, by reusing the existing
+  reporting backend only (`build_data_preparation_report` / `save_report`,
+  `save_report_html`, `build_manifest_rows` / `write_manifest_csv`,
+  `build_warning_rows` / `write_warnings_csv`); the GUI re-implements no
+  reporting. `main_window.py` caches the most recent scene / orbit / DEM / GACOS
+  sub-reports as the workflow runs and consolidates them in a guarded
+  `apply_generate_reports` method (requires a region — `GUI002`; requires an
+  output root — `GUI003`; falls back to running the scene check if it was not run
+  yet), then lists the output paths and links the overall status to the bottom
+  bar. This closes the offline beta loop: Workspace → Project → Region → AOI →
+  ASF cart → scene check → offline planning → reports. Added
+  `tests/unit/test_gui_report_panel.py` (offscreen PySide6: five-file set,
+  no `.tif`/`.zip`/`.SAFE`, `GUI002`/`GUI003`, and planning-report consolidation)
+  and `tests/e2e/test_gui_beta_workflow.py` (offscreen PySide6, network blocked:
+  the full closed loop driven through the widget API and again through the
+  `apply_*` API, asserting the five files exist and no data files are created).
+  `docs/packaging_readiness.md` documents the optional GUI extra. No network, no
+  downloads, no real DEM/SLC/GACOS files; no new dependency; version stays
+  `0.1.0`; the CLI is unchanged.
 
 ### Release readiness
 

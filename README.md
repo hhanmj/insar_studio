@@ -305,10 +305,15 @@ against the scenes (showing matched / unmatched counts), builds a DEM request +
 conversion plan (dataset / provider / source & target vertical datum) marked
 **planned only** — no `.tif` is created and no real conversion is performed — and
 builds a GACOS request plan from the scene dates with an optional read-only
-import check of a local GACOS product directory. It performs no downloads and no
-network access, and — like the CLI — it does **not** implement real ASF/DEM/GACOS
-downloads or real DEM vertical-datum conversion. Those remain intentionally
-deferred.
+import check of a local GACOS product directory. Finally, a **Reports** panel
+generates the same five-file set as the CLI — JSON, Markdown, HTML,
+`manifest.csv` and `warnings.csv` — under a chosen output root, consolidating the
+scene/orbit/DEM/GACOS results produced above; the output paths are listed and the
+status bar reflects the overall result. This completes the offline beta loop
+(Workspace → Project → Region → AOI → ASF cart → scene check → offline planning →
+reports). It performs no downloads and no network access, and — like the CLI — it
+does **not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
+conversion. Those remain intentionally deferred.
 
 ## Packaging
 

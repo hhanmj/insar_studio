@@ -15,6 +15,8 @@ are shown in the bottom status bar.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -40,6 +42,7 @@ from insar_prep.gui.widgets.asf_cart_panel import AsfCartPanel
 from insar_prep.gui.widgets.planning_panel import PlanningPanel
 from insar_prep.gui.widgets.project_tree import ProjectTreeWidget
 from insar_prep.gui.widgets.queue_log_panel import QueueLogPanel
+from insar_prep.gui.widgets.report_panel import ReportPanel
 from insar_prep.gui.widgets.scene_check_panel import SceneCheckPanel
 from insar_prep.gui.widgets.scene_table import SceneTableWidget
 from insar_prep.gui.widgets.status_bar import READY_TEXT, StatusBarWidget
@@ -47,7 +50,9 @@ from insar_prep.gui.widgets.workflow_steps import WorkflowStepsWidget
 from insar_prep.providers.dem import DemConversionReport, DemPlanningReport
 from insar_prep.providers.gacos import GacosImportCheckReport, GacosPlanningReport
 from insar_prep.providers.orbit import OrbitMatchReport
+from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.quality.types import CheckSeverity, SceneCheckReport
+from insar_prep.reporting.types import DataPreparationReport
 
 
 class MainWindow(QMainWindow):
@@ -57,6 +62,15 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle(WINDOW_TITLE)
         self.state = GuiState()
+
+        # Most recent sub-reports produced by the workflow panels; consolidated by
+        # the report panel. None until the matching step has been run.
+        self.last_scene_report: SceneCheckReport | None = None
+        self.last_orbit_report: OrbitMatchReport | None = None
+        self.last_dem_planning_report: DemPlanningReport | None = None
+        self.last_dem_conversion_report: DemConversionReport | None = None
+        self.last_gacos_planning_report: GacosPlanningReport | None = None
+        self.last_gacos_import_report: GacosImportCheckReport | None = None
 
         self.project_tree = ProjectTreeWidget()
         self.workflow_steps = WorkflowStepsWidget()
@@ -71,6 +85,8 @@ class MainWindow(QMainWindow):
         self.planning_panel.orbit_button.clicked.connect(self._on_run_orbit_match)
         self.planning_panel.dem_button.clicked.connect(self._on_run_dem_plan)
         self.planning_panel.gacos_button.clicked.connect(self._on_run_gacos_plan)
+        self.report_panel = ReportPanel()
+        self.report_panel.generate_button.clicked.connect(self._on_generate_reports)
         self.queue_log_panel = QueueLogPanel()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -98,6 +114,7 @@ class MainWindow(QMainWindow):
         self.centre_layout.addWidget(self.scene_table)
         self.centre_layout.addWidget(self.scene_check_panel)
         self.centre_layout.addWidget(self.planning_panel)
+        self.centre_layout.addWidget(self.report_panel)
         self.centre_layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -196,6 +213,7 @@ class MainWindow(QMainWindow):
             )
             return None
         report = self.scene_check_panel.run_check(region.scenes)
+        self.last_scene_report = report
         self._show_report_status(report)
         return report
 
@@ -235,6 +253,7 @@ class MainWindow(QMainWindow):
         except InsarPrepError as exc:
             self.status_bar_widget.set_status(str(exc))
             return None
+        self.last_orbit_report = report
         self.status_bar_widget.set_status(
             f"Orbit: {report.matched_scenes}/{report.total_scenes} scene(s) matched"
         )
@@ -257,6 +276,7 @@ class MainWindow(QMainWindow):
         except InsarPrepError as exc:
             self.status_bar_widget.set_status(str(exc))
             return None
+        self.last_dem_planning_report, self.last_dem_conversion_report = reports
         self.status_bar_widget.set_status("DEM plan built (planned only; no .tif created)")
         return reports
 
@@ -280,10 +300,64 @@ class MainWindow(QMainWindow):
         except InsarPrepError as exc:
             self.status_bar_widget.set_status(str(exc))
             return None
-        planning_report, _import_report = reports
+        planning_report, import_report = reports
+        self.last_gacos_planning_report = planning_report
+        self.last_gacos_import_report = import_report
         dates = len(planning_report.plan.unique_dates) if planning_report.plan is not None else 0
         self.status_bar_widget.set_status(f"GACOS plan built (planned only; {dates} date(s))")
         return reports
+
+    def apply_generate_reports(self) -> tuple[DataPreparationReport, list[Path]] | None:
+        """Generate the five-file report set for the current region (planned/offline)."""
+        region = self._require_region("generating reports")
+        if region is None:
+            return None
+        output_root = self.report_panel.output_root()
+        if not output_root:
+            error = InsarPrepError("output root is required", code=ErrorCode.GUI003)
+            self.status_bar_widget.set_status(str(error))
+            return None
+        # Always include a scene-consistency section: reuse the last check if the
+        # user ran one, otherwise run it now from the region's scenes (core call).
+        scene_report = self.last_scene_report
+        if scene_report is None:
+            scene_report = check_scene_collection(region.scenes)
+        try:
+            report, paths = self.report_panel.generate(
+                region_id=region.region_id,
+                region_safe_name=region.region_safe_name,
+                scenes=region.scenes,
+                output_root=output_root,
+                scene_check_report=scene_report,
+                orbit_match_report=self.last_orbit_report,
+                dem_planning_report=self.last_dem_planning_report,
+                dem_conversion_report=self.last_dem_conversion_report,
+                gacos_planning_report=self.last_gacos_planning_report,
+                gacos_import_report=self.last_gacos_import_report,
+            )
+        except InsarPrepError as exc:
+            self.status_bar_widget.set_status(str(exc))
+            return None
+        self._show_generated_report_status(report, paths)
+        return report, paths
+
+    def _show_generated_report_status(
+        self, report: DataPreparationReport, paths: list[Path]
+    ) -> None:
+        """Reflect the generated report set on the bottom warnings/errors bar."""
+        summary = report.summary
+        errors = int(summary.get("error_count", 0))
+        warnings = int(summary.get("warning_count", 0))
+        if report.has_errors:
+            self.status_bar_widget.set_status(
+                f"Reports generated ({len(paths)} files): {errors} error(s)"
+            )
+        elif report.has_warnings:
+            self.status_bar_widget.set_status(
+                f"Reports generated ({len(paths)} files): {warnings} warning(s)"
+            )
+        else:
+            self.status_bar_widget.set_status(f"Reports generated: {len(paths)} files (Ready)")
 
     # --- dialog handlers ------------------------------------------------------
 
@@ -329,3 +403,6 @@ class MainWindow(QMainWindow):
 
     def _on_run_gacos_plan(self) -> None:
         self.apply_run_gacos_plan()
+
+    def _on_generate_reports(self) -> None:
+        self.apply_generate_reports()
