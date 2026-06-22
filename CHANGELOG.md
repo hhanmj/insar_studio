@@ -482,6 +482,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing suite stays green. `README.md` documents the GUI beta (install/launch
   and the read-only scope). No business-module changes; no version change (stays
   `0.1.0`); no exe/build/dist/spec/smoke_package generated.
+- GUI Workspace / Project / Region tree binding (Task 038): the GUI left tree
+  becomes a live, creatable hierarchy. A new PySide6-free
+  `src/insar_prep/gui/state.py` (`GuiState`) holds the current
+  `Workspace -> Project -> Region` as **existing** core models
+  (`insar_prep.core.models`), deriving SARscape-safe names via
+  `sarscape_safe_name` and raising coded errors (`GUI002` for a missing
+  prerequisite, `GUI003` for invalid input — both added to
+  `core/error_codes.py`); it persists nothing to disk and creates no data files.
+  New `src/insar_prep/gui/dialogs/` adds `WorkspaceDialog` / `ProjectDialog` /
+  `RegionDialog` (thin input dialogs). `widgets/project_tree.py` now renders the
+  hierarchy from `GuiState` (a placeholder `Workspace` until one is created), and
+  `main_window.py` gains a toolbar (*New Workspace / New Project / New Region*)
+  plus guarded `apply_new_*` methods that refresh the tree and show success or
+  the coded error in the bottom status bar. The GUI holds no business logic; it
+  only calls existing core models/naming. Added `tests/unit/test_gui_state.py`
+  (headless: create workspace/project/region, precondition `GUI002` and
+  invalid-input `GUI003` errors) and `tests/unit/test_gui_project_tree.py`
+  (offscreen PySide6: tree reflects state, main-window apply methods, error
+  surfaced). `README.md` updated. No real downloads, no network, no DEM
+  conversion; no new runtime dependency (PySide6 stays the optional `gui` extra);
+  version stays `0.1.0`.
 
 ### Release readiness
 

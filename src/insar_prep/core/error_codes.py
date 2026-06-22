@@ -35,6 +35,8 @@ class ErrorCode(StrEnum):
     GAC002 = "GAC002"
     REP001 = "REP001"
     GUI001 = "GUI001"
+    GUI002 = "GUI002"
+    GUI003 = "GUI003"
 
 
 ERROR_CODE_MESSAGES: dict[ErrorCode, str] = {
@@ -60,4 +62,6 @@ ERROR_CODE_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.GAC002: "GACOS product dates are incomplete.",
     ErrorCode.REP001: "Report generation failed.",
     ErrorCode.GUI001: "GUI dependency (PySide6) is not installed.",
+    ErrorCode.GUI002: "GUI workflow step prerequisite is missing.",
+    ErrorCode.GUI003: "GUI input value is invalid.",
 }

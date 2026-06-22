@@ -282,11 +282,13 @@ If PySide6 is not installed, `insar-prep gui` exits with a clear, single-line
 message (`PySide6 is required for the GUI. Install with: uv sync --extra gui`)
 and a non-zero status; every other CLI command keeps working without PySide6.
 
-The current GUI is a **read-only shell**. It shows the main-window layout — a
-Workspace / Project / Region tree, the Region workflow steps, a task-queue / log
-panel, and a warnings/errors status bar — but does **not** run any workflow yet.
-It performs no downloads and no network access, and — like the CLI — it does
-**not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
+The GUI shows the main-window layout — a Workspace / Project / Region tree, the
+Region workflow steps, a task-queue / log panel, and a warnings/errors status
+bar. From the toolbar you can create a **Workspace / Project / Region** (the
+tree updates live; names are normalized with the same SARscape-safe naming as
+the CLI, and precondition/input errors are shown in the status bar with an error
+code). It performs no downloads and no network access, and — like the CLI — it
+does **not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
 conversion. Those remain intentionally deferred.
 
 ## Packaging
