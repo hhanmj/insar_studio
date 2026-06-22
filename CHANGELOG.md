@@ -552,6 +552,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   polarization mismatch, and the main-window status linkage for error / warning /
   ready / no-region cases). No network, no downloads; no new dependency; version
   stays `0.1.0`; the CLI is unchanged.
+- GUI offline planning panels (Task 042): a new
+  `src/insar_prep/gui/widgets/planning_panel.py` (`PlanningPanel`) adds three
+  offline sub-panels for the current Region, each calling existing core
+  interfaces only (the GUI changes no planner logic):
+  - **Orbit** — scans a local orbit (`.EOF`) directory (`scan_orbit_directory`)
+    and matches it to the region's scenes (`match_orbits_for_scenes`), showing
+    matched / unmatched counts;
+  - **DEM** — selects dataset / provider / source & target vertical datum and
+    builds + validates a DEM request plan (`create_dem_request_plan` /
+    `validate_dem_request_plan`) and conversion plan (`create_dem_conversion_plan`
+    / `validate_dem_conversion_plan`), displayed as **planned only** with the
+    computed raw / ellipsoid / SARscape-ready paths — no `.tif` is created and no
+    real vertical-datum conversion is performed;
+  - **GACOS** — builds + validates a request plan from the scene dates
+    (`create_gacos_request_plan` / `validate_gacos_request_plan`) and, when a
+    local product directory is given, runs the read-only import check
+    (`check_gacos_products`).
+  `main_window.py` adds guarded `apply_run_orbit_match` / `apply_run_dem_plan` /
+  `apply_run_gacos_plan` methods that require a current Region (`GUI002`) and
+  surface the core codes for missing inputs (`ORB001` for a missing orbit
+  directory, `AOI001` when no AOI is set, `GAC001` when no scenes are imported),
+  reporting concise planned-only status. Added
+  `tests/unit/test_gui_planning_panel.py` (offscreen PySide6: orbit match with a
+  local `.EOF` fixture, DEM plan that creates no `.tif`, GACOS date generation
+  and import check against a local temp directory, plus the AOI/scenes/region
+  error cases). No network, no downloads, no real DEM conversion; no new
+  dependency; version stays `0.1.0`; the CLI is unchanged.
 
 ### Release readiness
 

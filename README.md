@@ -299,9 +299,16 @@ status) in a read-only table. A **scene consistency check** panel runs the same
 core `check_scene_collection` over the imported scenes (with an optional expected
 polarization) and shows the total, the error/warning counts, and the issue list;
 the bottom warnings/errors bar reflects the result (error count, warning count,
-or `Ready`). It performs no downloads and no network access, and — like the CLI —
-it does **not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
-conversion. Those remain intentionally deferred.
+or `Ready`). An **offline planning** panel then drives the same core planners as
+the CLI for the current Region: it matches a local orbit (`.EOF`) directory
+against the scenes (showing matched / unmatched counts), builds a DEM request +
+conversion plan (dataset / provider / source & target vertical datum) marked
+**planned only** — no `.tif` is created and no real conversion is performed — and
+builds a GACOS request plan from the scene dates with an optional read-only
+import check of a local GACOS product directory. It performs no downloads and no
+network access, and — like the CLI — it does **not** implement real ASF/DEM/GACOS
+downloads or real DEM vertical-datum conversion. Those remain intentionally
+deferred.
 
 ## Packaging
 

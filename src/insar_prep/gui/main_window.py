@@ -37,12 +37,16 @@ from insar_prep.gui.dialogs.workspace_dialog import WorkspaceDialog
 from insar_prep.gui.state import GuiState, workspace_display_name
 from insar_prep.gui.widgets.aoi_panel import AoiPanel
 from insar_prep.gui.widgets.asf_cart_panel import AsfCartPanel
+from insar_prep.gui.widgets.planning_panel import PlanningPanel
 from insar_prep.gui.widgets.project_tree import ProjectTreeWidget
 from insar_prep.gui.widgets.queue_log_panel import QueueLogPanel
 from insar_prep.gui.widgets.scene_check_panel import SceneCheckPanel
 from insar_prep.gui.widgets.scene_table import SceneTableWidget
 from insar_prep.gui.widgets.status_bar import READY_TEXT, StatusBarWidget
 from insar_prep.gui.widgets.workflow_steps import WorkflowStepsWidget
+from insar_prep.providers.dem import DemConversionReport, DemPlanningReport
+from insar_prep.providers.gacos import GacosImportCheckReport, GacosPlanningReport
+from insar_prep.providers.orbit import OrbitMatchReport
 from insar_prep.quality.types import CheckSeverity, SceneCheckReport
 
 
@@ -63,6 +67,10 @@ class MainWindow(QMainWindow):
         self.scene_table = SceneTableWidget()
         self.scene_check_panel = SceneCheckPanel()
         self.scene_check_panel.run_button.clicked.connect(self._on_run_scene_check)
+        self.planning_panel = PlanningPanel()
+        self.planning_panel.orbit_button.clicked.connect(self._on_run_orbit_match)
+        self.planning_panel.dem_button.clicked.connect(self._on_run_dem_plan)
+        self.planning_panel.gacos_button.clicked.connect(self._on_run_gacos_plan)
         self.queue_log_panel = QueueLogPanel()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -89,6 +97,7 @@ class MainWindow(QMainWindow):
         self.centre_layout.addWidget(self.asf_cart_panel)
         self.centre_layout.addWidget(self.scene_table)
         self.centre_layout.addWidget(self.scene_check_panel)
+        self.centre_layout.addWidget(self.planning_panel)
         self.centre_layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -201,6 +210,81 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar_widget.set_status(READY_TEXT)
 
+    def _require_region(self, action: str):
+        """Return the current region, or report a coded GUI002 error and ``None``."""
+        region = self.state.current_region()
+        if region is None:
+            error = InsarPrepError(
+                f"create or select a region before {action}", code=ErrorCode.GUI002
+            )
+            self.status_bar_widget.set_status(str(error))
+        return region
+
+    def apply_run_orbit_match(self) -> OrbitMatchReport | None:
+        """Scan a local orbit directory and match it to the region's scenes."""
+        region = self._require_region("matching orbits")
+        if region is None:
+            return None
+        if not region.scenes:
+            self.status_bar_widget.set_status(
+                str(InsarPrepError("import scenes before matching orbits", code=ErrorCode.GUI002))
+            )
+            return None
+        try:
+            report = self.planning_panel.run_orbit_match(region.scenes)
+        except InsarPrepError as exc:
+            self.status_bar_widget.set_status(str(exc))
+            return None
+        self.status_bar_widget.set_status(
+            f"Orbit: {report.matched_scenes}/{report.total_scenes} scene(s) matched"
+        )
+        return report
+
+    def apply_run_dem_plan(self) -> tuple[DemPlanningReport, DemConversionReport] | None:
+        """Build an offline DEM request + conversion plan for the region's AOI."""
+        region = self._require_region("planning a DEM")
+        if region is None:
+            return None
+        project = self.state.current_project()
+        output_root = project.project_root if project is not None else region.region_root
+        try:
+            reports = self.planning_panel.run_dem_plan(
+                region_id=region.region_id,
+                region_safe_name=region.region_safe_name,
+                processing_aoi=region.aoi,
+                output_root=output_root,
+            )
+        except InsarPrepError as exc:
+            self.status_bar_widget.set_status(str(exc))
+            return None
+        self.status_bar_widget.set_status("DEM plan built (planned only; no .tif created)")
+        return reports
+
+    def apply_run_gacos_plan(
+        self,
+    ) -> tuple[GacosPlanningReport, GacosImportCheckReport | None] | None:
+        """Build an offline GACOS request plan (and optional import check)."""
+        region = self._require_region("planning GACOS")
+        if region is None:
+            return None
+        project = self.state.current_project()
+        output_root = project.project_root if project is not None else region.region_root
+        try:
+            reports = self.planning_panel.run_gacos_plan(
+                region_id=region.region_id,
+                region_safe_name=region.region_safe_name,
+                processing_aoi=region.aoi,
+                scenes=region.scenes,
+                output_root=output_root,
+            )
+        except InsarPrepError as exc:
+            self.status_bar_widget.set_status(str(exc))
+            return None
+        planning_report, _import_report = reports
+        dates = len(planning_report.plan.unique_dates) if planning_report.plan is not None else 0
+        self.status_bar_widget.set_status(f"GACOS plan built (planned only; {dates} date(s))")
+        return reports
+
     # --- dialog handlers ------------------------------------------------------
 
     def _on_new_workspace(self) -> None:
@@ -236,3 +320,12 @@ class MainWindow(QMainWindow):
 
     def _on_run_scene_check(self) -> None:
         self.apply_run_scene_check()
+
+    def _on_run_orbit_match(self) -> None:
+        self.apply_run_orbit_match()
+
+    def _on_run_dem_plan(self) -> None:
+        self.apply_run_dem_plan()
+
+    def _on_run_gacos_plan(self) -> None:
+        self.apply_run_gacos_plan()
