@@ -78,3 +78,16 @@ def test_set_region_aoi_without_region_errors() -> None:
     with pytest.raises(InsarPrepError) as excinfo:
         state.set_current_region_aoi(aoi)
     assert excinfo.value.code == ErrorCode.GUI002
+
+
+def test_set_region_aoi_success_binds_to_current_region() -> None:
+    state = GuiState()
+    state.create_workspace("C:/work")
+    state.add_project("p")
+    region = state.add_region("r")
+    aoi = make_processing_aoi_from_bbox(110.0, 111.0, 30.0, 31.0)
+
+    updated = state.set_current_region_aoi(aoi)
+    assert updated.region_id == region.region_id
+    assert updated.aoi.bbox is not None
+    assert updated.aoi.bbox.east == 111.0

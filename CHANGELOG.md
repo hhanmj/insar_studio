@@ -503,6 +503,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surfaced). `README.md` updated. No real downloads, no network, no DEM
   conversion; no new runtime dependency (PySide6 stays the optional `gui` extra);
   version stays `0.1.0`.
+- GUI AOI input panel (Task 039): a new `src/insar_prep/gui/widgets/aoi_panel.py`
+  (`AoiPanel`) adds a centre-column panel that defines the current Region's
+  Processing AOI from one of three **mutually exclusive** sources — a manual
+  bounding box (W/S/E/N), a GeoJSON file path, or a WKT string — selected via a
+  combo box backed by a `QStackedWidget`. The panel re-implements no parsing: it
+  calls the existing core interfaces `make_processing_aoi_from_bbox`,
+  `load_aoi_from_geojson`, and `load_aoi_from_wkt`, wrapping bad input as a coded
+  `AOI001` error. `main_window.py` now hosts the panel in a scrollable centre
+  column and adds a guarded `apply_set_region_aoi` method (binds the AOI to the
+  current region via `GuiState.set_current_region_aoi`, refreshes the tree so the
+  region shows `[AOI set]`, and reports success or the coded error — `GUI002`
+  when no region is selected — in the status bar). Added
+  `tests/unit/test_gui_aoi_panel.py` (offscreen PySide6: bbox/GeoJSON/WKT build
+  an AOI, invalid bbox/WKT raise `AOI001`, the main window binds the AOI or
+  surfaces `GUI002`/`AOI001`) and a `set_current_region_aoi` success case in
+  `tests/unit/test_gui_state.py`. No Shapefile/KML/GeoPackage, no coordinate
+  transforms, no network, no downloads; no new dependency; version stays `0.1.0`;
+  the CLI is unchanged.
 
 ### Release readiness
 

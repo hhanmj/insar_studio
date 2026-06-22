@@ -17,14 +17,24 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QDialog, QMainWindow, QSplitter, QToolBar, QWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QMainWindow,
+    QScrollArea,
+    QSplitter,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from insar_prep.core.exceptions import InsarPrepError
+from insar_prep.core.models import Aoi
 from insar_prep.gui import WINDOW_TITLE
 from insar_prep.gui.dialogs.project_dialog import ProjectDialog
 from insar_prep.gui.dialogs.region_dialog import RegionDialog
 from insar_prep.gui.dialogs.workspace_dialog import WorkspaceDialog
 from insar_prep.gui.state import GuiState, workspace_display_name
+from insar_prep.gui.widgets.aoi_panel import AoiPanel
 from insar_prep.gui.widgets.project_tree import ProjectTreeWidget
 from insar_prep.gui.widgets.queue_log_panel import QueueLogPanel
 from insar_prep.gui.widgets.status_bar import StatusBarWidget
@@ -41,11 +51,13 @@ class MainWindow(QMainWindow):
 
         self.project_tree = ProjectTreeWidget()
         self.workflow_steps = WorkflowStepsWidget()
+        self.aoi_panel = AoiPanel()
+        self.aoi_panel.apply_button.clicked.connect(self._on_set_aoi)
         self.queue_log_panel = QueueLogPanel()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.project_tree)
-        splitter.addWidget(self.workflow_steps)
+        splitter.addWidget(self._build_centre())
         splitter.addWidget(self.queue_log_panel)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
@@ -57,6 +69,20 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self.resize(1000, 640)
+
+    def _build_centre(self) -> QScrollArea:
+        """Build the scrollable centre column (workflow steps + workflow panels)."""
+        centre = QWidget()
+        self.centre_layout = QVBoxLayout(centre)
+        self.centre_layout.addWidget(self.workflow_steps)
+        self.centre_layout.addWidget(self.aoi_panel)
+        self.centre_layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("centre_scroll")
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(centre)
+        return scroll
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("Main")
@@ -110,6 +136,17 @@ class MainWindow(QMainWindow):
         self.status_bar_widget.set_status(f"Created region: {region.region_name}")
         return True
 
+    def apply_set_region_aoi(self, aoi: Aoi) -> bool:
+        """Bind an AOI to the current region; report via the status bar."""
+        try:
+            region = self.state.set_current_region_aoi(aoi)
+        except InsarPrepError as exc:
+            self.status_bar_widget.set_status(str(exc))
+            return False
+        self.project_tree.refresh_from_state(self.state)
+        self.status_bar_widget.set_status(f"AOI set for region: {region.region_name}")
+        return True
+
     # --- dialog handlers ------------------------------------------------------
 
     def _on_new_workspace(self) -> None:
@@ -126,3 +163,11 @@ class MainWindow(QMainWindow):
         dialog = RegionDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.apply_new_region(dialog.region_name())
+
+    def _on_set_aoi(self) -> None:
+        try:
+            aoi = self.aoi_panel.build_aoi()
+        except InsarPrepError as exc:
+            self.status_bar_widget.set_status(str(exc))
+            return
+        self.apply_set_region_aoi(aoi)

@@ -287,9 +287,14 @@ Region workflow steps, a task-queue / log panel, and a warnings/errors status
 bar. From the toolbar you can create a **Workspace / Project / Region** (the
 tree updates live; names are normalized with the same SARscape-safe naming as
 the CLI, and precondition/input errors are shown in the status bar with an error
-code). It performs no downloads and no network access, and — like the CLI — it
-does **not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
-conversion. Those remain intentionally deferred.
+code). The centre **AOI panel** then defines the current Region's Processing AOI
+from a bounding box, a GeoJSON file, or a WKT string (the three sources are
+mutually exclusive); it reuses the same core AOI importers as the CLI — EPSG:4326
+lon/lat only, no Shapefile/KML/GeoPackage and no coordinate transforms — and the
+tree marks a Region with `[AOI set]` once one is bound. It performs no downloads
+and no network access, and — like the CLI — it does **not** implement real
+ASF/DEM/GACOS downloads or real DEM vertical-datum conversion. Those remain
+intentionally deferred.
 
 ## Packaging
 
