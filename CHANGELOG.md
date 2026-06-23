@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only) and the awesome-sar list were logged in `THIRD_PARTY_REFERENCES.md`. No
   changes to the ASF/DEM/GACOS/orbit modules, reporting, queue, or core models;
   the existing AOI behaviors are unchanged; no `pyproject` version change.
+- AOI input usability (follow-up to Task 048): a `--aoi-file PATH` CLI flag and a
+  GUI "Vector file (auto-detect)" mode that auto-detect GeoJSON / Shapefile / KML
+  / KMZ by file extension via the existing `load_aoi_from_file` dispatcher, plus
+  native **Browse…** file pickers (`QFileDialog`) on the GUI AOI file fields and
+  the ASF cart field. Reuses the already-tested core importers; no new
+  dependencies, no scope change (still EPSG:4326, prep-only). Added +4 tests
+  (CLI `--aoi-file`, GUI auto-detect mode, AOI/cart Browse handlers); full suite
+  **453 passed**, ruff clean.
 
 ## [0.12.0] - 2026-06-23
 

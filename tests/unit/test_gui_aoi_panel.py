@@ -159,6 +159,38 @@ def test_shp_missing_path_raises_coded_error(qt_app: object) -> None:
     assert excinfo.value.code == ErrorCode.AOI001
 
 
+def test_file_autodetect_input_builds_aoi(qt_app: object, tmp_path) -> None:
+    from insar_prep.gui.widgets.aoi_panel import AoiInputMode
+
+    shp = _write_aoi_shapefile(tmp_path / "auto.shp")
+    panel = _make_panel(AoiInputMode.FILE)
+    panel.file_edit.setText(str(shp))
+
+    aoi = panel.build_aoi()
+    assert aoi.bbox is not None
+    assert aoi.bbox.west == 110.0
+    assert aoi.bbox.north == 31.0
+
+
+def test_browse_button_fills_aoi_path(qt_app: object, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    from insar_prep.gui.widgets import aoi_panel as aoi_panel_module
+    from insar_prep.gui.widgets.aoi_panel import AoiInputMode
+
+    target = str(tmp_path / "picked.shp")
+    monkeypatch.setattr(
+        aoi_panel_module.QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *args, **kwargs: (target, "")),
+    )
+    panel = _make_panel(AoiInputMode.SHP)
+    browse = panel.findChild(QPushButton, "aoi_shp_path_browse")
+    assert browse is not None
+    browse.click()
+    assert panel.shp_edit.text() == target
+
+
 def test_invalid_bbox_raises_coded_error(qt_app: object) -> None:
     from insar_prep.gui.widgets.aoi_panel import AoiInputMode
 

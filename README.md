@@ -123,6 +123,8 @@ one** of these mutually exclusive flags (passing more than one is rejected):
 - `--aoi-kml PATH` — a KML file (`.kml`); all `Polygon` geometries are merged.
 - `--aoi-kmz PATH` — a zipped KML (`.kmz`); the `doc.kml` (or first `.kml`) entry
   inside the archive is parsed.
+- `--aoi-file PATH` — any of the supported vector files above
+  (`.geojson`/`.json`/`.shp`/`.kml`/`.kmz`), auto-detected by file extension.
 
 ```bash
 uv run insar-prep prepare \

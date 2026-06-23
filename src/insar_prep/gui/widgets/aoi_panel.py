@@ -2,9 +2,11 @@
 
 Lets the user define a Region's Processing AOI from one of several mutually
 exclusive sources -- a manual bounding box, a GeoJSON file, a WKT string, an
-ESRI Shapefile, a KML file, or a zipped KML (KMZ) -- and hands the result to
-:class:`insar_prep.gui.state.GuiState`. The panel holds no parsing/business
-logic of its own: it only collects text and calls the existing core interfaces
+ESRI Shapefile, a KML file, a zipped KML (KMZ), or any of those vector files
+auto-detected by extension -- and hands the result to
+:class:`insar_prep.gui.state.GuiState`. File sources carry a Browse button (a
+native file picker). The panel holds no parsing/business logic of its own: it
+only collects text and calls the existing core interfaces
 
 * :func:`insar_prep.processing.aoi.make_processing_aoi_from_bbox`,
 * :func:`insar_prep.processing.aoi_import.load_aoi_from_geojson`,
@@ -12,6 +14,7 @@ logic of its own: it only collects text and calls the existing core interfaces
 * :func:`insar_prep.processing.aoi_vector.load_aoi_from_shapefile`,
 * :func:`insar_prep.processing.aoi_vector.load_aoi_from_kml`,
 * :func:`insar_prep.processing.aoi_vector.load_aoi_from_kmz`,
+* :func:`insar_prep.processing.aoi_vector.load_aoi_from_file`,
 
 which already validate input and raise coded :class:`InsarPrepError` errors. No
 coordinate transform is performed (EPSG:4326 lon/lat only).
@@ -24,8 +27,10 @@ from enum import IntEnum
 from pydantic import ValidationError
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -40,10 +45,18 @@ from insar_prep.core.models import Aoi
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 from insar_prep.processing.aoi_import import load_aoi_from_geojson, load_aoi_from_wkt
 from insar_prep.processing.aoi_vector import (
+    load_aoi_from_file,
     load_aoi_from_kml,
     load_aoi_from_kmz,
     load_aoi_from_shapefile,
 )
+
+# Qt file-dialog filters per AOI file source.
+_GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
+_SHP_FILTER = "ESRI Shapefile (*.shp);;All files (*)"
+_KML_FILTER = "KML (*.kml);;All files (*)"
+_KMZ_FILTER = "KMZ (*.kmz);;All files (*)"
+_ANY_VECTOR_FILTER = "Vector AOI (*.geojson *.json *.shp *.kml *.kmz);;All files (*)"
 
 
 class AoiInputMode(IntEnum):
@@ -55,6 +68,7 @@ class AoiInputMode(IntEnum):
     SHP = 3
     KML = 4
     KMZ = 5
+    FILE = 6
 
 
 class AoiPanel(QGroupBox):
@@ -72,17 +86,30 @@ class AoiPanel(QGroupBox):
         self.mode_combo.addItem("Shapefile (.shp)", AoiInputMode.SHP)
         self.mode_combo.addItem("KML file (.kml)", AoiInputMode.KML)
         self.mode_combo.addItem("KMZ file (.kmz)", AoiInputMode.KMZ)
+        self.mode_combo.addItem("Vector file (auto-detect)", AoiInputMode.FILE)
 
         self.stack = QStackedWidget()
         self.stack.setObjectName("aoi_input_stack")
         # Pages are added in AoiInputMode order so the combo index, the stacked
-        # page index, and the enum value all line up.
+        # page index, and the enum value all line up. File pages carry a Browse
+        # button (a native file picker) alongside the editable path.
         self.stack.addWidget(self._build_bbox_page())
-        self.stack.addWidget(self._build_geojson_page())
+        self.geojson_edit = self._build_file_page(
+            "aoi_geojson_path", "Path to a .geojson / .json file (EPSG:4326)", _GEOJSON_FILTER
+        )
         self.stack.addWidget(self._build_wkt_page())
-        self.shp_edit = self._build_file_page("aoi_shp_path", "Path to a .shp file (EPSG:4326)")
-        self.kml_edit = self._build_file_page("aoi_kml_path", "Path to a .kml file (WGS84 lon/lat)")
-        self.kmz_edit = self._build_file_page("aoi_kmz_path", "Path to a .kmz file (WGS84 lon/lat)")
+        self.shp_edit = self._build_file_page(
+            "aoi_shp_path", "Path to a .shp file (EPSG:4326)", _SHP_FILTER
+        )
+        self.kml_edit = self._build_file_page(
+            "aoi_kml_path", "Path to a .kml file (WGS84 lon/lat)", _KML_FILTER
+        )
+        self.kmz_edit = self._build_file_page(
+            "aoi_kmz_path", "Path to a .kmz file (WGS84 lon/lat)", _KMZ_FILTER
+        )
+        self.file_edit = self._build_file_page(
+            "aoi_any_path", "Path to a .geojson/.shp/.kml/.kmz file", _ANY_VECTOR_FILTER
+        )
         self.mode_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)
 
         self.apply_button = QPushButton("Set AOI for current region")
@@ -110,15 +137,6 @@ class AoiPanel(QGroupBox):
         form.addRow("North:", self.north_edit)
         return page
 
-    def _build_geojson_page(self) -> QWidget:
-        page = QWidget()
-        form = QFormLayout(page)
-        self.geojson_edit = QLineEdit()
-        self.geojson_edit.setObjectName("aoi_geojson_path")
-        self.geojson_edit.setPlaceholderText("Path to a .geojson / .json file (EPSG:4326)")
-        form.addRow("GeoJSON path:", self.geojson_edit)
-        return page
-
     def _build_wkt_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -128,16 +146,30 @@ class AoiPanel(QGroupBox):
         layout.addWidget(self.wkt_edit)
         return page
 
-    def _build_file_page(self, object_name: str, placeholder: str) -> QLineEdit:
-        """Build a single file-path page, add it to the stack, and return its edit."""
+    def _build_file_page(self, object_name: str, placeholder: str, file_filter: str) -> QLineEdit:
+        """Build a file-path page (editable path + Browse button), add it, return the edit."""
         page = QWidget()
         form = QFormLayout(page)
         edit = QLineEdit()
         edit.setObjectName(object_name)
         edit.setPlaceholderText(placeholder)
-        form.addRow("File path:", edit)
+        browse = QPushButton("Browse\u2026")
+        browse.setObjectName(object_name + "_browse")
+        browse.clicked.connect(lambda: self._browse_into(edit, file_filter))
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(edit)
+        row_layout.addWidget(browse)
+        form.addRow("File path:", row)
         self.stack.addWidget(page)
         return edit
+
+    def _browse_into(self, edit: QLineEdit, file_filter: str) -> None:
+        """Open a native file picker and write the chosen path into ``edit``."""
+        path, _selected = QFileDialog.getOpenFileName(self, "Select AOI file", "", file_filter)
+        if path:
+            edit.setText(path)
 
     def current_mode(self) -> AoiInputMode:
         """Return the currently selected AOI input mode."""
@@ -165,7 +197,9 @@ class AoiPanel(QGroupBox):
             return self._build_file_aoi(self.shp_edit, "Shapefile", load_aoi_from_shapefile)
         if mode is AoiInputMode.KML:
             return self._build_file_aoi(self.kml_edit, "KML", load_aoi_from_kml)
-        return self._build_file_aoi(self.kmz_edit, "KMZ", load_aoi_from_kmz)
+        if mode is AoiInputMode.KMZ:
+            return self._build_file_aoi(self.kmz_edit, "KMZ", load_aoi_from_kmz)
+        return self._build_file_aoi(self.file_edit, "AOI file", load_aoi_from_file)
 
     def _build_bbox_aoi(self) -> Aoi:
         values: dict[str, float] = {}

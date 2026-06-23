@@ -50,6 +50,20 @@ def test_parse_cart_returns_scenes(qt_app: object, tmp_path: Path) -> None:
     assert {scene.scene_id for scene in scenes} == {_S1A, _S1B}
 
 
+def test_browse_button_fills_cart_path(qt_app: object, tmp_path: Path, monkeypatch) -> None:
+    from insar_prep.gui.widgets import asf_cart_panel as cart_module
+
+    target = str(tmp_path / "picked_cart.py")
+    monkeypatch.setattr(
+        cart_module.QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *args, **kwargs: (target, "")),
+    )
+    panel = cart_module.AsfCartPanel()
+    panel.browse_button.click()
+    assert panel.cart_edit.text() == target
+
+
 def test_empty_cart_path_raises_coded_error(qt_app: object) -> None:
     from insar_prep.gui.widgets.asf_cart_panel import AsfCartPanel
 

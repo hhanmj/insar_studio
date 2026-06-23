@@ -603,6 +603,37 @@ def test_prepare_with_aoi_kmz(
     _assert_all_reports(workspace, region, capsys.readouterr().out)
 
 
+def test_prepare_with_aoi_file_autodetect(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--aoi-file auto-detects a shapefile by extension and drives planning."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    shp_path = _write_aoi_shapefile(tmp_path / "auto.shp")
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+            "--aoi-file",
+            str(shp_path),
+            "--dem-plan",
+            "--gacos-plan",
+        ]
+    )
+    assert code == 0
+    assert not list(tmp_path.rglob("*.tif"))
+    _assert_all_reports(workspace, region, capsys.readouterr().out)
+
+
 def test_prepare_bbox_and_aoi_shp_are_mutually_exclusive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

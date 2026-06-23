@@ -12,6 +12,7 @@ downloaded and no SLC files are created.
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
@@ -25,6 +26,8 @@ from insar_prep.core.exceptions import InputValidationError
 from insar_prep.core.models import Scene
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
 
+_CART_FILTER = "ASF cart (*.py *.txt *.csv *.geojson *.json);;All files (*)"
+
 
 class AsfCartPanel(QGroupBox):
     """Collect an ASF cart path and parse it into scenes via the core parser."""
@@ -37,15 +40,28 @@ class AsfCartPanel(QGroupBox):
         self.cart_edit.setObjectName("asf_cart_path")
         self.cart_edit.setPlaceholderText("Path to a local ASF cart (.py/.txt/.csv/.geojson/.json)")
 
+        self.browse_button = QPushButton("Browse\u2026")
+        self.browse_button.setObjectName("asf_cart_browse_button")
+        self.browse_button.clicked.connect(self._browse_for_cart)
+
         self.import_button = QPushButton("Import cart")
         self.import_button.setObjectName("asf_cart_import_button")
 
         row = QHBoxLayout()
         row.addWidget(self.cart_edit)
+        row.addWidget(self.browse_button)
         row.addWidget(self.import_button)
 
         layout = QVBoxLayout(self)
         layout.addLayout(row)
+
+    def _browse_for_cart(self) -> None:
+        """Open a native file picker and write the chosen cart path into the field."""
+        path, _selected = QFileDialog.getOpenFileName(
+            self, "Select ASF cart file", "", _CART_FILTER
+        )
+        if path:
+            self.cart_edit.setText(path)
 
     def parse_cart(self) -> list[Scene]:
         """Parse the entered cart path into scenes using the core parser.
