@@ -4,10 +4,14 @@
     smoke-test it (Task 022 packaging experiment).
 
 .DESCRIPTION
-    Offline only. Runs the quality gate, removes previous build artifacts, builds
-    dist\insar-prep.exe, and runs exe smoke tests (including one offline `prepare`
-    run). It never commits artifacts, builds an installer, creates a GUI, or
-    touches the network. Build artifacts (build/, dist/, *.spec) are git-ignored.
+    Runs the quality gate, removes previous build artifacts, builds
+    dist\insar-prep.exe, and runs exe smoke tests (offline `prepare`,
+    `plan-asf-downloads`, and `download-asf` dry-run). The build bundles the
+    optional `download` extra (requests + certifi CA bundle) so the frozen exe is
+    *capable* of `download-asf --download-mode real` with the user's Earthdata
+    credentials; the build and all smoke tests themselves stay offline and never
+    download SAR data, build an installer, create a GUI, commit artifacts, or
+    touch the network. Build artifacts (build/, dist/, *.spec) are git-ignored.
 
 .NOTES
     Run from anywhere; the script resolves the repo root from its own location.
@@ -76,6 +80,8 @@ Invoke-Step "PyInstaller build" {
         --paths src `
         --collect-all shapely `
         --collect-submodules pydantic `
+        --collect-all requests `
+        --collect-all certifi `
         packaging/insar_prep_entry.py
 }
 
@@ -87,6 +93,8 @@ Write-Host "Built: $exe ($sizeMb MB)" -ForegroundColor Green
 Invoke-Step "exe --help" { & $exe --help | Out-Null }
 Invoke-Step "exe --version" { & $exe --version }
 Invoke-Step "exe prepare --help" { & $exe prepare --help | Out-Null }
+Invoke-Step "exe plan-asf-downloads --help" { & $exe plan-asf-downloads --help | Out-Null }
+Invoke-Step "exe download-asf --help" { & $exe download-asf --help | Out-Null }
 
 Write-Host ""
 Write-Host "== exe offline prepare smoke test ==" -ForegroundColor Cyan
@@ -106,6 +114,16 @@ try {
         throw "Unexpected .tif produced by offline smoke test"
     }
     Write-Host "Offline prepare smoke test OK: $json" -ForegroundColor Green
+
+    # download-asf dry-run: offline plan only, no network, no SLC archives.
+    Invoke-Native { & $exe download-asf --cart $cart --output-dir $demo }
+    if ($LASTEXITCODE -ne 0) { throw "exe download-asf dry-run failed (exit $LASTEXITCODE)" }
+    $planJson = Join-Path $demo "asf_download_plan\asf_download_plan.json"
+    if (-not (Test-Path $planJson)) { throw "download-asf plan not generated: $planJson" }
+    if ((Get-ChildItem -Path $demo -Recurse -Filter "*.zip" -ErrorAction SilentlyContinue)) {
+        throw "Unexpected .zip produced by offline download-asf dry-run"
+    }
+    Write-Host "Offline download-asf dry-run smoke test OK: $planJson" -ForegroundColor Green
 }
 finally {
     if (Test-Path $demo) { Remove-Item -Recurse -Force $demo }

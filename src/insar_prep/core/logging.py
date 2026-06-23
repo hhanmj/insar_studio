@@ -49,6 +49,17 @@ _BEARER_RE = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._+/=\-]{2,})")
 # A Cookie header: mask the entire cookie payload through the end of the line.
 _COOKIE_RE = re.compile(r"(?i)\b(cookie\s*[:=]\s*)([^\r\n]+)")
 
+# ``.netrc`` credential lines: ``login <user>`` / ``password <pass>`` /
+# ``account <acct>`` use whitespace (not ``:`` / ``=``) as the separator, so they
+# are not caught by ``_SECRET_KEY_RE``. The ``machine`` host is not secret and is
+# left intact; only the value after login/password/account is masked.
+_NETRC_RE = re.compile(r"(?i)\b(login|password|account)(\s+)(\S+)")
+
+# URL userinfo: ``scheme://user:pass@host`` (e.g. an Earthdata redirect with
+# embedded credentials). The scheme and host are preserved; the user and password
+# are masked so neither leaks into a log, report, or traceback.
+_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^/?#@\s:]+):([^/?#@\s]+)@")
+
 
 def mask_secret(value: str) -> str:
     """Mask a secret value, keeping only the last four characters."""
@@ -63,8 +74,9 @@ def mask_text(text: str) -> str:
     Covers ``key<sep>value`` secrets (token/password/api_key/secret/session/
     signature/presigned-URL params, in plain, ``key=value``, JSON, and URL-query
     forms), ``Authorization`` headers (with or without a Bearer/Basic scheme),
-    bare ``Bearer`` tokens, and ``Cookie`` headers. Only the credential is
-    masked; surrounding text -- keys, scheme words, and Windows paths -- is
+    bare ``Bearer`` tokens, ``Cookie`` headers, ``.netrc`` login/password lines,
+    and ``scheme://user:pass@host`` URL userinfo. Only the credential is masked;
+    surrounding text -- keys, scheme words, hosts, and Windows paths -- is
     preserved.
     """
 
@@ -78,9 +90,17 @@ def mask_text(text: str) -> str:
     def _mask_value2(match: re.Match[str]) -> str:
         return f"{match.group(1)}{mask_secret(match.group(2))}"
 
+    def _mask_netrc(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2)}{mask_secret(match.group(3))}"
+
+    def _mask_userinfo(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{mask_secret(match.group(2))}:{mask_secret(match.group(3))}@"
+
     masked = _AUTH_HEADER_RE.sub(_mask_auth, text)
     masked = _BEARER_RE.sub(_mask_value2, masked)
     masked = _COOKIE_RE.sub(_mask_value2, masked)
+    masked = _URL_USERINFO_RE.sub(_mask_userinfo, masked)
+    masked = _NETRC_RE.sub(_mask_netrc, masked)
     return _SECRET_KEY_RE.sub(_mask_keyed, masked)
 
 

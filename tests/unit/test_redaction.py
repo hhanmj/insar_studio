@@ -98,6 +98,26 @@ def test_mask_text_cookie_header() -> None:
     assert "FAKECSRFVALUE123" not in masked
 
 
+def test_mask_text_netrc_login_and_password() -> None:
+    # .netrc uses whitespace (not ':'/'=') so it would slip past the keyed regex.
+    line = "machine urs.earthdata.nasa.gov login FAKE_NETRC_USER password FAKE_NETRC_PASS_9"
+    masked = mask_text(line)
+    assert "FAKE_NETRC_USER" not in masked
+    assert "FAKE_NETRC_PASS_9" not in masked
+    # The (non-secret) machine host is preserved.
+    assert "urs.earthdata.nasa.gov" in masked
+
+
+def test_mask_text_url_userinfo() -> None:
+    url = "https://FAKEUSER:FAKEPASS123@urs.earthdata.nasa.gov/oauth/authorize"
+    masked = mask_text(url)
+    assert "FAKEUSER" not in masked
+    assert "FAKEPASS123" not in masked
+    # Scheme and host survive so the message is still diagnostic.
+    assert masked.startswith("https://")
+    assert "urs.earthdata.nasa.gov" in masked
+
+
 def test_mask_text_preserves_windows_paths() -> None:
     # No keyword is followed by a ':'/'=' separator, so paths stay intact even
     # when a directory name happens to contain 'tokens' or 'sessions'.

@@ -1,26 +1,59 @@
-"""ASF SLC downloader interface and an offline fake (Task 035).
+"""ASF SLC downloader interface, an offline fake, and the real downloader.
 
-Defines the interface a *future* real ASF downloader will implement, plus a
-:class:`FakeAsfDownloader` for offline testing of retry/error/cancellation
-paths. **Nothing here performs real network I/O, reads credentials, or downloads
-real SAR data.** :class:`RealAsfDownloader` is a deliberate ``NotImplemented``
-stub: real, credentialed ASF/Earthdata download is a separate, later,
-user-authorized task (see ``docs/asf_download_credential_design.md``).
+Defines the :class:`AsfDownloader` interface, a :class:`FakeAsfDownloader` for
+offline testing of retry/error/cancellation paths, and :class:`RealAsfDownloader`
+-- a credentialed, NASA Earthdata-authenticated Sentinel-1 SLC downloader.
 
-No new dependency: standard library + pydantic only (no requests/aiohttp/httpx).
+The real downloader needs the optional ``download`` extra (``requests``), which
+is imported lazily so the offline core (``prepare`` / ``plan-asf-downloads`` /
+``gui``) never depends on it. It follows the credential-safety contract in
+``docs/asf_download_credential_design.md``: credentials live only in memory, the
+auth header is preserved only across Earthdata/ASF hosts (never re-sent to a
+signed S3 redirect target), downloads stream to a ``.part`` file and are atomically
+renamed only after a verified size, and every error string is masked before it is
+logged or returned.
 """
 
 from __future__ import annotations
 
+import os
+import time
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
 from insar_prep.core.error_codes import ErrorCode
-from insar_prep.core.logging import get_logger
+from insar_prep.core.exceptions import CredentialError
+from insar_prep.core.logging import get_logger, mask_text
 from insar_prep.core.models import InsarBaseModel
+from insar_prep.providers.asf.credentials import (
+    CredentialSource,
+    ResolvedCredential,
+    resolve_credentials,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from threading import Event
 
 logger = get_logger("providers.asf.downloader")
+
+# Hosts that may keep the Authorization header across redirects. A signed S3 /
+# CloudFront data-pool URL is NOT in this list, so the bearer token is dropped
+# before it could leak to the storage backend (concept borrowed from
+# asf_search's ASFSession; see THIRD_PARTY_REFERENCES.md #1).
+_EARTHDATA_AUTH_HOSTS = (
+    "urs.earthdata.nasa.gov",
+    ".earthdata.nasa.gov",
+    ".asf.alaska.edu",
+    ".earthdatacloud.nasa.gov",
+)
+
+_DEFAULT_CHUNK_SIZE = 1024 * 1024
+_DEFAULT_TIMEOUT = 60.0
+_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_BACKOFF = 2.0
 
 
 class DownloadOutcome(StrEnum):
@@ -132,21 +165,282 @@ class FakeAsfDownloader:
         )
 
 
-class RealAsfDownloader:
-    """Placeholder for the future real ASF downloader (NOT implemented).
+class _CredentialRejected(Exception):
+    """Server rejected the credentials (HTTP 401/403). Not retryable."""
 
-    Real, credentialed ASF/Earthdata download is a separate, later, explicitly
-    user-authorized task. Both construction and :meth:`download` raise
-    ``NotImplementedError`` so this class can never accidentally perform network
-    I/O or read credentials. See ``docs/asf_download_credential_design.md``.
+
+class _FatalTransport(Exception):
+    """A non-retryable transport failure (e.g. HTTP 404)."""
+
+
+class _TransientError(Exception):
+    """A retryable transport failure (timeout, connection reset, 429, 5xx)."""
+
+
+class _IntegrityMismatch(Exception):
+    """Downloaded byte count did not match the expected size. Retryable."""
+
+
+class _Cancelled(Exception):
+    """The caller requested cancellation mid-transfer."""
+
+
+def _host_allows_auth(host: str) -> bool:
+    """Return True if ``host`` is an Earthdata/ASF host allowed to keep auth."""
+    host = (host or "").lower()
+    for allowed in _EARTHDATA_AUTH_HOSTS:
+        if allowed.startswith("."):
+            if host == allowed[1:] or host.endswith(allowed):
+                return True
+        elif host == allowed:
+            return True
+    return False
+
+
+def _content_length(response: object) -> int | None:
+    headers = getattr(response, "headers", {}) or {}
+    raw = headers.get("Content-Length") or headers.get("content-length")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:  # pragma: no cover - best-effort cleanup
+        logger.debug("could not remove partial file %s", path)
+
+
+def build_earthdata_session(resolved: ResolvedCredential) -> object:
+    """Build a redirect-aware authenticated ``requests`` session (lazy import).
+
+    The returned session keeps the bearer token only for Earthdata/ASF hosts and
+    drops it before a signed S3 redirect. ``.netrc`` Basic auth is delegated to
+    ``requests`` via ``trust_env``. Requires the optional ``download`` extra.
+    """
+    try:
+        import requests  # noqa: PLC0415 - optional dependency, imported lazily
+    except ImportError as exc:  # pragma: no cover - exercised via CLI guard
+        raise CredentialError(
+            "the 'download' extra is required for real download; install it with "
+            "'uv sync --extra download' (or pip install requests)",
+            code=ErrorCode.DL004,
+        ) from exc
+
+    class _EarthdataSession(requests.Session):
+        """Session that confines the auth header to Earthdata/ASF hosts."""
+
+        def rebuild_auth(self, prepared_request: object, response: object) -> None:
+            headers = prepared_request.headers  # type: ignore[attr-defined]
+            if "Authorization" in headers:
+                host = urlsplit(prepared_request.url).hostname or ""  # type: ignore[attr-defined]
+                if not _host_allows_auth(host):
+                    del headers["Authorization"]
+
+    session = _EarthdataSession()
+    session.trust_env = True  # read ~/.netrc for Basic auth on EDL hosts
+    if resolved.token:
+        session.headers["Authorization"] = f"Bearer {resolved.token}"
+    return session
+
+
+class RealAsfDownloader:
+    """Credentialed ASF Sentinel-1 SLC downloader (NASA Earthdata Login).
+
+    Construction performs no network I/O and reads no secrets: the authenticated
+    session is built lazily on the first :meth:`download`. Credentials are taken
+    from :func:`resolve_credentials` (``EARTHDATA_TOKEN`` env or ``~/.netrc``) and
+    never persisted. For tests, an alternative ``session`` may be injected so the
+    transfer logic runs without ``requests`` or the network.
     """
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError(
-            "Real ASF download is not implemented; use FakeAsfDownloader for tests. "
-            "See docs/asf_download_credential_design.md."
-        )
+    def __init__(
+        self,
+        *,
+        credential_source: CredentialSource = CredentialSource.NETRC,
+        resolved: ResolvedCredential | None = None,
+        session: object | None = None,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
+        backoff_seconds: float = _DEFAULT_BACKOFF,
+        chunk_size: int = _DEFAULT_CHUNK_SIZE,
+        timeout: float = _DEFAULT_TIMEOUT,
+        cancel_event: Event | None = None,
+    ) -> None:
+        self.credential_source = credential_source
+        self.max_retries = max(1, max_retries)
+        self.backoff_seconds = max(0.0, backoff_seconds)
+        self.chunk_size = max(1, chunk_size)
+        self.timeout = timeout
+        self.cancel_event = cancel_event
+        self._resolved = resolved
+        self._session = session
+
+    def _ensure_session(self) -> object:
+        if self._session is None:
+            if self._resolved is None:
+                self._resolved = resolve_credentials(self.credential_source)
+            self._session = build_earthdata_session(self._resolved)
+        return self._session
+
+    def _cancelled(self) -> bool:
+        return self.cancel_event is not None and self.cancel_event.is_set()
 
     def download(self, request: DownloadRequest) -> DownloadResult:
-        """Always raises; real download is a separate, future task."""
-        raise NotImplementedError("Real ASF download is not implemented.")
+        """Download one SLC, returning a :class:`DownloadResult` (never raises)."""
+        dest = request.destination
+        part = dest.with_name(dest.name + ".part")
+
+        if dest.exists() and (
+            request.expected_size is None or dest.stat().st_size == request.expected_size
+        ):
+            return DownloadResult(
+                scene_id=request.scene_id,
+                outcome=DownloadOutcome.SKIPPED,
+                path=dest,
+                bytes_written=dest.stat().st_size,
+                message="already complete; skipped",
+            )
+
+        if not request.url:
+            return DownloadResult(
+                scene_id=request.scene_id,
+                outcome=DownloadOutcome.FAILED,
+                message="no download URL for scene",
+                error_code=ErrorCode.ASF003.value,
+            )
+
+        try:
+            session = self._ensure_session()
+        except CredentialError as exc:
+            return DownloadResult(
+                scene_id=request.scene_id,
+                outcome=DownloadOutcome.FAILED,
+                message=mask_text(str(exc)),
+                error_code=ErrorCode.DL004.value,
+            )
+
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
+            if self._cancelled():
+                return self._interrupted(request)
+            try:
+                return self._attempt(session, request, dest, part)
+            except _CredentialRejected:
+                _safe_unlink(part)
+                return DownloadResult(
+                    scene_id=request.scene_id,
+                    outcome=DownloadOutcome.FAILED,
+                    message="Earthdata credentials were rejected (HTTP 401/403)",
+                    error_code=ErrorCode.DL004.value,
+                )
+            except _Cancelled:
+                return self._interrupted(request)
+            except _FatalTransport as exc:
+                _safe_unlink(part)
+                return DownloadResult(
+                    scene_id=request.scene_id,
+                    outcome=DownloadOutcome.FAILED,
+                    message=mask_text(str(exc)),
+                    error_code=ErrorCode.DL005.value,
+                )
+            except (_TransientError, _IntegrityMismatch) as exc:
+                last_error = exc
+                _safe_unlink(part)
+            except Exception as exc:  # noqa: BLE001 - transport errors are masked + retried
+                last_error = exc
+                _safe_unlink(part)
+            if attempt < self.max_retries and not self._cancelled():
+                time.sleep(self.backoff_seconds * attempt)
+
+        detail = mask_text(f"{type(last_error).__name__}: {last_error}") if last_error else ""
+        code = ErrorCode.DL002 if isinstance(last_error, _IntegrityMismatch) else ErrorCode.DL005
+        logger.warning(
+            "download failed for %s after %d attempts", request.scene_id, self.max_retries
+        )
+        return DownloadResult(
+            scene_id=request.scene_id,
+            outcome=DownloadOutcome.FAILED,
+            message=f"download failed after {self.max_retries} attempts: {detail}".strip(),
+            error_code=code.value,
+        )
+
+    def _attempt(
+        self,
+        session: object,
+        request: DownloadRequest,
+        dest: Path,
+        part: Path,
+    ) -> DownloadResult:
+        part.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        with session.get(  # type: ignore[attr-defined]
+            request.url, stream=True, timeout=self.timeout, allow_redirects=True
+        ) as response:
+            status = int(getattr(response, "status_code", 200))
+            if status in (401, 403):
+                raise _CredentialRejected()
+            if status == 429 or status >= 500:
+                raise _TransientError(f"HTTP {status} from data pool")
+            if status >= 400:
+                raise _FatalTransport(f"HTTP {status} from data pool")
+            total = _content_length(response)
+            with part.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=self.chunk_size):
+                    if self._cancelled():
+                        raise _Cancelled()
+                    if chunk:
+                        handle.write(chunk)
+                        written += len(chunk)
+
+        expected = request.expected_size if request.expected_size is not None else total
+        if expected is not None and written != expected:
+            raise _IntegrityMismatch(f"expected {expected} bytes but received {written}")
+
+        os.replace(part, dest)
+        logger.info("downloaded %s (%d bytes)", request.scene_id, written)
+        return DownloadResult(
+            scene_id=request.scene_id,
+            outcome=DownloadOutcome.SUCCESS,
+            path=dest,
+            bytes_written=written,
+            message="downloaded",
+        )
+
+    def _interrupted(self, request: DownloadRequest) -> DownloadResult:
+        return DownloadResult(
+            scene_id=request.scene_id,
+            outcome=DownloadOutcome.INTERRUPTED,
+            message="cancelled by user; partial .part kept for resume",
+            error_code=ErrorCode.DL001.value,
+        )
+
+
+def download_requests_from_scenes(
+    scenes: Iterable[object],
+    *,
+    slc_dir: Path,
+) -> list[DownloadRequest]:
+    """Build :class:`DownloadRequest` objects for scenes that have a URL.
+
+    The destination mirrors the dry-run planner's ``<output>/02_slc/<granule>.zip``
+    layout. Scenes without a URL are skipped (they cannot be fetched).
+    """
+    requests_out: list[DownloadRequest] = []
+    for scene in scenes:
+        url = getattr(scene, "url", None)
+        scene_id = getattr(scene, "scene_id", "")
+        if not url:
+            continue
+        expected_filename = f"{scene_id}.zip"
+        requests_out.append(
+            DownloadRequest(
+                scene_id=scene_id,
+                expected_filename=expected_filename,
+                destination=slc_dir / expected_filename,
+                url=url,
+                expected_size=getattr(scene, "file_size_remote", None),
+            )
+        )
+    return requests_out

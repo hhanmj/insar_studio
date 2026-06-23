@@ -16,8 +16,10 @@ Sentinel-1 / InSAR beginners.
 > Current status: **v0.12.0 — GUI Beta.** The offline `insar-prep prepare` CLI
 > workflow is implemented end to end, and an optional PySide6 **GUI Beta** drives
 > the same offline closed loop (install it with `uv sync --extra gui`). Real
-> ASF/DEM/GACOS downloads and real DEM vertical-datum conversion are still **not**
-> implemented, and there is **no** official GUI release, installer, or `.exe`. A
+> Sentinel-1 SLC download is available as an explicit opt-in (`download-asf
+> --download-mode real`, behind the `download` extra); real DEM/GACOS downloads
+> and real DEM vertical-datum conversion are still **not** implemented, and there
+> is **no** official GUI release, installer, or `.exe`. A
 > one-file Windows CLI exe can be built *locally* for testing only. See
 > [`docs/release_readiness_v0_12_0_gui_beta.md`](docs/release_readiness_v0_12_0_gui_beta.md)
 > for the current readiness review, and
@@ -43,6 +45,14 @@ add the `gui` extra (this pulls in PySide6):
 
 ```bash
 uv sync --extra gui
+```
+
+Real ASF SLC download is also optional and **not** installed by default. To
+enable it, add the `download` extra (this pulls in `requests`); see
+[ASF Sentinel-1 SLC download](#asf-sentinel-1-slc-download):
+
+```bash
+uv sync --extra download
 ```
 
 ## Basic commands
@@ -194,9 +204,14 @@ when nothing is wrong it contains a single `INFO` "no warnings" summary row.
 
 ## What this tool does **not** do (by design)
 
-The current offline MVP never performs any of the following:
+The offline core (`prepare`, `plan-asf-downloads`, `gui`) never performs any of
+the following:
 
-- Download SAR data from ASF / ASF Vertex.
+- Download SAR data from ASF / ASF Vertex. (Real Sentinel-1 SLC download is now
+  available, but only as an explicit opt-in: the separate `download-asf
+  --download-mode real` command behind the optional `download` extra — see
+  [ASF Sentinel-1 SLC download](#asf-sentinel-1-slc-download). The offline
+  commands themselves still never touch the network.)
 - Download DEMs from OpenTopography (or anywhere else).
 - Submit, scrape, or automate the GACOS web service.
 - Perform real DEM vertical-datum conversion (it only *plans* the steps; no
@@ -208,14 +223,12 @@ The current offline MVP never performs any of the following:
 It also never reads accounts, stores credentials, or moves / deletes / renames
 your input files.
 
-### ASF downloads: offline dry-run planning (no real download yet)
+### ASF downloads: offline dry-run planning
 
-- **Real ASF / Sentinel-1 SLC download is not yet implemented.** The current
-  version cannot download SAR data.
-- It can, however, **plan** the downloads offline. `plan-asf-downloads` reads a
-  local ASF cart and writes a download *plan* (JSON + CSV) listing the expected
-  filenames and intended local paths — **without** downloading anything,
-  contacting ASF/Earthdata, or reading credentials. No account is required:
+- The offline planner reads a local ASF cart and writes a download *plan*
+  (JSON + CSV) listing the expected filenames and intended local paths —
+  **without** downloading anything, contacting ASF/Earthdata, or reading
+  credentials. No account is required:
 
 ```bash
 uv run insar-prep plan-asf-downloads \
@@ -239,21 +252,60 @@ created), and `credential_required` is always `yes`. URLs, query strings, and
 tokens are **never** written to the plan. Pass `--require-urls` to make a missing
 URL a non-zero exit (the plan is still written).
 
-- The **credential-safe design** for a future real downloader is documented in
+- The **credential-safe design** is documented in
   [`docs/asf_download_credential_design.md`](docs/asf_download_credential_design.md)
   (default `dry-run`, explicit opt-in for real download, strict log/report
   redaction, and credentials kept out of the repository).
 - **Redaction is hardened**: logs, reports (JSON/Markdown/HTML), and CSVs are
   masked for tokens, passwords, API keys, `Authorization`/`Bearer`/`Cookie`
-  headers, session ids, and presigned-URL signatures, while ordinary text and
-  Windows paths are left intact.
-- A downloader **interface** exists for future development (an `AsfDownloader`
-  protocol with an offline `FakeAsfDownloader` for tests); the real downloader is
-  an intentional not-implemented stub, so no real network download can run yet.
-- **Do not put credentials into project files.** When real download support
-  arrives, Earthdata Login credentials will come from the OS keyring, environment
-  variables, an interactive prompt, or a user-managed `.netrc` **outside** the
-  project — never from a committed `.env`, config JSON, or a command-line flag.
+  headers, session ids, presigned-URL signatures, `.netrc` login/password lines,
+  and `user:pass@host` URLs, while ordinary text and Windows paths are left intact.
+
+### ASF Sentinel-1 SLC download
+
+Real, credentialed Sentinel-1 SLC download is available via the separate
+`download-asf` command. It is **off by default** (dry-run) and isolated from the
+offline core so `prepare` / `plan-asf-downloads` / `gui` never gain a network
+dependency.
+
+1. **Install the optional extra** (adds `requests`; the offline core never needs it):
+
+```bash
+uv sync --extra download
+```
+
+2. **Provide NASA Earthdata Login credentials** *outside* the project, via either:
+   - a user-managed `~/.netrc` (`~/_netrc` on Windows) with a
+     `machine urs.earthdata.nasa.gov login <user> password <pass>` entry
+     (default, `--credential-source netrc`), or
+   - an `EARTHDATA_TOKEN` environment variable holding an EDL bearer token
+     (`--credential-source env-token`).
+
+   A password is **never** accepted as a command-line flag.
+
+3. **Run the download** (default is a safe dry-run plan; add `--download-mode real`
+   to actually fetch):
+
+```bash
+# dry-run (offline plan only, no network) — same plan as plan-asf-downloads:
+uv run insar-prep download-asf --cart tests/fixtures/asf/urls.txt --output-dir ./workspace
+
+# real download (needs the 'download' extra + Earthdata credentials):
+uv run insar-prep download-asf \
+  --cart tests/fixtures/asf/urls.txt \
+  --output-dir ./workspace \
+  --download-mode real
+```
+
+Real download streams each SLC to a `<name>.zip.part` temp file, verifies the
+byte count against `Content-Length`, then **atomically renames** to the final
+`<output-dir>/02_slc/<granule>.zip`; already-complete targets are skipped, so a
+re-run is idempotent and resumable. Transient failures are retried with backoff
+(`--max-retries`, default 3); the bearer token is kept only for Earthdata/ASF
+hosts and **dropped before any signed S3 redirect**. A per-scene
+`asf_download_plan/asf_download_results.csv` records the outcome of each scene
+(credential-masked). Earthdata Login credentials live only in memory and are
+never written to the repository, logs, reports, or CSVs.
 
 ## SARscape naming constraints
 

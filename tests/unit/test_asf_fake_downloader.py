@@ -79,9 +79,11 @@ def test_fake_satisfies_downloader_protocol() -> None:
     assert isinstance(FakeAsfDownloader(), AsfDownloader)
 
 
-def test_real_downloader_is_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        RealAsfDownloader()
+def test_real_downloader_constructs_without_network_or_secrets() -> None:
+    # The real downloader is now implemented; construction performs no network
+    # I/O and reads no credentials (the session is built lazily on download()).
+    downloader = RealAsfDownloader()
+    assert isinstance(downloader, AsfDownloader)
 
 
 def test_fake_download_does_not_touch_network(

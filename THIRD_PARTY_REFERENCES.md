@@ -32,13 +32,13 @@
 - **name**: asf_search (asfadmin/Discovery-asf_search)
 - **url**: https://github.com/asfadmin/Discovery-asf_search
 - **license**: BSD-3-Clause
-- **last_checked_date**: 2026-06-18
+- **last_checked_date**: 2026-06-23
 - **purpose**: ASF 目录检索、baseline / stack、SLC 下载（Earthdata 认证）。
-- **use_as_dependency**: 是（推荐，作为 ASF Provider 核心依赖）。
+- **use_as_dependency**: 否（本项目选用直连 `requests`，见下）。当前真实下载用 `requests` 自研，未引入 asf_search。
 - **copy_code_allowed**: 否（许可证允许，但本项目政策为封装不复制）。
-- **integration_plan**: 在 `providers/asf/` 封装适配器，调用 `geo_search/granule_search/product_search/search/stack`；`ASFSession` 认证用 keyring 注入，不落明文。
-- **risk**: 低。需 Earthdata 凭据（走 keyring）；网络在单测中必须 mock。
-- **notes**: 可借鉴点=检索函数 API 形态、结果→下载流、平台/极化/beam 常量。不应实现=自己重写一套 ASF 检索协议。后续 Task=Task 006（cart/URL 解析交叉校验）、Task 005（v1.5 检索）。
+- **integration_plan**: Task 049 真实 SLC 下载选择直连 `requests`（可选 `download` extra），以便完全掌控 `.part`/原子改名/体积校验/重试/脱敏；仅**概念借鉴** `ASFSession.rebuild_auth`——重定向时把 `Authorization` 头限制在 Earthdata/ASF 主机、签名 S3 跳转前丢弃（落到 `providers/asf/downloader.py` 的 `_EarthdataSession`，自写实现，未复制源码）。
+- **risk**: 低。需 Earthdata 凭据（env token / `~/.netrc`，仓库外）；网络在单测中以 fake session 注入，从不真连。
+- **notes**: 可借鉴点=`ASFSession` 跨域保留/丢弃认证头的思路、平台/极化/beam 常量、结果→下载流。不应实现/复制=任何 asf_search 源码。已落地=Task 049（真实下载，concept-only borrow）。
 
 ### 2. sentineleof
 
@@ -176,7 +176,7 @@
 
 | # | 名称 | 许可证 | 作依赖? | 可复制源码? | 集成方式 | 后续 Task |
 |---|---|---|---|---|---|---|
-| 1 | asf_search | BSD-3-Clause | 是 | 否（封装） | `providers/asf` 适配器 | 006 / 005 |
+| 1 | asf_search | BSD-3-Clause | 否(改用 requests) | 否(仅概念) | 概念借鉴 ASFSession.rebuild_auth | 049(已落地) |
 | 2 | sentineleof | MIT | 是 | 否（封装） | `providers/orbit` 适配器 | 009 |
 | 3 | OpenTopography API | 条款/数据许可 | N/A | N/A | `providers/dem` 直连 API | 010 |
 | 4 | pyroSAR | MIT | 否/谨慎 | 否 | 仅架构参考 | 002 / 011 |

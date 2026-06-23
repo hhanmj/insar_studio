@@ -26,6 +26,8 @@ class ErrorCode(StrEnum):
     DL001 = "DL001"
     DL002 = "DL002"
     DL003 = "DL003"
+    DL004 = "DL004"
+    DL005 = "DL005"
     ORB001 = "ORB001"
     DEM001 = "DEM001"
     DEM002 = "DEM002"
@@ -53,6 +55,8 @@ ERROR_CODE_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.DL001: "Download was interrupted.",
     ErrorCode.DL002: "Downloaded file size does not match.",
     ErrorCode.DL003: "Zip integrity check failed.",
+    ErrorCode.DL004: "ASF/Earthdata download credentials are missing or were rejected.",
+    ErrorCode.DL005: "ASF download network/transport error.",
     ErrorCode.ORB001: "No matching orbit file was found.",
     ErrorCode.DEM001: "DEM download failed.",
     ErrorCode.DEM002: "DEM vertical datum is unknown.",

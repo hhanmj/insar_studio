@@ -11,6 +11,7 @@ API calls, no credentials, and no real DEM conversion. No ``print()`` is used
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
 import sys
 from pathlib import Path
@@ -20,8 +21,8 @@ from pydantic import ValidationError
 
 from insar_prep.core.enums import DemDataset, Polarization, VerticalDatum
 from insar_prep.core.error_codes import ErrorCode
-from insar_prep.core.exceptions import InputValidationError, InsarPrepError
-from insar_prep.core.logging import get_logger
+from insar_prep.core.exceptions import CredentialError, InputValidationError, InsarPrepError
+from insar_prep.core.logging import get_logger, mask_text
 from insar_prep.core.naming import sarscape_safe_name
 from insar_prep.gui import PYSIDE6_MISSING_MESSAGE
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
@@ -33,9 +34,17 @@ from insar_prep.processing.aoi_vector import (
     load_aoi_from_shapefile,
 )
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
+from insar_prep.providers.asf.credentials import EARTHDATA_TOKEN_ENV, CredentialSource
 from insar_prep.providers.asf.download_plan import (
+    SLC_SUBDIR,
     build_asf_download_plan,
     write_asf_download_plan,
+)
+from insar_prep.providers.asf.downloader import (
+    DownloadOutcome,
+    DownloadResult,
+    RealAsfDownloader,
+    download_requests_from_scenes,
 )
 from insar_prep.providers.asf.scene_parser import deduplicate_scenes
 from insar_prep.providers.dem import (
@@ -577,6 +586,203 @@ def run_plan_asf_downloads(args: argparse.Namespace) -> int:
             "%d scene(s) have no download URL and --require-urls was set",
             plan.missing_url_count,
         )
+        return _EXIT_ERROR
+    return _EXIT_OK
+
+
+_DOWNLOAD_RESULT_COLUMNS = [
+    "scene_id",
+    "outcome",
+    "bytes_written",
+    "error_code",
+    "message",
+]
+
+
+def add_download_asf_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``download-asf`` subcommand (dry-run default; real opt-in)."""
+    parser = subparsers.add_parser(
+        "download-asf",
+        help="Plan or download Sentinel-1 SLCs from a cart (dry-run by default).",
+        description=(
+            "Write an ASF SLC download plan (JSON + CSV) and, with "
+            "--download-mode real, fetch the SLCs from ASF using NASA Earthdata "
+            "credentials. Dry-run is the default and never touches the network. "
+            "Real download requires the optional 'download' extra (requests) and "
+            "credentials from the environment or ~/.netrc; a password is never "
+            "accepted on the command line."
+        ),
+    )
+    parser.add_argument(
+        "--cart",
+        required=True,
+        help="Path to a local ASF cart file (.py/.txt/.csv/.geojson/.json).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        required=True,
+        help=(
+            "Output root: the plan goes under <output-dir>/asf_download_plan/ and, "
+            "in real mode, SLCs under <output-dir>/02_slc/."
+        ),
+    )
+    parser.add_argument(
+        "--download-mode",
+        dest="download_mode",
+        default="dry-run",
+        choices=["dry-run", "real"],
+        help="dry-run (default, offline plan only) or real (fetch SLCs; needs credentials).",
+    )
+    parser.add_argument(
+        "--credential-source",
+        dest="credential_source",
+        default=CredentialSource.NETRC.value,
+        choices=[member.value for member in CredentialSource],
+        help=(
+            f"Earthdata credential source for real download: netrc (~/.netrc) or "
+            f"env-token (${EARTHDATA_TOKEN_ENV}). Default: netrc."
+        ),
+    )
+    parser.add_argument(
+        "--max-retries",
+        dest="max_retries",
+        type=int,
+        default=3,
+        help="Maximum attempts per scene on transient failures (default: 3).",
+    )
+    parser.add_argument(
+        "--region-name",
+        dest="region_name",
+        default=None,
+        help="Optional human-readable region name (recorded as a SARscape-safe name).",
+    )
+    parser.add_argument(
+        "--require-urls",
+        dest="require_urls",
+        action="store_true",
+        help="Exit non-zero if any scene has no download URL (still writes the plan).",
+    )
+    return parser
+
+
+def _write_download_results(output_dir: Path, results: list[DownloadResult]) -> Path:
+    """Write a credential-safe per-scene results CSV. Returns its path."""
+    plan_dir = output_dir / "asf_download_plan"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    results_path = plan_dir / "asf_download_results.csv"
+    with results_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_DOWNLOAD_RESULT_COLUMNS)
+        writer.writeheader()
+        for result in results:
+            writer.writerow(
+                {
+                    "scene_id": mask_text(result.scene_id),
+                    "outcome": result.outcome.value,
+                    "bytes_written": result.bytes_written,
+                    "error_code": result.error_code or "",
+                    "message": mask_text(result.message),
+                }
+            )
+    return results_path
+
+
+def run_download_asf(args: argparse.Namespace) -> int:
+    """Run ``download-asf``. Dry-run writes a plan; real fetches SLCs."""
+    cart_path = Path(args.cart)
+    try:
+        scenes = parse_asf_cart_file(cart_path)
+    except InsarPrepError as exc:
+        logger.error("failed to parse ASF cart %s: %s", cart_path, exc)
+        return _EXIT_ERROR
+
+    unique_scenes, _duplicates = deduplicate_scenes(scenes)
+
+    region_safe_name = ""
+    if args.region_name:
+        try:
+            region_safe_name = sarscape_safe_name(args.region_name)
+        except ValueError as exc:
+            logger.error("invalid region name %r: %s", args.region_name, exc)
+            return _EXIT_ERROR
+
+    output_dir = Path(args.output_dir)
+    plan = build_asf_download_plan(
+        scenes=unique_scenes,
+        output_dir=output_dir,
+        source_cart=cart_path,
+        region_safe_name=region_safe_name,
+    )
+    try:
+        json_path, csv_path = write_asf_download_plan(plan, output_dir)
+    except InsarPrepError as exc:
+        logger.error("failed to write ASF download plan: %s", exc)
+        return _EXIT_ERROR
+    sys.stdout.write(f"ASF download plan written:\nJSON: {json_path}\nCSV: {csv_path}\n")
+
+    if args.require_urls and plan.missing_url_count > 0:
+        logger.error(
+            "%d scene(s) have no download URL and --require-urls was set",
+            plan.missing_url_count,
+        )
+        return _EXIT_ERROR
+
+    if args.download_mode == "dry-run":
+        sys.stdout.write(
+            "Dry-run only: no network access, no SLCs downloaded. "
+            "Re-run with --download-mode real to fetch the SLCs.\n"
+        )
+        return _EXIT_OK
+
+    # --- Real download path (network + credentials; opt-in only). ---
+    if importlib.util.find_spec("requests") is None:
+        sys.stderr.write(
+            f"[{ErrorCode.DL004.value}] real download needs the optional 'download' extra; "
+            "install it with 'uv sync --extra download' (or pip install requests)\n"
+        )
+        return _EXIT_ERROR
+
+    try:
+        from insar_prep.providers.asf.credentials import resolve_credentials
+
+        resolved = resolve_credentials(CredentialSource(args.credential_source))
+    except CredentialError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    requests_to_run = download_requests_from_scenes(unique_scenes, slc_dir=output_dir / SLC_SUBDIR)
+    if not requests_to_run:
+        logger.error("no scenes with a download URL; nothing to download")
+        return _EXIT_ERROR
+
+    downloader = RealAsfDownloader(resolved=resolved, max_retries=args.max_retries)
+    results: list[DownloadResult] = []
+    for request in requests_to_run:
+        result = downloader.download(request)
+        results.append(result)
+        logger.info(
+            "scene %s: %s (%d bytes)%s",
+            result.scene_id,
+            result.outcome.value,
+            result.bytes_written,
+            f" [{result.error_code}]" if result.error_code else "",
+        )
+
+    results_path = _write_download_results(output_dir, results)
+
+    counts = {outcome: 0 for outcome in DownloadOutcome}
+    for result in results:
+        counts[result.outcome] += 1
+    sys.stdout.write(
+        "ASF download finished: "
+        f"{counts[DownloadOutcome.SUCCESS]} downloaded, "
+        f"{counts[DownloadOutcome.SKIPPED]} skipped, "
+        f"{counts[DownloadOutcome.FAILED]} failed, "
+        f"{counts[DownloadOutcome.INTERRUPTED]} interrupted.\n"
+        f"Results: {results_path}\n"
+    )
+
+    if counts[DownloadOutcome.FAILED] or counts[DownloadOutcome.INTERRUPTED]:
         return _EXIT_ERROR
     return _EXIT_OK
 

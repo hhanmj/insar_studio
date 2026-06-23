@@ -24,6 +24,12 @@ dependencies = [
 gui = [
     "PySide6>=6.7",
 ]
+# Real ASF SLC download (NASA Earthdata). Optional: the offline core (prepare /
+# plan-asf-downloads / gui) never needs requests. Install with:
+# uv sync --extra download
+download = [
+    "requests>=2.31",
+]
 
 [project.urls]
 Homepage = "https://github.com/hhanmj/insar_assistant"
@@ -60,3 +66,6 @@ select = ["E", "F", "I", "W", "UP", "B", "T20"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "real_download: opt-in tests that perform a real, credentialed ASF download (network + Earthdata account). Excluded from CI; run manually with -m real_download.",
+]

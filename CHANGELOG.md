@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Real ASF Sentinel-1 SLC download (Task 049): `RealAsfDownloader` (in
+  `src/insar_prep/providers/asf/downloader.py`) is now implemented (replacing the
+  not-implemented stub) and a new `download-asf` CLI subcommand drives it.
+  Download is **off by default** (dry-run, which reuses the offline
+  `build_asf_download_plan` and touches no network); `--download-mode real`
+  fetches the SLCs. The transfer streams to a `<name>.zip.part` temp file,
+  verifies the byte count against `Content-Length`, **atomically renames** to
+  `<output-dir>/02_slc/<granule>.zip` only on success, skips already-complete
+  targets (idempotent/resumable), retries transient failures with backoff
+  (`--max-retries`), classifies HTTP 401/403 as a credential error, and leaves a
+  `.part` for resume on cancellation. A credential-masked
+  `asf_download_plan/asf_download_results.csv` records each scene's outcome.
+  Credentials are resolved at the auth boundary by a new
+  `src/insar_prep/providers/asf/credentials.py` (`EARTHDATA_TOKEN` env or a
+  user-managed `~/.netrc`; never a CLI password flag, never persisted, kept out
+  of `repr`); the bearer token is confined to Earthdata/ASF hosts and dropped
+  before any signed S3 redirect (concept from `asf_search`'s `ASFSession`). The
+  network capability is isolated behind a new optional `download` extra
+  (`requests`), so the offline core (`prepare` / `plan-asf-downloads` / `gui`)
+  keeps zero network dependency; `requests` is imported lazily. Added error codes
+  `DL004` (credentials missing/rejected) and `DL005` (transport), registered a
+  `real_download` pytest marker (opt-in, excluded from CI), and hardened
+  `mask_text` to also redact `.netrc` `login`/`password` lines and
+  `user:pass@host` URL userinfo. Added `tests/unit/test_asf_credentials.py`,
+  `tests/unit/test_asf_real_downloader.py`, and `tests/e2e/test_asf_download_cli.py`
+  (fake-session/credential/redaction coverage, no network), and updated the
+  obsolete "not implemented" downloader test and the error-code enumeration. Full
+  suite **489 passed, 1 skipped** (the opt-in real-download smoke test), ruff
+  clean. `README.md` documents the `download-asf` workflow and the `download`
+  extra; `asf_search` (BSD-3) re-confirmed in `THIRD_PARTY_REFERENCES.md`.
 - Shapefile / KML / KMZ Processing AOI import (Task 048): a new offline
   `src/insar_prep/processing/aoi_vector.py` (`load_aoi_from_shapefile`,
   `load_aoi_from_kml`, `load_aoi_from_kmz`, and a `load_aoi_from_file` extension

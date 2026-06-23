@@ -20,6 +20,8 @@ def test_expected_codes_present() -> None:
         "DL001",
         "DL002",
         "DL003",
+        "DL004",
+        "DL005",
         "ORB001",
         "DEM001",
         "DEM002",
