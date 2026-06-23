@@ -144,6 +144,32 @@
 - **risk**: 中。无法审计来源 / 不可再分发。
 - **notes**: 后续 Task=Task 009（行为参考）。
 
+### 10. EZ-InSAR (MIESAR)
+
+- **name**: EZ-InSAR（alexisInSAR/EZ-InSAR，前身 MIESAR；UCD）
+- **url**: https://github.com/alexisInSAR/EZ-InSAR
+- **license**: **GPL-3.0**（另有 2025 Python 分支）
+- **last_checked_date**: 2026-06-23
+- **purpose**: MATLAB GUI 工具箱，封装 ISCE+StaMPS/MintPy。三模块：数据准备 / ISCE 处理 / 时间序列。多传感器：S1 IW+Stripmap、TSX/PAZ、CSK、ALOS-2，各有 SLC 目录约定。
+- **use_as_dependency**: **否（GPL-3.0 传染 + MATLAB，非 Python 库）**。
+- **copy_code_allowed**: **否（硬性，GPL-3.0）**。
+- **integration_plan**: 仅作架构 / UX 参考。借鉴其「数据准备模块」工作流（AOI→下载 SLC/orbit/DEM→按 `slc/` 目录约定组织→配准设置）与多传感器抽象，落到我们自研的 GUI/CLI 与 `core/models`；**不 import、不复制、不分发**其代码。
+- **risk**: **高（GPL 传染）**。一旦复制 / import 会污染 MIT 主项目许可证；MATLAB 依赖也超出本项目 Python 栈。
+- **notes**: 可借鉴点=数据准备流程 / 三模块布局 / 多传感器 SLC 目录约定（与涪城 FC-1 stripmap 路径相关）。不应实现=照搬其 ISCE/StaMPS 处理链（越过「只做数据准备」边界）。后续 Task=GUI / 多传感器准备（仅概念参考）。
+
+### 11. awesome-sar（精选清单）
+
+- **name**: awesome-sar（RadarCODE/awesome-sar）
+- **url**: https://github.com/RadarCODE/awesome-sar
+- **license**: 清单仓库本身（以仓库为准）；**所链接各工具各自许可证不同，选用前须逐一核对**。
+- **last_checked_date**: 2026-06-23
+- **purpose**: SAR 软件 / 库 / 资源精选清单（InSAR 处理、时序、对流层改正、数据下载、地理工具等）。
+- **use_as_dependency**: 否（它是清单，不是库）。
+- **copy_code_allowed**: N/A（清单本身；具体工具按各自许可证）。
+- **integration_plan**: 作「候选第三方工具」目录使用；**选用任一条目前，按本文件规则单独登记该工具的许可证 / 边界**。
+- **risk**: 低（清单本身）；但下游工具许可证差异大（如 PyAPS / MintPy = GPL；RAiDER = Apache；asf_search / sentineleof = BSD/MIT）。
+- **notes**: 对本项目有用的条目分类：下游处理器（ISCE2 / GMTSAR / SNAP-S1TBX / Doris）、时序（MintPy / StaMPS / GIAnT / PyRate）、对流层（PyAPS / TRAIN / kite / RAiDER）、数据下载（EODAG / CDSETool / SSARA / asf_search）、地理（GDAL / QGIS）、地形 geocoding（sarsen / pyroSAR）。
+
 ---
 
 ## 分析汇总表
@@ -159,3 +185,5 @@
 | 7 | geo-downloader | MIT | 否(非Py) | 否 | 下载器/GUI 交互参考 | 008 / 014 |
 | 8 | DEMdownloader(本地) | **不明** | 否 | **否** | 仅概念参考(含.env,隔离) | 005 / 010 / 011 |
 | 9 | OrbitDownloader.exe(本地) | 不明 | 否 | N/A | 仅行为参考 | 009 |
+| 10 | EZ-InSAR (MIESAR) | **GPL-3.0** | **否(传染/MATLAB)** | **否** | 仅架构/UX 参考(数据准备模块/多传感器) | GUI/多传感器 |
+| 11 | awesome-sar | 清单(各工具不同) | 否(清单) | N/A | 候选工具目录;选用前逐一登记 | — |

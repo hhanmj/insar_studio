@@ -7,10 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet. Future work (for example real ASF/DEM/GACOS download authorization,
-the `v0.12.0-gui-beta` tag, and queue-panel wiring) is tracked in the development
-manual and the release-readiness docs; completed work is recorded under the
-released versions below.
+### Added
+
+- Shapefile / KML / KMZ Processing AOI import (Task 048): a new offline
+  `src/insar_prep/processing/aoi_vector.py` (`load_aoi_from_shapefile`,
+  `load_aoi_from_kml`, `load_aoi_from_kmz`, and a `load_aoi_from_file` extension
+  dispatcher) builds a Processing AOI from an ESRI Shapefile (`.shp`, read
+  directly without the `.shx`; all polygon rings merged via
+  `shapely.ops.unary_union`; interior rings/holes are filled, which never changes
+  the AOI bounds), a KML file (`.kml`, all `Polygon` geometries merged), or a
+  zipped KML (`.kmz`, the `doc.kml` / first `.kml` entry), reusing the existing
+  `geometry_to_processing_aoi` validator. Uses only the standard library
+  (`struct` for the shapefile, `xml.etree` for KML, `zipfile` for KMZ) on top of
+  the existing `shapely` — **no new dependencies** (no geopandas/fiona/pyshp/GDAL).
+  WGS84 lon/lat (`EPSG:4326`) only: a shapefile sidecar `.prj` with a projected or
+  non-WGS84 CRS, a non-areal/empty geometry, malformed KML XML, or a non-zip KMZ
+  raise `InputValidationError` (`AOI001`); no coordinate transforms. The `prepare`
+  CLI added `--aoi-shp` / `--aoi-kml` / `--aoi-kmz`, mutually exclusive with
+  `--bbox` / `--aoi-geojson` / `--aoi-wkt`; the GUI AOI panel added
+  `AoiInputMode.SHP` / `KML` / `KMZ` input pages. Added
+  `tests/unit/test_aoi_vector.py` and extended `tests/e2e/test_prepare_workflow.py`
+  and `tests/unit/test_gui_aoi_panel.py` (+29 tests; full suite **449 passed**,
+  ruff clean). `.gitignore` now ignores the local `insarassistantreal_test/`
+  real-data test folder. `README.md` documents the new AOI options
+  (`GeoPackage` remains unsupported), and EZ-InSAR (GPL-3.0; concept/UX reference
+  only) and the awesome-sar list were logged in `THIRD_PARTY_REFERENCES.md`. No
+  changes to the ASF/DEM/GACOS/orbit modules, reporting, queue, or core models;
+  the existing AOI behaviors are unchanged; no `pyproject` version change.
 
 ## [0.12.0] - 2026-06-23
 

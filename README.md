@@ -116,6 +116,13 @@ one** of these mutually exclusive flags (passing more than one is rejected):
   geometry, a `Feature`, or a `FeatureCollection` (multiple features are merged
   and their combined bounds are used).
 - `--aoi-wkt "WKT"` — a WKT `POLYGON` or `MULTIPOLYGON` string.
+- `--aoi-shp PATH` — an ESRI Shapefile (`.shp`); the `.shp` is read directly (the
+  `.shx` index is not required) and all polygon rings are merged. A sidecar
+  `.prj`, if present, must be WGS84 lon/lat — a projected or non-WGS84 CRS is
+  rejected (no reprojection is performed).
+- `--aoi-kml PATH` — a KML file (`.kml`); all `Polygon` geometries are merged.
+- `--aoi-kmz PATH` — a zipped KML (`.kmz`); the `doc.kml` (or first `.kml`) entry
+  inside the archive is parsed.
 
 ```bash
 uv run insar-prep prepare \
@@ -127,18 +134,23 @@ uv run insar-prep prepare \
   --gacos-plan
 ```
 
-For GeoJSON/WKT inputs the AOI's bounding box (its bounds) becomes the Processing
+For file/string inputs the AOI's bounding box (its bounds) becomes the Processing
 AOI; the existing per-product download buffers are then applied as before.
+Shapefile interior rings (holes) are not preserved — each ring is treated as a
+filled polygon — which never changes the AOI's bounds.
 
 Constraints:
 
 - Coordinates must be **WGS84 longitude/latitude (EPSG:4326)** only. A GeoJSON
-  `crs` member that is not EPSG:4326 is rejected, and no coordinate transforms are
-  performed.
+  `crs` member or a shapefile `.prj` that is not EPSG:4326 is rejected, and no
+  coordinate transforms are performed. KML/KMZ are WGS84 lon/lat by specification.
 - Longitudes must be within `[-180, 180]` and latitudes within `[-90, 90]`.
 - Only `Polygon` / `MultiPolygon` geometries are accepted (no points/lines, no
   `GeometryCollection`).
-- `shapefile`, `KML`, and `GeoPackage` inputs are **not** supported.
+- Supported vector files: GeoJSON, ESRI Shapefile (`.shp`), KML (`.kml`), and
+  KMZ (`.kmz`). `GeoPackage` inputs are **not** supported.
+- No new dependencies are used: shapefiles are parsed with the standard-library
+  `struct`, KML with `xml.etree`, and KMZ with `zipfile`, on top of `shapely`.
 
 ## Where the report is written
 
@@ -293,10 +305,11 @@ bar. From the toolbar you can create a **Workspace / Project / Region** (the
 tree updates live; names are normalized with the same SARscape-safe naming as
 the CLI, and precondition/input errors are shown in the status bar with an error
 code). The centre **AOI panel** then defines the current Region's Processing AOI
-from a bounding box, a GeoJSON file, or a WKT string (the three sources are
-mutually exclusive); it reuses the same core AOI importers as the CLI — EPSG:4326
-lon/lat only, no Shapefile/KML/GeoPackage and no coordinate transforms — and the
-tree marks a Region with `[AOI set]` once one is bound. An **ASF cart import**
+from a bounding box, a GeoJSON file, a WKT string, an ESRI Shapefile (`.shp`), a
+KML file (`.kml`), or a zipped KML (`.kmz`) — the sources are mutually exclusive;
+it reuses the same core AOI importers as the CLI — EPSG:4326 lon/lat only,
+GeoPackage unsupported, and no coordinate transforms — and the tree marks a
+Region with `[AOI set]` once one is bound. An **ASF cart import**
 panel parses a locally exported ASF cart (Vertex Python script, URL text, CSV, or
 GeoJSON) with the same core parser as the CLI and lists the resulting scenes
 (scene id, platform, acquisition time, product, beam, polarization, and URL
