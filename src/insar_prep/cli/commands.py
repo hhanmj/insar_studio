@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import importlib.util
 import sys
 from pathlib import Path
@@ -34,7 +35,16 @@ from insar_prep.processing.aoi_vector import (
     load_aoi_from_shapefile,
 )
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
-from insar_prep.providers.asf.credentials import EARTHDATA_TOKEN_ENV, CredentialSource
+from insar_prep.providers.asf.credentials import (
+    EARTHDATA_TOKEN_ENV,
+    EARTHDATA_TOKEN_URL,
+    CredentialSource,
+    clear_stored_credentials,
+    resolve_credentials,
+    store_login,
+    store_token,
+    stored_credential_status,
+)
 from insar_prep.providers.asf.download_plan import (
     SLC_SUBDIR,
     build_asf_download_plan,
@@ -637,11 +647,12 @@ def add_download_asf_subparser(subparsers) -> argparse.ArgumentParser:
     parser.add_argument(
         "--credential-source",
         dest="credential_source",
-        default=CredentialSource.NETRC.value,
+        default=CredentialSource.AUTO.value,
         choices=[member.value for member in CredentialSource],
         help=(
-            f"Earthdata credential source for real download: netrc (~/.netrc) or "
-            f"env-token (${EARTHDATA_TOKEN_ENV}). Default: netrc."
+            "Earthdata credential source for real download: auto (keyring -> "
+            f"${EARTHDATA_TOKEN_ENV} -> ~/.netrc), keyring, env-token, or netrc. "
+            "Default: auto. Configure once with 'insar-prep auth login' or the GUI."
         ),
     )
     parser.add_argument(
@@ -743,8 +754,6 @@ def run_download_asf(args: argparse.Namespace) -> int:
         return _EXIT_ERROR
 
     try:
-        from insar_prep.providers.asf.credentials import resolve_credentials
-
         resolved = resolve_credentials(CredentialSource(args.credential_source))
     except CredentialError as exc:
         sys.stderr.write(f"{exc}\n")
@@ -785,6 +794,117 @@ def run_download_asf(args: argparse.Namespace) -> int:
     if counts[DownloadOutcome.FAILED] or counts[DownloadOutcome.INTERRUPTED]:
         return _EXIT_ERROR
     return _EXIT_OK
+
+
+def add_auth_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``auth`` subcommand (manage stored Earthdata credentials)."""
+    parser = subparsers.add_parser(
+        "auth",
+        help="Manage stored NASA Earthdata credentials (OS keyring).",
+        description=(
+            "Store, check, or remove NASA Earthdata Login credentials in the OS "
+            "keyring (Windows Credential Manager / macOS Keychain / Linux Secret "
+            "Service) so 'download-asf --download-mode real' can use them. A password "
+            "is never accepted as a flag; 'auth login' prompts without echo. Needs the "
+            "optional 'download' extra (keyring)."
+        ),
+    )
+    parser.add_argument(
+        "action",
+        choices=["login", "status", "logout"],
+        help="login: store a token or username/password; status: show it; logout: clear it.",
+    )
+    parser.add_argument(
+        "--token-stdin",
+        dest="token_stdin",
+        action="store_true",
+        help="Read the Earthdata token from stdin instead of prompting (for 'login').",
+    )
+    parser.add_argument(
+        "--username",
+        dest="username",
+        default=None,
+        help="Earthdata username for 'login' (the password is then prompted without echo).",
+    )
+    parser.add_argument(
+        "--test",
+        dest="test_connection",
+        action="store_true",
+        help="For 'status': perform a live authenticated check against Earthdata (network).",
+    )
+    return parser
+
+
+def _auth_login(args: argparse.Namespace) -> int:
+    """Store a token or username/password in the OS keyring."""
+    if args.username:
+        password = getpass.getpass(f"Earthdata password for {args.username}: ")
+        store_login(args.username, password)
+        sys.stdout.write("Stored Earthdata username/password in the OS keyring.\n")
+        return _EXIT_OK
+
+    if args.token_stdin:
+        token = sys.stdin.readline().strip()
+    else:
+        token = getpass.getpass(
+            "Paste Earthdata token (leave blank to enter username/password): "
+        ).strip()
+
+    if token:
+        store_token(token)
+        sys.stdout.write("Stored Earthdata token in the OS keyring.\n")
+        return _EXIT_OK
+
+    username = input("Earthdata username: ").strip()
+    password = getpass.getpass("Earthdata password: ")
+    store_login(username, password)
+    sys.stdout.write("Stored Earthdata username/password in the OS keyring.\n")
+    return _EXIT_OK
+
+
+def _auth_status(args: argparse.Namespace) -> int:
+    """Print what (if anything) is stored, optionally testing it against Earthdata."""
+    status = stored_credential_status()
+    sys.stdout.write(f"Stored Earthdata credential: {status} (token page: {EARTHDATA_TOKEN_URL})\n")
+    if not args.test_connection:
+        return _EXIT_OK
+
+    try:
+        resolved = resolve_credentials(CredentialSource.AUTO)
+    except CredentialError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+    if importlib.util.find_spec("requests") is None:
+        sys.stderr.write(
+            f"[{ErrorCode.DL004.value}] connection test needs the optional 'download' extra "
+            "(requests); install it with 'uv sync --extra download'\n"
+        )
+        return _EXIT_ERROR
+    from insar_prep.providers.asf.downloader import probe_earthdata_auth
+
+    ok, message = probe_earthdata_auth(resolved)
+    sys.stdout.write(f"Earthdata connection test: {'OK' if ok else 'FAILED'} ({message})\n")
+    return _EXIT_OK if ok else _EXIT_ERROR
+
+
+def run_auth(args: argparse.Namespace) -> int:
+    """Run the ``auth`` subcommand. Returns a process exit code."""
+    try:
+        if args.action == "login":
+            return _auth_login(args)
+        if args.action == "status":
+            return _auth_status(args)
+        # logout
+        removed = clear_stored_credentials()
+        sys.stdout.write(
+            "Cleared stored Earthdata credentials.\n"
+            if removed
+            else "No stored Earthdata credentials to clear.\n"
+        )
+        return _EXIT_OK
+    except CredentialError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
 
 
 def add_gui_subparser(subparsers) -> argparse.ArgumentParser:

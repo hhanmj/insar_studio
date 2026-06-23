@@ -243,6 +243,24 @@ def build_earthdata_session(resolved: ResolvedCredential) -> object:
     session.trust_env = True  # read ~/.netrc for Basic auth on EDL hosts
     if resolved.token:
         session.headers["Authorization"] = f"Bearer {resolved.token}"
+    elif resolved.username and resolved.password:
+        import base64  # noqa: PLC0415 - only needed for the basic-auth path
+
+        encoded = base64.b64encode(f"{resolved.username}:{resolved.password}".encode()).decode(
+            "ascii"
+        )
+        basic_header = f"Basic {encoded}"
+
+        class _EdlBasicAuth(requests.auth.AuthBase):
+            """Apply Basic auth only to Earthdata/ASF hosts (never to S3)."""
+
+            def __call__(self, request: object) -> object:
+                host = urlsplit(request.url).hostname or ""  # type: ignore[attr-defined]
+                if _host_allows_auth(host):
+                    request.headers["Authorization"] = basic_header  # type: ignore[attr-defined]
+                return request
+
+        session.auth = _EdlBasicAuth()
     return session
 
 
@@ -259,7 +277,7 @@ class RealAsfDownloader:
     def __init__(
         self,
         *,
-        credential_source: CredentialSource = CredentialSource.NETRC,
+        credential_source: CredentialSource = CredentialSource.AUTO,
         resolved: ResolvedCredential | None = None,
         session: object | None = None,
         max_retries: int = _DEFAULT_MAX_RETRIES,
@@ -415,6 +433,34 @@ class RealAsfDownloader:
             message="cancelled by user; partial .part kept for resume",
             error_code=ErrorCode.DL001.value,
         )
+
+
+_EDL_PROFILE_URL = "https://urs.earthdata.nasa.gov/profile"
+
+
+def probe_earthdata_auth(
+    resolved: ResolvedCredential,
+    *,
+    session: object | None = None,
+    url: str = _EDL_PROFILE_URL,
+    timeout: float = 30.0,
+) -> tuple[bool, str]:
+    """Best-effort authenticated reachability check. Returns ``(ok, masked_message)``.
+
+    Performs a single authenticated request to Earthdata; any error is masked. Used
+    by ``insar-prep auth status --test`` (opt-in, network).
+    """
+    try:
+        sess = session or build_earthdata_session(resolved)
+        with sess.get(url, timeout=timeout, allow_redirects=True) as response:  # type: ignore[attr-defined]
+            status = int(getattr(response, "status_code", 0))
+    except Exception as exc:  # noqa: BLE001 - any transport error is reported, masked
+        return False, mask_text(f"{type(exc).__name__}: {exc}")
+    if status in (401, 403):
+        return False, f"HTTP {status}: credentials rejected"
+    if status >= 400:
+        return False, f"HTTP {status}"
+    return True, f"HTTP {status}: reachable"
 
 
 def download_requests_from_scenes(

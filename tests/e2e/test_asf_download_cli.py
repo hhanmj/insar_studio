@@ -109,7 +109,8 @@ def test_download_asf_real_happy_path_monkeypatched(
         lambda name, *a, **k: object() if name == "requests" else real_find_spec(name, *a, **k),
     )
     monkeypatch.setattr(
-        "insar_prep.providers.asf.credentials.resolve_credentials",
+        commands,
+        "resolve_credentials",
         lambda source: ResolvedCredential(source=source, use_netrc=True),
     )
 
@@ -158,6 +159,11 @@ def test_download_asf_real_happy_path_monkeypatched(
     assert list((out_dir / "02_slc").glob("*.zip"))
 
 
-def test_credential_source_choices_include_netrc_and_env_token() -> None:
-    # Guard: both supported sources are exposed on the CLI choices.
-    assert {member.value for member in CredentialSource} == {"netrc", "env-token"}
+def test_credential_source_choices_cover_all_sources() -> None:
+    # Guard: all supported sources are exposed on the CLI choices.
+    assert {member.value for member in CredentialSource} == {
+        "auto",
+        "keyring",
+        "netrc",
+        "env-token",
+    }

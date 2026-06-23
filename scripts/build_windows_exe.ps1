@@ -7,9 +7,10 @@
     Runs the quality gate, removes previous build artifacts, builds
     dist\insar-prep.exe, and runs exe smoke tests (offline `prepare`,
     `plan-asf-downloads`, and `download-asf` dry-run). The build bundles the
-    optional `download` extra (requests + certifi CA bundle) so the frozen exe is
-    *capable* of `download-asf --download-mode real` with the user's Earthdata
-    credentials; the build and all smoke tests themselves stay offline and never
+    optional `download` extra (requests + certifi CA bundle + keyring) so the
+    frozen exe is *capable* of `download-asf --download-mode real` and of storing
+    Earthdata credentials via `auth` / the GUI dialog in the OS keyring; the build
+    and all smoke tests themselves stay offline and never
     download SAR data, build an installer, create a GUI, commit artifacts, or
     touch the network. Build artifacts (build/, dist/, *.spec) are git-ignored.
 
@@ -82,6 +83,8 @@ Invoke-Step "PyInstaller build" {
         --collect-submodules pydantic `
         --collect-all requests `
         --collect-all certifi `
+        --collect-all keyring `
+        --copy-metadata keyring `
         packaging/insar_prep_entry.py
 }
 

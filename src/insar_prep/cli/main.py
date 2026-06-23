@@ -14,10 +14,12 @@ import argparse
 
 from insar_prep import __version__
 from insar_prep.cli.commands import (
+    add_auth_subparser,
     add_download_asf_subparser,
     add_gui_subparser,
     add_plan_asf_downloads_subparser,
     add_prepare_subparser,
+    run_auth,
     run_download_asf,
     run_gui,
     run_plan_asf_downloads,
@@ -40,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_prepare_subparser(subparsers)
     add_plan_asf_downloads_subparser(subparsers)
     add_download_asf_subparser(subparsers)
+    add_auth_subparser(subparsers)
     add_gui_subparser(subparsers)
     return parser
 
@@ -54,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_plan_asf_downloads(args)
     if args.command == "download-asf":
         return run_download_asf(args)
+    if args.command == "auth":
+        return run_auth(args)
     if args.command == "gui":
         return run_gui(args)
     # No subcommand: show help so the command is informative.

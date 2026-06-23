@@ -25,10 +25,12 @@ gui = [
     "PySide6>=6.7",
 ]
 # Real ASF SLC download (NASA Earthdata). Optional: the offline core (prepare /
-# plan-asf-downloads / gui) never needs requests. Install with:
+# plan-asf-downloads / gui) never needs these. `requests` performs the download;
+# `keyring` stores Earthdata credentials in the OS secret store. Install with:
 # uv sync --extra download
 download = [
     "requests>=2.31",
+    "keyring>=24",
 ]
 
 [project.urls]

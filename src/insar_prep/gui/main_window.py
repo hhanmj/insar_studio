@@ -33,6 +33,7 @@ from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.models import Aoi, Scene
 from insar_prep.gui import WINDOW_TITLE
+from insar_prep.gui.dialogs.earthdata_login_dialog import EarthdataLoginDialog
 from insar_prep.gui.dialogs.project_dialog import ProjectDialog
 from insar_prep.gui.dialogs.region_dialog import RegionDialog
 from insar_prep.gui.dialogs.workspace_dialog import WorkspaceDialog
@@ -139,6 +140,10 @@ class MainWindow(QMainWindow):
         new_region = QAction("New Region", self)
         new_region.triggered.connect(self._on_new_region)
         toolbar.addAction(new_region)
+
+        earthdata_login = QAction("Earthdata Login", self)
+        earthdata_login.triggered.connect(self._on_earthdata_login)
+        toolbar.addAction(earthdata_login)
 
     # --- logic methods (testable without dialogs) -----------------------------
 
@@ -375,6 +380,9 @@ class MainWindow(QMainWindow):
         dialog = RegionDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.apply_new_region(dialog.region_name())
+
+    def _on_earthdata_login(self) -> None:
+        EarthdataLoginDialog(self).exec()
 
     def _on_set_aoi(self) -> None:
         try:
