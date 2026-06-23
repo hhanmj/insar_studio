@@ -405,6 +405,9 @@ self-contained smoke-test package can be assembled with
 `scripts/make_windows_smoke_package.ps1` (both produce git-ignored artifacts that
 are never committed). See:
 
+- [`docs/getting_started_for_testers.md`](docs/getting_started_for_testers.md) —
+  one-page quickstart for running the Windows `insar-prep.exe` (offline reports
+  and real ASF SLC download with `auth login`).
 - [`docs/packaging_readiness.md`](docs/packaging_readiness.md) — packaging
   readiness checklist, runtime-dependency risks (shapely/GEOS, pydantic-core), the
   PyInstaller command, and the build result.

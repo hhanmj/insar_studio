@@ -618,9 +618,11 @@ def add_download_asf_subparser(subparsers) -> argparse.ArgumentParser:
             "Write an ASF SLC download plan (JSON + CSV) and, with "
             "--download-mode real, fetch the SLCs from ASF using NASA Earthdata "
             "credentials. Dry-run is the default and never touches the network. "
-            "Real download requires the optional 'download' extra (requests) and "
-            "credentials from the environment or ~/.netrc; a password is never "
-            "accepted on the command line."
+            "Real download requires the optional 'download' extra (requests). "
+            "Set up credentials once with 'insar-prep auth login' (saved in the OS "
+            "keyring) or the GUI 'Earthdata Login' dialog; the default "
+            f"--credential-source auto then falls back to ${EARTHDATA_TOKEN_ENV} or "
+            "~/.netrc. A password is never accepted on the command line."
         ),
     )
     parser.add_argument(
