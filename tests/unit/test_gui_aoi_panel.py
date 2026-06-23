@@ -8,11 +8,41 @@ interfaces; no network, no disk persistence, no coordinate transforms.
 from __future__ import annotations
 
 import importlib.util
+import struct
+import zipfile
+from pathlib import Path
 
 import pytest
 
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
+
+_AOI_KML_COORDS = "110.0,30.0,0 111.0,30.0,0 111.0,31.0,0 110.0,31.0,0 110.0,30.0,0"
+
+
+def _write_aoi_shapefile(path: Path) -> Path:
+    ring = [(110.0, 30.0), (111.0, 30.0), (111.0, 31.0), (110.0, 31.0), (110.0, 30.0)]
+    content = struct.pack("<i", 5) + struct.pack("<4d", 110.0, 30.0, 111.0, 31.0)
+    content += struct.pack("<ii", 1, len(ring)) + struct.pack("<i", 0)
+    for x, y in ring:
+        content += struct.pack("<2d", x, y)
+    record = struct.pack(">ii", 1, len(content) // 2) + content
+    header = struct.pack(">i", 9994) + b"\x00" * 20 + struct.pack(">i", (100 + len(record)) // 2)
+    header += struct.pack("<i", 1000) + struct.pack("<i", 5)
+    header += struct.pack("<4d", 110.0, 30.0, 111.0, 31.0) + struct.pack("<4d", 0.0, 0.0, 0.0, 0.0)
+    path.write_bytes(header + record)
+    path.with_suffix(".prj").write_text('GEOGCS["GCS_WGS_1984"]', encoding="utf-8")
+    return path
+
+
+def _aoi_kml_text() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Placemark><Polygon><outerBoundaryIs>'
+        f"<LinearRing><coordinates>{_AOI_KML_COORDS}</coordinates></LinearRing>"
+        "</outerBoundaryIs></Polygon></Placemark></kml>"
+    )
+
 
 _PYSIDE6_AVAILABLE = importlib.util.find_spec("PySide6") is not None
 
@@ -76,6 +106,57 @@ def test_geojson_input_builds_aoi(qt_app: object, tmp_path) -> None:
     aoi = panel.build_aoi()
     assert aoi.bbox is not None
     assert aoi.bbox.south == 30.0
+
+
+def test_shp_input_builds_aoi(qt_app: object, tmp_path) -> None:
+    from insar_prep.gui.widgets.aoi_panel import AoiInputMode
+
+    shp = _write_aoi_shapefile(tmp_path / "aoi.shp")
+    panel = _make_panel(AoiInputMode.SHP)
+    panel.shp_edit.setText(str(shp))
+
+    aoi = panel.build_aoi()
+    assert aoi.bbox is not None
+    assert aoi.bbox.west == 110.0
+    assert aoi.bbox.north == 31.0
+
+
+def test_kml_input_builds_aoi(qt_app: object, tmp_path) -> None:
+    from insar_prep.gui.widgets.aoi_panel import AoiInputMode
+
+    kml = tmp_path / "aoi.kml"
+    kml.write_text(_aoi_kml_text(), encoding="utf-8")
+    panel = _make_panel(AoiInputMode.KML)
+    panel.kml_edit.setText(str(kml))
+
+    aoi = panel.build_aoi()
+    assert aoi.bbox is not None
+    assert aoi.bbox.east == 111.0
+
+
+def test_kmz_input_builds_aoi(qt_app: object, tmp_path) -> None:
+    from insar_prep.gui.widgets.aoi_panel import AoiInputMode
+
+    kmz = tmp_path / "aoi.kmz"
+    with zipfile.ZipFile(kmz, "w") as archive:
+        archive.writestr("doc.kml", _aoi_kml_text())
+    panel = _make_panel(AoiInputMode.KMZ)
+    panel.kmz_edit.setText(str(kmz))
+
+    aoi = panel.build_aoi()
+    assert aoi.bbox is not None
+    assert aoi.bbox.south == 30.0
+
+
+def test_shp_missing_path_raises_coded_error(qt_app: object) -> None:
+    from insar_prep.gui.widgets.aoi_panel import AoiInputMode
+
+    panel = _make_panel(AoiInputMode.SHP)
+    panel.shp_edit.setText("")
+
+    with pytest.raises(InsarPrepError) as excinfo:
+        panel.build_aoi()
+    assert excinfo.value.code == ErrorCode.AOI001
 
 
 def test_invalid_bbox_raises_coded_error(qt_app: object) -> None:

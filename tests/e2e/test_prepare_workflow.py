@@ -13,6 +13,8 @@ from __future__ import annotations
 import csv
 import json
 import socket
+import struct
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -54,6 +56,33 @@ _AOI_RING = [
 ]
 _AOI_GEOJSON = {"type": "Polygon", "coordinates": [_AOI_RING]}
 _AOI_WKT = "POLYGON ((110.1 30.8, 110.6 30.8, 110.6 31.2, 110.1 31.2, 110.1 30.8))"
+_AOI_KML_COORDS = "110.1,30.8,0 110.6,30.8,0 110.6,31.2,0 110.1,31.2,0 110.1,30.8,0"
+
+
+def _write_aoi_shapefile(path: Path) -> Path:
+    """Write a minimal single-polygon WGS84 shapefile matching the demo AOI."""
+    ring = [(110.1, 30.8), (110.6, 30.8), (110.6, 31.2), (110.1, 31.2), (110.1, 30.8)]
+    content = struct.pack("<i", 5)
+    content += struct.pack("<4d", 110.1, 30.8, 110.6, 31.2)
+    content += struct.pack("<ii", 1, len(ring)) + struct.pack("<i", 0)
+    for x, y in ring:
+        content += struct.pack("<2d", x, y)
+    record = struct.pack(">ii", 1, len(content) // 2) + content
+    header = struct.pack(">i", 9994) + b"\x00" * 20 + struct.pack(">i", (100 + len(record)) // 2)
+    header += struct.pack("<i", 1000) + struct.pack("<i", 5)
+    header += struct.pack("<4d", 110.1, 30.8, 110.6, 31.2) + struct.pack("<4d", 0.0, 0.0, 0.0, 0.0)
+    path.write_bytes(header + record)
+    path.with_suffix(".prj").write_text('GEOGCS["GCS_WGS_1984"]', encoding="utf-8")
+    return path
+
+
+def _aoi_kml_text() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Placemark><Polygon><outerBoundaryIs>'
+        f"<LinearRing><coordinates>{_AOI_KML_COORDS}</coordinates></LinearRing>"
+        "</outerBoundaryIs></Polygon></Placemark></kml>"
+    )
 
 
 def _make_orbit_dir(root: Path) -> Path:
@@ -471,3 +500,136 @@ def test_prepare_dem_plan_without_any_aoi_exits_two(
         ]
     )
     assert code == 2
+
+
+def test_prepare_with_aoi_shp(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Shapefile AOI can replace --bbox to drive DEM + GACOS planning."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    shp_path = _write_aoi_shapefile(tmp_path / "aoi.shp")
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+            "--aoi-shp",
+            str(shp_path),
+            "--dem-plan",
+            "--gacos-plan",
+        ]
+    )
+    assert code == 0
+    safe = sarscape_safe_name(region)
+    json_path = workspace / safe / "07_reports" / f"{safe}_data_preparation_report.json"
+    sections = {s["title"] for s in json.loads(json_path.read_text(encoding="utf-8"))["sections"]}
+    assert "DEM planning" in sections
+    assert "GACOS request planning" in sections
+    assert not list(tmp_path.rglob("*.tif"))
+    _assert_all_reports(workspace, region, capsys.readouterr().out)
+
+
+def test_prepare_with_aoi_kml(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A KML AOI can replace --bbox to drive DEM + GACOS planning."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    kml_path = tmp_path / "aoi.kml"
+    kml_path.write_text(_aoi_kml_text(), encoding="utf-8")
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+            "--aoi-kml",
+            str(kml_path),
+            "--dem-plan",
+            "--gacos-plan",
+        ]
+    )
+    assert code == 0
+    assert not list(tmp_path.rglob("*.tif"))
+    _assert_all_reports(workspace, region, capsys.readouterr().out)
+
+
+def test_prepare_with_aoi_kmz(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A KMZ AOI can replace --bbox to drive DEM + GACOS planning."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    kmz_path = tmp_path / "aoi.kmz"
+    with zipfile.ZipFile(kmz_path, "w") as archive:
+        archive.writestr("doc.kml", _aoi_kml_text())
+
+    _ban_network(monkeypatch)
+    code = main(
+        [
+            "prepare",
+            "--cart",
+            str(URLS_CART),
+            "--region-name",
+            region,
+            "--output-root",
+            str(workspace),
+            "--aoi-kmz",
+            str(kmz_path),
+            "--dem-plan",
+            "--gacos-plan",
+        ]
+    )
+    assert code == 0
+    assert not list(tmp_path.rglob("*.tif"))
+    _assert_all_reports(workspace, region, capsys.readouterr().out)
+
+
+def test_prepare_bbox_and_aoi_shp_are_mutually_exclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Supplying both --bbox and --aoi-shp is rejected by argparse (exit 2)."""
+    region = "shiliushubao_demo"
+    workspace = tmp_path / "workspace"
+    shp_path = _write_aoi_shapefile(tmp_path / "aoi.shp")
+
+    _ban_network(monkeypatch)
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "prepare",
+                "--cart",
+                str(URLS_CART),
+                "--region-name",
+                region,
+                "--output-root",
+                str(workspace),
+                "--bbox",
+                "110.1",
+                "30.8",
+                "110.6",
+                "31.2",
+                "--aoi-shp",
+                str(shp_path),
+            ]
+        )
+    assert exc_info.value.code == 2

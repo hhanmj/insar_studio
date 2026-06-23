@@ -26,6 +26,11 @@ from insar_prep.core.naming import sarscape_safe_name
 from insar_prep.gui import PYSIDE6_MISSING_MESSAGE
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 from insar_prep.processing.aoi_import import load_aoi_from_geojson, load_aoi_from_wkt
+from insar_prep.processing.aoi_vector import (
+    load_aoi_from_kml,
+    load_aoi_from_kmz,
+    load_aoi_from_shapefile,
+)
 from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
 from insar_prep.providers.asf.download_plan import (
     build_asf_download_plan,
@@ -126,8 +131,8 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         action="store_true",
         help="Also build an offline DEM request + conversion plan (requires an AOI).",
     )
-    # Processing AOI source. The three flags are mutually exclusive; argparse
-    # rejects any combination with exit code 2. All expect EPSG:4326 lon/lat.
+    # Processing AOI source. These flags are mutually exclusive; argparse rejects
+    # any combination with exit code 2. All expect EPSG:4326 lon/lat.
     aoi_group = parser.add_mutually_exclusive_group()
     aoi_group.add_argument(
         "--bbox",
@@ -154,6 +159,30 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
         default=None,
         metavar="WKT",
         help="Processing AOI from a WKT string (EPSG:4326 lon/lat; POLYGON or MULTIPOLYGON).",
+    )
+    aoi_group.add_argument(
+        "--aoi-shp",
+        dest="aoi_shp",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Processing AOI from an ESRI Shapefile (.shp; EPSG:4326 lon/lat, "
+            "Polygon/MultiPolygon). A sidecar .prj, if present, must be WGS84 lon/lat."
+        ),
+    )
+    aoi_group.add_argument(
+        "--aoi-kml",
+        dest="aoi_kml",
+        default=None,
+        metavar="PATH",
+        help="Processing AOI from a KML file (.kml; WGS84 lon/lat; Polygon geometry).",
+    )
+    aoi_group.add_argument(
+        "--aoi-kmz",
+        dest="aoi_kmz",
+        default=None,
+        metavar="PATH",
+        help="Processing AOI from a zipped KML (.kmz; WGS84 lon/lat; Polygon geometry).",
     )
     parser.add_argument(
         "--dem-dataset",
@@ -226,11 +255,11 @@ def add_prepare_subparser(subparsers) -> argparse.ArgumentParser:
 def _resolve_processing_aoi(args: argparse.Namespace) -> Aoi | None:
     """Build a Processing AOI from the chosen AOI source, or ``None`` if none given.
 
-    The three sources (``--bbox`` / ``--aoi-geojson`` / ``--aoi-wkt``) are mutually
-    exclusive at the argparse level, so at most one is set here. Any validation
-    failure is surfaced as an :class:`InputValidationError` (``AOI001``). The AOI
-    bbox comes from the bounds of the imported geometry; the Download AOI buffer
-    logic downstream is unchanged.
+    The AOI sources (``--bbox`` / ``--aoi-geojson`` / ``--aoi-wkt`` / ``--aoi-shp``
+    / ``--aoi-kml`` / ``--aoi-kmz``) are mutually exclusive at the argparse level,
+    so at most one is set here. Any validation failure is surfaced as an
+    :class:`InputValidationError` (``AOI001``). The AOI bbox comes from the bounds
+    of the imported geometry; the Download AOI buffer logic downstream is unchanged.
     """
     if args.bbox is not None:
         west, south, east, north = args.bbox
@@ -244,6 +273,12 @@ def _resolve_processing_aoi(args: argparse.Namespace) -> Aoi | None:
         return load_aoi_from_geojson(args.aoi_geojson, name=args.region_name)
     if args.aoi_wkt is not None:
         return load_aoi_from_wkt(args.aoi_wkt, name=args.region_name)
+    if args.aoi_shp is not None:
+        return load_aoi_from_shapefile(args.aoi_shp, name=args.region_name)
+    if args.aoi_kml is not None:
+        return load_aoi_from_kml(args.aoi_kml, name=args.region_name)
+    if args.aoi_kmz is not None:
+        return load_aoi_from_kmz(args.aoi_kmz, name=args.region_name)
     return None
 
 
@@ -295,7 +330,8 @@ def run_prepare(args: argparse.Namespace) -> int:
         if processing_aoi is None:
             logger.error(
                 "--dem-plan/--gacos-plan/--gacos-import-dir require a Processing AOI: pass one "
-                "of --bbox WEST SOUTH EAST NORTH, --aoi-geojson PATH, or --aoi-wkt WKT"
+                "of --bbox WEST SOUTH EAST NORTH, --aoi-geojson PATH, --aoi-wkt WKT, "
+                "--aoi-shp PATH, --aoi-kml PATH, or --aoi-kmz PATH"
             )
             return _EXIT_ERROR
 

@@ -1,18 +1,20 @@
-"""Centre panel: Processing AOI input for the current Region (Task 039).
+"""Centre panel: Processing AOI input for the current Region (Task 039, 048).
 
-Lets the user define a Region's Processing AOI from one of three mutually
-exclusive sources -- a manual bounding box, a GeoJSON file, or a WKT string --
-and hands the result to :class:`insar_prep.gui.state.GuiState`. The panel holds
-no parsing/business logic of its own: it only collects text and calls the
-existing core interfaces
+Lets the user define a Region's Processing AOI from one of several mutually
+exclusive sources -- a manual bounding box, a GeoJSON file, a WKT string, an
+ESRI Shapefile, a KML file, or a zipped KML (KMZ) -- and hands the result to
+:class:`insar_prep.gui.state.GuiState`. The panel holds no parsing/business
+logic of its own: it only collects text and calls the existing core interfaces
 
 * :func:`insar_prep.processing.aoi.make_processing_aoi_from_bbox`,
 * :func:`insar_prep.processing.aoi_import.load_aoi_from_geojson`,
 * :func:`insar_prep.processing.aoi_import.load_aoi_from_wkt`,
+* :func:`insar_prep.processing.aoi_vector.load_aoi_from_shapefile`,
+* :func:`insar_prep.processing.aoi_vector.load_aoi_from_kml`,
+* :func:`insar_prep.processing.aoi_vector.load_aoi_from_kmz`,
 
-which already validate input and raise coded :class:`InsarPrepError` errors.
-Shapefile / KML / GeoPackage are intentionally not supported, and no coordinate
-transform is performed (EPSG:4326 lon/lat only).
+which already validate input and raise coded :class:`InsarPrepError` errors. No
+coordinate transform is performed (EPSG:4326 lon/lat only).
 """
 
 from __future__ import annotations
@@ -37,14 +39,22 @@ from insar_prep.core.exceptions import InputValidationError
 from insar_prep.core.models import Aoi
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 from insar_prep.processing.aoi_import import load_aoi_from_geojson, load_aoi_from_wkt
+from insar_prep.processing.aoi_vector import (
+    load_aoi_from_kml,
+    load_aoi_from_kmz,
+    load_aoi_from_shapefile,
+)
 
 
 class AoiInputMode(IntEnum):
-    """The three mutually exclusive AOI input sources (stacked-page order)."""
+    """The mutually exclusive AOI input sources (stacked-page order)."""
 
     BBOX = 0
     GEOJSON = 1
     WKT = 2
+    SHP = 3
+    KML = 4
+    KMZ = 5
 
 
 class AoiPanel(QGroupBox):
@@ -59,12 +69,20 @@ class AoiPanel(QGroupBox):
         self.mode_combo.addItem("Bounding box (W S E N)", AoiInputMode.BBOX)
         self.mode_combo.addItem("GeoJSON file", AoiInputMode.GEOJSON)
         self.mode_combo.addItem("WKT text", AoiInputMode.WKT)
+        self.mode_combo.addItem("Shapefile (.shp)", AoiInputMode.SHP)
+        self.mode_combo.addItem("KML file (.kml)", AoiInputMode.KML)
+        self.mode_combo.addItem("KMZ file (.kmz)", AoiInputMode.KMZ)
 
         self.stack = QStackedWidget()
         self.stack.setObjectName("aoi_input_stack")
+        # Pages are added in AoiInputMode order so the combo index, the stacked
+        # page index, and the enum value all line up.
         self.stack.addWidget(self._build_bbox_page())
         self.stack.addWidget(self._build_geojson_page())
         self.stack.addWidget(self._build_wkt_page())
+        self.shp_edit = self._build_file_page("aoi_shp_path", "Path to a .shp file (EPSG:4326)")
+        self.kml_edit = self._build_file_page("aoi_kml_path", "Path to a .kml file (WGS84 lon/lat)")
+        self.kmz_edit = self._build_file_page("aoi_kmz_path", "Path to a .kmz file (WGS84 lon/lat)")
         self.mode_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)
 
         self.apply_button = QPushButton("Set AOI for current region")
@@ -110,6 +128,17 @@ class AoiPanel(QGroupBox):
         layout.addWidget(self.wkt_edit)
         return page
 
+    def _build_file_page(self, object_name: str, placeholder: str) -> QLineEdit:
+        """Build a single file-path page, add it to the stack, and return its edit."""
+        page = QWidget()
+        form = QFormLayout(page)
+        edit = QLineEdit()
+        edit.setObjectName(object_name)
+        edit.setPlaceholderText(placeholder)
+        form.addRow("File path:", edit)
+        self.stack.addWidget(page)
+        return edit
+
     def current_mode(self) -> AoiInputMode:
         """Return the currently selected AOI input mode."""
         return AoiInputMode(self.mode_combo.currentData())
@@ -130,7 +159,13 @@ class AoiPanel(QGroupBox):
             return self._build_bbox_aoi()
         if mode is AoiInputMode.GEOJSON:
             return self._build_geojson_aoi()
-        return self._build_wkt_aoi()
+        if mode is AoiInputMode.WKT:
+            return self._build_wkt_aoi()
+        if mode is AoiInputMode.SHP:
+            return self._build_file_aoi(self.shp_edit, "Shapefile", load_aoi_from_shapefile)
+        if mode is AoiInputMode.KML:
+            return self._build_file_aoi(self.kml_edit, "KML", load_aoi_from_kml)
+        return self._build_file_aoi(self.kmz_edit, "KMZ", load_aoi_from_kmz)
 
     def _build_bbox_aoi(self) -> Aoi:
         values: dict[str, float] = {}
@@ -162,3 +197,9 @@ class AoiPanel(QGroupBox):
 
     def _build_wkt_aoi(self) -> Aoi:
         return load_aoi_from_wkt(self.wkt_edit.toPlainText())
+
+    def _build_file_aoi(self, edit: QLineEdit, label: str, loader) -> Aoi:
+        path = edit.text().strip()
+        if not path:
+            raise InputValidationError(f"{label} path is required", code=ErrorCode.AOI001)
+        return loader(path)
