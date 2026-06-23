@@ -29,6 +29,7 @@ WORKFLOW_STEPS: tuple[str, ...] = (
     "Scene Check",
     "Orbit / DEM / GACOS Plan",
     "Reports",
+    "Download",
 )
 
 # Message shown when the GUI extra (PySide6) is not installed.

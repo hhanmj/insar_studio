@@ -15,6 +15,7 @@ are shown in the bottom status bar.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -40,6 +41,7 @@ from insar_prep.gui.dialogs.workspace_dialog import WorkspaceDialog
 from insar_prep.gui.state import GuiState, workspace_display_name
 from insar_prep.gui.widgets.aoi_panel import AoiPanel
 from insar_prep.gui.widgets.asf_cart_panel import AsfCartPanel
+from insar_prep.gui.widgets.download_panel import DownloadPanel, DownloadWorker
 from insar_prep.gui.widgets.planning_panel import PlanningPanel
 from insar_prep.gui.widgets.project_tree import ProjectTreeWidget
 from insar_prep.gui.widgets.queue_log_panel import QueueLogPanel
@@ -48,6 +50,12 @@ from insar_prep.gui.widgets.scene_check_panel import SceneCheckPanel
 from insar_prep.gui.widgets.scene_table import SceneTableWidget
 from insar_prep.gui.widgets.status_bar import READY_TEXT, StatusBarWidget
 from insar_prep.gui.widgets.workflow_steps import WorkflowStepsWidget
+from insar_prep.providers.asf import (
+    AsfDownloadPlan,
+    DownloadRunSummary,
+    resolve_credentials,
+    run_asf_download,
+)
 from insar_prep.providers.dem import DemConversionReport, DemPlanningReport
 from insar_prep.providers.gacos import GacosImportCheckReport, GacosPlanningReport
 from insar_prep.providers.orbit import OrbitMatchReport
@@ -88,6 +96,11 @@ class MainWindow(QMainWindow):
         self.planning_panel.gacos_button.clicked.connect(self._on_run_gacos_plan)
         self.report_panel = ReportPanel()
         self.report_panel.generate_button.clicked.connect(self._on_generate_reports)
+        self.download_panel = DownloadPanel()
+        self.download_panel.download_button.clicked.connect(self._on_run_download)
+        self.download_panel.cancel_button.clicked.connect(self._on_cancel_download)
+        self.download_panel.login_button.clicked.connect(self._on_download_login)
+        self._download_worker: DownloadWorker | None = None
         self.queue_log_panel = QueueLogPanel()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -116,6 +129,7 @@ class MainWindow(QMainWindow):
         self.centre_layout.addWidget(self.scene_check_panel)
         self.centre_layout.addWidget(self.planning_panel)
         self.centre_layout.addWidget(self.report_panel)
+        self.centre_layout.addWidget(self.download_panel)
         self.centre_layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -364,6 +378,74 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar_widget.set_status(f"Reports generated: {len(paths)} files (Ready)")
 
+    # --- ASF SLC download -----------------------------------------------------
+
+    def _download_inputs(self, action: str) -> tuple[list[Scene], str] | None:
+        """Return ``(scenes, output_dir)`` for a download, or report a coded error."""
+        region = self._require_region(action)
+        if region is None:
+            return None
+        if not region.scenes:
+            self.status_bar_widget.set_status(
+                str(InsarPrepError(f"import scenes before {action}", code=ErrorCode.GUI002))
+            )
+            return None
+        output_dir = self.download_panel.output_dir()
+        if not output_dir:
+            error = InsarPrepError("output root is required", code=ErrorCode.GUI003)
+            self.status_bar_widget.set_status(str(error))
+            return None
+        return region.scenes, output_dir
+
+    def apply_plan_downloads(self) -> AsfDownloadPlan | None:
+        """Write the offline dry-run download plan for the current region (no network)."""
+        inputs = self._download_inputs("planning downloads")
+        if inputs is None:
+            return None
+        scenes, output_dir = inputs
+        try:
+            plan = self.download_panel.plan_only(scenes, output_dir)
+        except InsarPrepError as exc:
+            self.status_bar_widget.set_status(str(exc))
+            return None
+        self.status_bar_widget.set_status(
+            f"Download plan (dry-run): {plan.planned_count} planned, "
+            f"{plan.missing_url_count} missing URL"
+        )
+        return plan
+
+    def apply_run_real_download(
+        self, *, downloader: object | None = None, resolver: object | None = None
+    ) -> DownloadRunSummary | None:
+        """Run the real download synchronously (used headless/in tests).
+
+        The live GUI uses :meth:`_on_run_download`, which runs the same
+        :func:`run_asf_download` on a :class:`DownloadWorker` thread so the
+        window stays responsive. Both paths share one orchestration. Inject
+        ``downloader`` / ``resolver`` to exercise this offline without a network
+        or a real Earthdata account.
+        """
+        inputs = self._download_inputs("downloading SLCs")
+        if inputs is None:
+            return None
+        scenes, output_dir = inputs
+        try:
+            summary = run_asf_download(
+                scenes,
+                output_dir,
+                credential_source=self.download_panel.selected_credential_source(),
+                downloader=downloader,
+                resolver=resolver or resolve_credentials,
+                progress=self.download_panel.on_scene_done,
+            )
+        except InsarPrepError as exc:
+            self.download_panel.set_failed(str(exc))
+            self.status_bar_widget.set_status(str(exc))
+            return None
+        self.download_panel.set_download_summary(summary)
+        self.status_bar_widget.set_status(f"Download: {summary.summary_line()}")
+        return summary
+
     # --- dialog handlers ------------------------------------------------------
 
     def _on_new_workspace(self) -> None:
@@ -383,6 +465,7 @@ class MainWindow(QMainWindow):
 
     def _on_earthdata_login(self) -> None:
         EarthdataLoginDialog(self).exec()
+        self.download_panel.refresh_credential_status()
 
     def _on_set_aoi(self) -> None:
         try:
@@ -414,3 +497,56 @@ class MainWindow(QMainWindow):
 
     def _on_generate_reports(self) -> None:
         self.apply_generate_reports()
+
+    def _on_download_login(self) -> None:
+        EarthdataLoginDialog(self).exec()
+        self.download_panel.refresh_credential_status()
+
+    def _on_run_download(self) -> None:
+        """Dispatch the Download panel's Run button: dry-run (sync) or real (threaded)."""
+        if self.download_panel.selected_mode() != "real":
+            self.apply_plan_downloads()
+            return
+        inputs = self._download_inputs("downloading SLCs")
+        if inputs is None:
+            return
+        scenes, output_dir = inputs
+        # Real download needs the optional 'download' extra (requests). Check
+        # without importing it so a missing extra gives a clear message.
+        if importlib.util.find_spec("requests") is None:
+            self.status_bar_widget.set_status(
+                "real download needs the 'download' extra (requests); "
+                "install it with 'uv sync --extra download'"
+            )
+            return
+        if self._download_worker is not None and self._download_worker.isRunning():
+            self.status_bar_widget.set_status("a download is already running")
+            return
+        total = sum(1 for scene in scenes if getattr(scene, "url", None))
+        self.download_panel.begin_run(total)
+        worker = DownloadWorker(
+            scenes, output_dir, self.download_panel.selected_credential_source()
+        )
+        worker.scene_done.connect(self.download_panel.on_scene_done)
+        worker.run_finished.connect(self._on_download_finished)
+        worker.run_failed.connect(self._on_download_failed)
+        worker.finished.connect(worker.deleteLater)
+        self._download_worker = worker
+        self.status_bar_widget.set_status(f"Downloading {total} scene(s)… (Cancel to stop)")
+        worker.start()
+
+    def _on_cancel_download(self) -> None:
+        worker = self._download_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            self.status_bar_widget.set_status("Cancelling download…")
+
+    def _on_download_finished(self, summary: DownloadRunSummary) -> None:
+        self.download_panel.set_download_summary(summary)
+        self.status_bar_widget.set_status(f"Download: {summary.summary_line()}")
+        self._download_worker = None
+
+    def _on_download_failed(self, message: str) -> None:
+        self.download_panel.set_failed(message)
+        self.status_bar_widget.set_status(f"Download failed: {message}")
+        self._download_worker = None

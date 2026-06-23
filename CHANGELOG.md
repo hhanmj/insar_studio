@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GUI real ASF SLC download (Task 050): the desktop GUI can now **plan and
+  perform the real Sentinel-1 SLC download itself**, not just the offline
+  workflow. A new `src/insar_prep/gui/widgets/download_panel.py`
+  (`DownloadPanel`) adds an "ASF SLC Download" panel — output root, dry-run vs
+  real mode, credential source, an inline Earthdata-credential status with a
+  one-click *Earthdata Login…* dialog, a Run/Cancel pair, a progress bar, and a
+  per-scene results log. The real transfer runs on a `DownloadWorker(QThread)`
+  so the window stays responsive and is cancellable; per-scene results stream
+  back via Qt signals. The GUI and a single shared orchestration both use the new
+  `src/insar_prep/providers/asf/download_runner.py` (`run_asf_download`,
+  `write_download_results_csv`, `DownloadRunSummary`), which resolves Earthdata
+  credentials (keyring → env → netrc), downloads each unique scene that has a URL
+  via `RealAsfDownloader`, writes the credential-masked
+  `asf_download_plan/asf_download_results.csv`, and supports a progress callback
+  and a cancel `threading.Event`. `main_window.py` wires the panel with guarded
+  `apply_plan_downloads` (offline dry-run) and `apply_run_real_download`
+  (`GUI002`/`GUI003` for a missing region/scenes/output root) methods, refreshes
+  the credential status after the login dialog, and checks the `download` extra
+  via `find_spec` so a missing extra yields a clear message instead of a
+  traceback. A `Download` step was added to `WORKFLOW_STEPS`. Added
+  `tests/unit/test_asf_download_runner.py` and
+  `tests/unit/test_gui_download_panel.py` (fully offline: injected fake
+  downloader/resolver, monkeypatched keyring read, no network, no real archive).
+  The offline core (`prepare` / `plan-asf-downloads`) and the CLI `download-asf`
+  are unchanged; no new runtime dependency (real download still needs the
+  optional `download` extra).
 - Real ASF Sentinel-1 SLC download (Task 049): `RealAsfDownloader` (in
   `src/insar_prep/providers/asf/downloader.py`) is now implemented (replacing the
   not-implemented stub) and a new `download-asf` CLI subcommand drives it.

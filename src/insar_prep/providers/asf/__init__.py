@@ -39,6 +39,12 @@ from insar_prep.providers.asf.download_plan import (
     build_asf_download_plan,
     write_asf_download_plan,
 )
+from insar_prep.providers.asf.download_runner import (
+    DOWNLOAD_RESULT_COLUMNS,
+    DownloadRunSummary,
+    run_asf_download,
+    write_download_results_csv,
+)
 from insar_prep.providers.asf.downloader import (
     AsfDownloader,
     DownloadOutcome,
@@ -54,6 +60,7 @@ from insar_prep.providers.asf.scene_parser import deduplicate_scenes, parse_scen
 __all__ = [
     "ASF_PLAN_COLUMNS",
     "ASF_PLAN_SUBDIR",
+    "DOWNLOAD_RESULT_COLUMNS",
     "EARTHDATA_TOKEN_ENV",
     "EARTHDATA_TOKEN_URL",
     "SLC_SUBDIR",
@@ -65,6 +72,7 @@ __all__ = [
     "DownloadOutcome",
     "DownloadRequest",
     "DownloadResult",
+    "DownloadRunSummary",
     "FakeAsfDownloader",
     "RealAsfDownloader",
     "ResolvedCredential",
@@ -74,6 +82,8 @@ __all__ = [
     "clear_stored_credentials",
     "deduplicate_scenes",
     "download_requests_from_scenes",
+    "run_asf_download",
+    "write_download_results_csv",
     "extract_urls_from_text",
     "parse_asf_cart_file",
     "parse_asf_csv",

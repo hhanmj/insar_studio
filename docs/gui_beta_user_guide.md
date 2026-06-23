@@ -4,10 +4,12 @@ This guide explains how to install, launch, and use the **optional desktop GUI**
 of `insar-prep`. It documents the GUI *as it actually behaves today*; it does not
 describe planned features.
 
-> The GUI is a **beta**. It drives the same **offline** data-preparation workflow
-> as the CLI by calling the existing `insar_prep` core interfaces only. There is
-> **no official GUI release, installer, or `.exe`** — you run it from source with
-> `uv`. The GUI performs **no network access and no downloads**.
+> The GUI is a **beta**. It drives the same data-preparation workflow as the CLI
+> by calling the existing `insar_prep` core interfaces only. There is **no
+> official GUI release, installer, or `.exe`** — you run it from source with `uv`.
+> The offline workflow needs no network; **real ASF Sentinel-1 SLC download is an
+> explicit opt-in** (the *Download* panel, behind the `download` extra and your
+> NASA Earthdata login).
 
 ## 1. GUI Beta status
 
