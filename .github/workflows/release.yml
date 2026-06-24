@@ -1,9 +1,14 @@
 name: Release
 
-# Publish a Windows one-file executable to a GitHub Release whenever a version
-# tag (e.g. v0.13.0) is pushed. This is what end users download, and it is the
-# release the in-app update check ("update-check" / the post-command notice)
+# Publish the Windows one-file executables to a GitHub Release whenever a version
+# tag (e.g. v0.15.0) is pushed. These are what end users download, and they are
+# the release the in-app update check ("update-check" / the post-command notice)
 # compares against, so the loop is: tag -> build -> release -> users notified.
+#
+# Two artifacts are published:
+#   * insar-prep.exe      -- the lean CLI (no rasterio; convert-dem needs the GUI)
+#   * insar-prep-gui.exe  -- the full desktop GUI (bundles rasterio + EGM96 geoid,
+#                            so it can do real DEM vertical-datum conversion)
 
 on:
   push:
@@ -25,19 +30,33 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
 
-      # The download extra (requests + certifi + keyring) is bundled into the exe
-      # so real download / verify / auth work; the dev group provides PyInstaller.
+      # gui + download + convert extras are bundled into the GUI exe so real
+      # download / DEM conversion / auth work; the dev group provides PyInstaller.
       - name: Install dependencies
-        run: uv sync --extra download --dev
+        run: uv sync --extra gui --extra download --extra convert --dev
+
+      - name: Stage artifacts dir
+        run: New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 
       # Runs the quality gate (pytest + ruff), builds dist/insar-prep.exe, and
       # smoke-tests it fully offline.
-      - name: Build and smoke-test the Windows exe
+      - name: Build and smoke-test the CLI exe
         run: pwsh -File scripts/build_windows_exe.ps1
 
-      - name: Publish the exe to the GitHub Release
+      - name: Stage the CLI exe
+        run: Copy-Item dist/insar-prep.exe artifacts/
+
+      # Builds dist/insar-prep-gui.exe (PySide6 + rasterio + geoid) and runs the
+      # off-screen self-test. This script cleans dist/, hence staging above.
+      - name: Build and smoke-test the GUI exe
+        run: pwsh -File scripts/build_windows_gui_exe.ps1
+
+      - name: Stage the GUI exe
+        run: Copy-Item dist/insar-prep-gui.exe artifacts/
+
+      - name: Publish the exes to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/insar-prep.exe
+          files: artifacts/*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true

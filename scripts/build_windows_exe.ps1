@@ -14,6 +14,12 @@
     download SAR data, build an installer, create a GUI, commit artifacts, or
     touch the network. Build artifacts (build/, dist/, *.spec) are git-ignored.
 
+    The bundled EGM96 geoid grid is included (--collect-data insar_prep) and the
+    gacos-import command works in this exe, but real DEM vertical-datum conversion
+    (convert-dem) needs rasterio/GDAL, which this lean CLI exe deliberately omits;
+    use the GUI exe (build_windows_gui_exe.ps1) or a source install with
+    `uv sync --extra convert` for real conversion.
+
 .NOTES
     Run from anywhere; the script resolves the repo root from its own location.
 #>
@@ -88,6 +94,7 @@ Invoke-Step "PyInstaller build" {
         --collect-all requests `
         --collect-all certifi `
         --collect-all keyring `
+        --collect-data insar_prep `
         --copy-metadata keyring `
         --exclude-module PySide6 `
         --exclude-module PySide2 `
@@ -105,6 +112,8 @@ Invoke-Step "exe --version" { & $exe --version }
 Invoke-Step "exe prepare --help" { & $exe prepare --help | Out-Null }
 Invoke-Step "exe plan-asf-downloads --help" { & $exe plan-asf-downloads --help | Out-Null }
 Invoke-Step "exe download-asf --help" { & $exe download-asf --help | Out-Null }
+Invoke-Step "exe convert-dem --help" { & $exe convert-dem --help | Out-Null }
+Invoke-Step "exe gacos-import --help" { & $exe gacos-import --help | Out-Null }
 
 Write-Host ""
 Write-Host "== exe offline prepare smoke test ==" -ForegroundColor Cyan

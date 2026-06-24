@@ -19,6 +19,12 @@ from insar_prep.providers.gacos.import_checker import (
     check_gacos_products,
     scan_gacos_product_directory,
 )
+from insar_prep.providers.gacos.importer import (
+    GACOS_IMPORT_OK,
+    GACOS_NO_PRODUCTS_FOUND,
+    GACOS_SIZE_MISMATCH,
+    import_gacos_products,
+)
 from insar_prep.providers.gacos.planner import (
     GACOS_BATCH_SIZE_INVALID,
     GACOS_BUFFER_INVALID,
@@ -34,7 +40,9 @@ from insar_prep.providers.gacos.planner import (
 )
 from insar_prep.providers.gacos.types import (
     GacosImportCheckReport,
+    GacosImportedProduct,
     GacosImportIssue,
+    GacosImportResult,
     GacosPlanningIssue,
     GacosPlanningReport,
     GacosProductFile,
@@ -49,16 +57,21 @@ __all__ = [
     "GACOS_EXPECTED_FILE_PATTERNS",
     "GACOS_EXTRA_DATE",
     "GACOS_FILENAME_INVALID",
+    "GACOS_IMPORT_OK",
     "GACOS_IMPORT_READY",
     "GACOS_MANUAL_SUBMISSION_REQUIRED",
+    "GACOS_NO_PRODUCTS_FOUND",
     "GACOS_NO_SCENES",
     "GACOS_NO_VALID_DATES",
     "GACOS_PLAN_READY",
     "GACOS_RSC_MISSING",
     "GACOS_SCENE_DATE_MISSING",
+    "GACOS_SIZE_MISMATCH",
     "GACOS_ZTD_MISSING",
     "GacosImportCheckReport",
     "GacosImportIssue",
+    "GacosImportResult",
+    "GacosImportedProduct",
     "GacosPlanningIssue",
     "GacosPlanningReport",
     "GacosProductFile",
@@ -67,6 +80,7 @@ __all__ = [
     "check_gacos_products",
     "create_gacos_request_plan",
     "extract_gacos_dates_from_scenes",
+    "import_gacos_products",
     "scan_gacos_product_directory",
     "validate_gacos_request_plan",
 ]

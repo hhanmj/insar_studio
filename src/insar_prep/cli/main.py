@@ -21,17 +21,21 @@ import sys
 from insar_prep import __version__
 from insar_prep.cli.commands import (
     add_auth_subparser,
+    add_convert_dem_subparser,
     add_dem_auth_subparser,
     add_download_asf_subparser,
     add_download_dem_subparser,
+    add_gacos_import_subparser,
     add_gui_subparser,
     add_plan_asf_downloads_subparser,
     add_prepare_subparser,
     add_update_check_subparser,
     run_auth,
+    run_convert_dem,
     run_dem_auth,
     run_download_asf,
     run_download_dem,
+    run_gacos_import,
     run_gui,
     run_plan_asf_downloads,
     run_prepare,
@@ -55,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_plan_asf_downloads_subparser(subparsers)
     add_download_asf_subparser(subparsers)
     add_download_dem_subparser(subparsers)
+    add_convert_dem_subparser(subparsers)
+    add_gacos_import_subparser(subparsers)
     add_auth_subparser(subparsers)
     add_dem_auth_subparser(subparsers)
     add_update_check_subparser(subparsers)
@@ -107,6 +113,10 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return run_download_asf(args)
     if args.command == "download-dem":
         return run_download_dem(args)
+    if args.command == "convert-dem":
+        return run_convert_dem(args)
+    if args.command == "gacos-import":
+        return run_gacos_import(args)
     if args.command == "auth":
         return run_auth(args)
     if args.command == "dem-auth":

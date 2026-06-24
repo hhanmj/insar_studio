@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-24
+
+### Added
+
+- Real DEM vertical-datum conversion (Task 053): the planning-only DEM
+  conversion module gained an **opt-in real conversion** that turns an
+  orthometric (EGM96/EGM2008) DEM into the WGS84 *ellipsoidal*, SARscape-ready
+  DEM SARscape expects, by adding the geoid undulation per pixel
+  (`h_ellipsoid = H_orthometric + N`). New
+  `src/insar_prep/providers/dem/geoid.py` loads the small **bundled EGM96
+  15-arc-minute geoid grid** (`src/insar_prep/data/egm96_15.npz`, ~3 MB, built
+  from the public-domain GeographicLib `egm96-15.pgm` by the new
+  `scripts/build_geoid_npz.py`) and bilinearly interpolates `N` with longitude
+  wraparound using **only numpy**. `src/insar_prep/providers/dem/converter.py`
+  adds `RealDemConverter` (lazy `rasterio`; reads the raw GeoTIFF in row blocks,
+  rejects non-WGS84/projected CRS, preserves nodata, writes a `.part` temp file
+  and **atomically renames**, copies ellipsoidal → SARscape-ready name; datasets
+  that are already ellipsoidal — SRTMGL1_E/AW3D30_E — are copied through), a
+  `FakeDemConverter` for offline tests, and `dataset_source_vertical_datum()` /
+  `default_geoid_model_for()` helpers. `src/insar_prep/providers/dem/convert_runner.py`
+  adds the shared `run_dem_conversion()` orchestration + a
+  `dem_convert/dem_convert_results.csv` + `DemConvertRunSummary`. EGM2008 sources
+  converted with the bundled EGM96 grid emit a clear approximation **warning**;
+  a custom geoid grid can be supplied with `--geoid-grid`. A new optional
+  `convert` extra (`rasterio`, `numpy`) gates the real conversion; the offline
+  core and the lean CLI exe stay free of GDAL. Reuses the existing `DEM002`
+  (unknown datum) and `DEM003` (conversion failed) error codes. The geoid grid
+  is derived from GeographicLib (`THIRD_PARTY_REFERENCES.md` #12) and rasterio
+  (#13) — no source copied.
+- DEM conversion CLI (Task 053): a new `insar-prep convert-dem` command reuses
+  the `prepare`/`download-dem` AOI inputs, infers the source vertical datum from
+  the dataset (overridable with `--source-vertical-datum` /
+  `--target-vertical-datum`), prints the planned steps (or just the plan with
+  `--plan-only`, which needs no rasterio), and converts the already-downloaded
+  raw DEM. A missing `convert` extra yields a clear `DEM003` message instead of
+  a traceback.
+- GACOS product import (Task 053): a new
+  `src/insar_prep/providers/gacos/importer.py` (`import_gacos_products`) takes the
+  GACOS products a user **downloaded manually** (GACOS has **no public download
+  API** — see `THIRD_PARTY_REFERENCES.md` #14), extracts `.zip`/`.tar.gz`
+  archives (with zip/tar-slip protection), copies the `YYYYMMDD.ztd` /
+  `YYYYMMDD.ztd.rsc` / `YYYYMMDD.tif` products into the region's GACOS directory
+  under canonical names, and **integrity-checks** each date (the `.ztd` byte size
+  must equal `4 × WIDTH × FILE_LENGTH` from its `.rsc`; `.tif` magic; pairing;
+  empties) plus a coverage check against an optional ASF cart's dates. It still
+  never contacts GACOS, submits its web form, scrapes pages, drives a browser, or
+  stores credentials — it only organizes local files. A new `insar-prep
+  gacos-import` command (`--source` repeatable, `--cart`, `--move`) drives it. New
+  `GacosImportedProduct` / `GacosImportResult` types; stdlib only (zipfile /
+  tarfile), no new runtime dependency.
+- Packaging (Task 053): the bundled geoid grid ships in the wheel (hatchling
+  auto-includes `insar_prep/data/`) and in both Windows exes
+  (`--collect-data insar_prep`); the **GUI exe** additionally bundles
+  `rasterio`/GDAL (`--collect-all rasterio`) so the frozen GUI can perform real
+  DEM conversion (the lean CLI exe omits rasterio by design and shows the
+  `DEM003` guard). New `packaging/insar_prep_gui_installer.iss` (Inno Setup) +
+  `scripts/build_windows_installer.ps1` produce a standard Windows installer for
+  the GUI exe (per-user, Start-Menu + optional desktop shortcut, uninstaller);
+  Inno Setup is not bundled — install it once to compile, or wire it into CI.
+- Tests: added `tests/unit/test_dem_geoid.py`, `tests/unit/test_dem_converter.py`,
+  `tests/unit/test_dem_convert_runner.py`, `tests/e2e/test_convert_dem_cli.py`,
+  `tests/unit/test_gacos_importer.py`, and `tests/e2e/test_gacos_import_cli.py`.
+  The geoid math, conversion orchestration, and GACOS import are exercised with
+  numpy/stdlib only (no network); the end-to-end GeoTIFF round-trip is gated
+  behind `importorskip('rasterio')` so CI (no `convert` extra) skips it while a
+  local `--extra convert` env runs it.
+
+### Notes
+
+- Real **GACOS download** remains intentionally **not** implemented: the service
+  has no public API (web form + email delivery only), and automating its web
+  form is explicitly out of scope. `gacos-import` covers the
+  organize/integrity-check half of the workflow for products the user fetches
+  themselves.
+
 ## [0.14.0] - 2026-06-23
 
 ### Added

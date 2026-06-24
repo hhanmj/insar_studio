@@ -115,3 +115,38 @@ class GacosImportCheckReport(InsarBaseModel):
     has_errors: bool = False
     has_warnings: bool = False
     summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class GacosImportedProduct(InsarBaseModel):
+    """A GACOS product imported (extracted/copied) into the region layout.
+
+    Unlike :class:`GacosProductFile` (a read-only scan), this records the result
+    of *importing* a product: the destination paths, the ``.ztd`` size against the
+    size implied by the ``.rsc`` header (``4 * WIDTH * FILE_LENGTH`` for the
+    little-endian float grid), and whether the product passed integrity checks.
+    """
+
+    date: datetime.date
+    ztd_path: Path | None = None
+    rsc_path: Path | None = None
+    tif_path: Path | None = None
+    ztd_size_bytes: int | None = None
+    expected_ztd_size_bytes: int | None = None
+    valid: bool = False
+
+
+class GacosImportResult(InsarBaseModel):
+    """The result of importing GACOS products from archives/directories on disk."""
+
+    output_directory: Path
+    imported_files: list[Path] = Field(default_factory=list)
+    extracted_archives: list[Path] = Field(default_factory=list)
+    products: list[GacosImportedProduct] = Field(default_factory=list)
+    expected_dates: list[datetime.date] = Field(default_factory=list)
+    found_dates: list[datetime.date] = Field(default_factory=list)
+    missing_dates: list[datetime.date] = Field(default_factory=list)
+    extra_dates: list[datetime.date] = Field(default_factory=list)
+    issues: list[GacosImportIssue] = Field(default_factory=list)
+    has_errors: bool = False
+    has_warnings: bool = False
+    summary: dict[str, Any] = Field(default_factory=dict)

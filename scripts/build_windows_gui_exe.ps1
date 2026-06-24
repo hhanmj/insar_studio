@@ -5,13 +5,14 @@
 
 .DESCRIPTION
     Builds dist\insar-prep-gui.exe -- a windowed (no-console) PySide6 app whose
-    entry point opens the desktop GUI. The build bundles PySide6 (incl. the Qt
-    platform plugins) and the optional `download` extra (requests + certifi CA
-    bundle + keyring) so the frozen GUI is capable of the real ASF SLC download
-    and the real OpenTopography DEM download, and of storing credentials in the
-    OS keyring. The build itself stays offline and downloads no SAR/DEM data,
-    builds no installer, and commits nothing (build/, dist/, *.spec are
-    git-ignored).
+    entry point opens the desktop GUI.     The build bundles PySide6 (incl. the Qt
+    platform plugins), the optional `download` extra (requests + certifi CA
+    bundle + keyring), and the optional `convert` extra (rasterio + GDAL) plus the
+    bundled EGM96 geoid grid, so the frozen GUI is capable of the real ASF SLC
+    download, the real OpenTopography DEM download, the real DEM vertical-datum
+    conversion, and of storing credentials in the OS keyring. The build itself
+    stays offline and downloads no SAR/DEM data, builds no installer, and commits
+    nothing (build/, dist/, *.spec are git-ignored).
 
     Unlike the CLI exe (scripts\build_windows_exe.ps1), this build INCLUDES
     PySide6 -- the resulting exe is much larger (~150-250 MB) and first launch is
@@ -24,8 +25,8 @@
 
 .NOTES
     Run from anywhere; the script resolves the repo root from its own location.
-    Requires the `gui` and `download` extras to be installed in the active env
-    (uv sync --extra gui --extra download).
+    Requires the `gui`, `download`, and `convert` extras to be installed in the
+    active env (uv sync --extra gui --extra download --extra convert).
 #>
 
 $ErrorActionPreference = "Stop"
@@ -89,6 +90,8 @@ Invoke-Step "PyInstaller GUI build" {
         --collect-all requests `
         --collect-all certifi `
         --collect-all keyring `
+        --collect-all rasterio `
+        --collect-data insar_prep `
         --copy-metadata keyring `
         packaging/insar_prep_gui_entry.py
 }

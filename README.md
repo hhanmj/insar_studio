@@ -13,21 +13,27 @@ Sentinel-1 / InSAR beginners.
   runs locally with no network and no downloads. Real downloads are separate,
   explicit opt-ins behind the `download` extra.
 
-> Current status: **v0.14.0 — GUI Beta.** The offline `insar-prep prepare` CLI
-> workflow is implemented end to end, and an optional PySide6 **GUI Beta** drives
-> the same offline closed loop (install it with `uv sync --extra gui`). Real
-> Sentinel-1 SLC download (`download-asf --download-mode real`) and real DEM
-> download from the OpenTopography Global DEM API (`download-dem --download-mode
-> real`, plus the GUI "DEM Download" panel) are available as explicit opt-ins
-> behind the `download` extra — each user supplies their **own** free
-> OpenTopography API key (none is bundled). Real **GACOS** download and real DEM
-> **vertical-datum conversion** are still **not** implemented (planning only), and
-> there is **no** official GUI release, installer, or `.exe`. A one-file Windows
-> CLI exe can be built *locally* for testing only. See
+> Current status: **v0.15.0.** The offline `insar-prep prepare` CLI workflow is
+> implemented end to end, and an optional PySide6 **GUI Beta** drives the same
+> offline closed loop (install it with `uv sync --extra gui`). Real Sentinel-1
+> SLC download (`download-asf --download-mode real`) and real DEM download from
+> the OpenTopography Global DEM API (`download-dem --download-mode real`, plus the
+> GUI "DEM Download" panel) are available as explicit opt-ins behind the
+> `download` extra — each user supplies their **own** free OpenTopography API key
+> (none is bundled). **New in v0.15.0:** real **DEM vertical-datum conversion**
+> (`convert-dem`, orthometric → WGS84 ellipsoid via a bundled EGM96 geoid grid,
+> behind the optional `convert` extra) and **GACOS product import**
+> (`gacos-import`, which extracts / organizes / integrity-checks the GACOS
+> products you downloaded **manually**). Real **GACOS download** is still **not**
+> implemented and is intentionally out of scope: GACOS has **no public download
+> API** (web form + email delivery only), so products must be requested and
+> downloaded by hand. There is **no** official GUI release published yet; a
+> one-file Windows CLI/GUI exe and an Inno Setup installer can be built *locally*
+> (see [Packaging](#packaging)). See
+> [`docs/release_readiness_v0_15_0.md`](docs/release_readiness_v0_15_0.md) for the
+> latest readiness review, and
 > [`docs/release_readiness_v0_12_0_gui_beta.md`](docs/release_readiness_v0_12_0_gui_beta.md)
-> for the most recent readiness review, and
-> [`docs/release_readiness_v0_1_0.md`](docs/release_readiness_v0_1_0.md) for the
-> previous v0.1.0 offline CLI MVP baseline.
+> for the previous GUI Beta review.
 
 ## Requirements
 
@@ -58,13 +64,23 @@ enable it, add the `download` extra (this pulls in `requests`); see
 uv sync --extra download
 ```
 
+Real DEM **vertical-datum conversion** (`convert-dem`) is optional too. To enable
+it, add the `convert` extra (this pulls in `rasterio`); see
+[DEM vertical-datum conversion](#dem-vertical-datum-conversion-convert-dem):
+
+```bash
+uv sync --extra convert
+```
+
 ## Basic commands
 
 ```bash
 uv run insar-prep --help
 uv run insar-prep --version
 uv run insar-prep prepare --help
-uv run insar-prep update-check   # check GitHub for a newer release
+uv run insar-prep convert-dem --help   # real DEM vertical-datum conversion (convert extra)
+uv run insar-prep gacos-import --help  # organize manually downloaded GACOS products
+uv run insar-prep update-check         # check GitHub for a newer release
 ```
 
 ## Minimal `prepare` example
@@ -223,10 +239,16 @@ extra. By design the tool never:
   `download-dem --download-mode real`, or the GUI "DEM Download" panel, behind the
   `download` extra — see [DEM download (OpenTopography)](#dem-download-opentopography).
   Each user supplies their own free API key; no key is bundled.)
-- Submit, scrape, or automate the GACOS web service (GACOS is planning only).
-- Perform real DEM vertical-datum conversion (it only *plans* the steps; no
-  GDAL / rasterio / pyproj, no geoid download, no conversion `.tif` is created —
-  the real download fetches the **raw** DEM only).
+- Submit, scrape, or automate the GACOS web service, drive a browser, or
+  download GACOS products. GACOS has no public download API, so you request and
+  download products **manually**; `insar-prep` only *plans* the request and, with
+  `gacos-import`, *organizes and integrity-checks* the products you already have.
+- Perform real DEM vertical-datum conversion **as part of the offline core**. The
+  offline core only *plans* the conversion. Real conversion is now available as an
+  explicit opt-in — the separate `convert-dem` command behind the `convert` extra
+  (`rasterio` + the bundled EGM96 geoid) — see
+  [DEM vertical-datum conversion](#dem-vertical-datum-conversion-convert-dem). The
+  offline commands themselves still use no GDAL/rasterio.
 
 It also never reads accounts, stores credentials in a project file, or moves /
 deletes / renames your input files.
@@ -391,6 +413,71 @@ SRTMGL1 (+ ellipsoidal), NASADEM, and AW3D30 (+ ellipsoidal); `USER_LOCAL` is no
 downloadable. The downloaded DEM is the **raw** product — real vertical-datum
 conversion to an ellipsoidal, SARscape-ready DEM is still planning-only.
 
+## DEM vertical-datum conversion (`convert-dem`)
+
+SARscape expects a DEM referenced to the **WGS84 ellipsoid**, but most global
+DEMs are **orthometric** (COP30/COP90 use EGM2008; SRTMGL1/NASADEM/AW3D30 use
+EGM96). `convert-dem` performs the real conversion by adding the geoid undulation
+`N` to every pixel (`h_ellipsoid = H_orthometric + N`) using a **bundled EGM96
+15-arc-minute geoid grid**, then writes the SARscape-ready `<region>_dem.tif`.
+Datasets that are already ellipsoidal (`SRTMGL1_E`/`AW3D30_E`) are copied through
+unchanged.
+
+It is opt-in behind the `convert` extra (which pulls in `rasterio`); the offline
+core never needs it. `--plan-only` prints the planned steps without rasterio.
+
+```bash
+uv sync --extra convert
+
+# convert an already-downloaded raw DEM (from download-dem) to SARscape-ready:
+uv run insar-prep convert-dem \
+  --region-name shiliushubao_demo \
+  --output-root ./workspace \
+  --bbox 110.1 30.8 110.6 31.2 \
+  --dem-dataset COP30
+```
+
+The source vertical datum is inferred from `--dem-dataset` (override with
+`--source-vertical-datum`). Because only the EGM96 grid is bundled, converting an
+**EGM2008** source (COP30/COP90) with it is a sub-metre **approximation** and is
+flagged with a warning; supply your own EGM2008 grid via `--geoid-grid PATH` (a
+`.npz` built with `scripts/build_geoid_npz.py`) for an exact conversion. The
+output lands at `<output-root>/<region>/06_sarscape_ready/<region>_dem.tif`, the
+intermediate ellipsoidal DEM under `04_dem/ellipsoid/`, and a results CSV under
+`<output-root>/dem_convert/`. The bundled EGM96 grid is derived from the
+public-domain GeographicLib `egm96-15` grid (see `THIRD_PARTY_REFERENCES.md`).
+
+> **Note on the exe.** The one-file **GUI** exe bundles rasterio and can convert;
+> the lean **CLI** exe omits rasterio (to stay small) and will ask you to install
+> the `convert` extra. Run `convert-dem` from a source checkout for the CLI path.
+
+## GACOS product import (`gacos-import`)
+
+GACOS (the Generic Atmospheric Correction Online Service) has **no public
+download API** — you request a region/date list through its web form and receive
+the products by email. This tool therefore never downloads GACOS for you. What it
+*does* do is take the products you downloaded **manually** and bring them into the
+region layout: `gacos-import` extracts `.zip`/`.tar.gz` archives, copies the
+`YYYYMMDD.ztd` / `YYYYMMDD.ztd.rsc` / `YYYYMMDD.tif` products into the region's
+GACOS directory under canonical names, and **integrity-checks** each date (the
+`.ztd` byte size must equal `4 × WIDTH × FILE_LENGTH` from its `.rsc`, plus file
+pairing and emptiness checks). It uses only the standard library and never
+contacts GACOS, drives a browser, or stores credentials.
+
+```bash
+uv run insar-prep gacos-import \
+  --region-name shiliushubao_demo \
+  --output-root ./workspace \
+  --source ./downloads/gacos_products.tar.gz \
+  --source ./more_gacos/ \
+  --cart tests/fixtures/asf/urls.txt   # optional: check coverage vs scene dates
+```
+
+Products land under `<output-root>/<region>/05_atmosphere/gacos/requests/`. Pass
+`--cart` to compare the imported dates against an ASF cart's acquisition dates
+(missing dates are reported as errors). Add `--move` to move (instead of copy)
+loose source files.
+
 ## Update notifications
 
 `insar-prep` checks the project's public GitHub Releases to let you know when a
@@ -433,8 +520,9 @@ src/insar_prep/      # core package (importable as insar_prep)
   cli/               # command-line interface (`prepare` workflow)
   gui/               # optional PySide6 desktop GUI (beta skeleton; `gui` extra)
   core/              # data models, naming, logging, errors, events
+  data/              # bundled EGM96 geoid grid (egm96_15.npz) for DEM conversion
   processing/        # AOI handling
-  providers/         # asf, orbit, dem, gacos (offline planning; asf+dem add opt-in real download)
+  providers/         # asf, orbit, dem, gacos (offline planning; asf+dem real download; dem convert; gacos import)
   quality/           # scene consistency checks
   queue/             # offline task queue framework
   reporting/         # JSON + Markdown report backend
@@ -516,11 +604,16 @@ For step-by-step install/launch/usage and a pre-delivery checklist, see:
 
 ## Packaging
 
-No official release or installer is published. For local testing only, a one-file
-Windows executable can be built with `scripts/build_windows_exe.ps1`, and a
-self-contained smoke-test package can be assembled with
-`scripts/make_windows_smoke_package.ps1` (both produce git-ignored artifacts that
-are never committed). See:
+No official release or installer is published yet. For local testing only, a
+one-file Windows **CLI** executable can be built with
+`scripts/build_windows_exe.ps1`, a one-file **GUI** executable (bundling PySide6,
+the `download` extra, and the `convert` extra's rasterio + the EGM96 geoid) with
+`scripts/build_windows_gui_exe.ps1`, and a self-contained smoke-test package with
+`scripts/make_windows_smoke_package.ps1`. A standard Windows **installer** for the
+GUI exe can then be compiled from `packaging/insar_prep_gui_installer.iss` with
+`scripts/build_windows_installer.ps1` (requires [Inno Setup
+6](https://jrsoftware.org/isdl.php); not bundled). All of these produce
+git-ignored artifacts that are never committed. See:
 
 - [`docs/getting_started_for_testers.md`](docs/getting_started_for_testers.md) —
   one-page quickstart for running the Windows `insar-prep.exe` (offline reports

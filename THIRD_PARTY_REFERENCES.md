@@ -170,6 +170,45 @@
 - **risk**: 低（清单本身）；但下游工具许可证差异大（如 PyAPS / MintPy = GPL；RAiDER = Apache；asf_search / sentineleof = BSD/MIT）。
 - **notes**: 对本项目有用的条目分类：下游处理器（ISCE2 / GMTSAR / SNAP-S1TBX / Doris）、时序（MintPy / StaMPS / GIAnT / PyRate）、对流层（PyAPS / TRAIN / kite / RAiDER）、数据下载（EODAG / CDSETool / SSARA / asf_search）、地理（GDAL / QGIS）、地形 geocoding（sarsen / pyroSAR）。
 
+### 12. GeographicLib geoid data (egm96-15)
+
+- **name**: GeographicLib geoid grids（egm96-15.pgm）
+- **url**: https://geographiclib.sourceforge.io/ （geoids-distrib/egm96-15.tar.bz2）
+- **license**: GeographicLib 本体 MIT；geoid 网格派生自 **NGA EGM96（public domain）**。
+- **last_checked_date**: 2026-06-24
+- **purpose**: 提供 EGM96 大地水准面起伏 N（15′ 全球网格），用于把正高（EGM96/EGM2008）DEM 转为 WGS84 椭球高（h = H + N）。
+- **use_as_dependency**: 否（只内置**数据文件**，不依赖 GeographicLib 代码）。
+- **copy_code_allowed**: N/A（仅数据；public domain 模型）。
+- **integration_plan**: **已落地（Task 053）**。用 `scripts/build_geoid_npz.py` 把官方 `egm96-15.pgm` 解析为精简 `src/insar_prep/data/egm96_15.npz`（undulation + 地理参数），运行时由 `providers/dem/geoid.py` 仅用 numpy 双线性插值；**未复制任何 GeographicLib 源代码**。
+- **risk**: 低。仅 EGM96；EGM2008 源 DEM 用 EGM96 近似时在报告/日志显式 WARNING，并支持 `--geoid-grid` 传入自备 EGM2008 网格。
+- **notes**: 可借鉴点=PGM Offset/Scale 头 + 北→南/0→360 网格约定。校验=全球极值（印度洋 -107 m / 巴新 +85 m）位置吻合。
+
+### 13. rasterio
+
+- **name**: rasterio (rasterio/rasterio)
+- **url**: https://github.com/rasterio/rasterio
+- **license**: BSD-3-Clause（wheel 内置 GDAL，MIT/X 风格）。
+- **last_checked_date**: 2026-06-24
+- **purpose**: 读写 GeoTIFF DEM（含 CRS/transform/nodata），供垂直基准转换分块读写。
+- **use_as_dependency**: 是（**可选 `convert` extra**；离线核心从不需要）。
+- **copy_code_allowed**: 否（封装不复制）。
+- **integration_plan**: **已落地（Task 053）**。`providers/dem/converter.py` 懒加载 rasterio，分块读原始 DEM、加 geoid 起伏、写椭球 DEM（`.part`+原子改名），GUI exe 打包 `--collect-all rasterio`；精简 CLI exe 不含。
+- **risk**: 中（GDAL 二进制较重，仅在 convert extra / GUI exe 内）。
+- **notes**: 可借鉴点=`Window`/`profile`/`transform` API。不应实现=自写 GeoTIFF 解析。
+
+### 14. GACOS（Newcastle University）
+
+- **name**: GACOS (Generic Atmospheric Correction Online Service for InSAR)
+- **url**: http://www.gacos.net/
+- **license**: 产物受 GACOS 使用条款约束，**须按官方要求引用文献**；**无公开下载 API**。
+- **last_checked_date**: 2026-06-24
+- **purpose**: 天顶对流层延迟图（`YYYYMMDD.ztd` 小端 4 字节 float + `.ztd.rsc` 头，或 GeoTIFF）。
+- **use_as_dependency**: N/A（**无 API**：网页表单提交 + 邮件链接下载；官方 ReadMe 称"will soon release an API"但至今未出）。
+- **copy_code_allowed**: N/A。
+- **integration_plan**: **已落地（Task 012/013/053）**。`planner` 规划提交日期+bbox（用户手动提交）；`importer`（`gacos-import`）把用户**手动下载**的产物解压/按日期归位/完整性校验（`.ztd` 字节数须 = 4×WIDTH×FILE_LENGTH）；`import_checker` 只读核对。**绝不** submit/scrape/automate 其网页表单、不驱动浏览器、不存凭据。
+- **risk**: 中。完全手动；须标注引用；`.ztd`/`.rsc` 格式以官方 ReadMe 为准。
+- **notes**: 可借鉴点=`.ztd`/`.rsc` 文件约定、5×5°/10 天（现 10×10°/20 期）提交上限。不应实现=任何网页自动化下载。
+
 ---
 
 ## 分析汇总表
@@ -187,3 +226,6 @@
 | 9 | OrbitDownloader.exe(本地) | 不明 | 否 | N/A | 仅行为参考 | 009 |
 | 10 | EZ-InSAR (MIESAR) | **GPL-3.0** | **否(传染/MATLAB)** | **否** | 仅架构/UX 参考(数据准备模块/多传感器) | GUI/多传感器 |
 | 11 | awesome-sar | 清单(各工具不同) | 否(清单) | N/A | 候选工具目录;选用前逐一登记 | — |
+| 12 | GeographicLib geoid(egm96-15) | MIT/public-domain | 否(仅数据) | N/A | 内置 npz, `providers/dem/geoid` | 053(已落地) |
+| 13 | rasterio | BSD-3-Clause | 是(convert extra) | 否(封装) | `providers/dem/converter` 懒加载 | 053(已落地) |
+| 14 | GACOS | 条款/无API | N/A | N/A | `gacos-import` 仅整理手动下载产物 | 012/013/053(已落地) |

@@ -1,6 +1,6 @@
 [project]
 name = "insar-prep"
-version = "0.14.0"
+version = "0.15.0"
 description = "SARscape-oriented InSAR data preparation and quality-checking assistant."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -31,6 +31,14 @@ gui = [
 download = [
     "requests>=2.31",
     "keyring>=24",
+]
+# Real DEM vertical-datum conversion (orthometric EGM96/EGM2008 -> WGS84
+# ellipsoid). Optional: the offline core only *plans* the conversion. `rasterio`
+# reads/writes the GeoTIFF DEM; `numpy` interpolates the bundled EGM96 geoid
+# grid. Install with: uv sync --extra convert
+convert = [
+    "rasterio>=1.3",
+    "numpy>=1.24",
 ]
 
 [project.urls]
@@ -64,6 +72,10 @@ extend-exclude = ["参考项目"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+# Maintenance/data-build scripts are run by hand and may print progress.
+"scripts/*.py" = ["T201"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

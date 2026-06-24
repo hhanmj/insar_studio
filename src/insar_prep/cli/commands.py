@@ -64,9 +64,11 @@ from insar_prep.providers.dem import (
     RealDemDownloader,
     create_dem_conversion_plan,
     create_dem_request_plan,
+    dataset_source_vertical_datum,
     dem_download_request_from_plan,
     opentopo_demtype,
     resolve_dem_api_key,
+    run_dem_conversion,
     run_dem_download,
     validate_dem_conversion_plan,
     validate_dem_request_plan,
@@ -82,8 +84,11 @@ from insar_prep.providers.dem.credentials import (
 from insar_prep.providers.gacos import (
     check_gacos_products,
     create_gacos_request_plan,
+    extract_gacos_dates_from_scenes,
+    import_gacos_products,
     validate_gacos_request_plan,
 )
+from insar_prep.providers.gacos.planner import GACOS_REQUESTS_SUBDIR
 from insar_prep.providers.orbit import match_orbits_for_scenes, scan_orbit_directory
 from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.reporting.generator import build_data_preparation_report, save_report
@@ -1071,6 +1076,188 @@ def run_download_dem(args: argparse.Namespace) -> int:
     return _EXIT_ERROR if summary.has_failures else _EXIT_OK
 
 
+_CONVERT_DATUM_CHOICES = [
+    "auto",
+    VerticalDatum.WGS84_ELLIPSOID.value,
+    VerticalDatum.EGM96.value,
+    VerticalDatum.EGM2008.value,
+    VerticalDatum.ORTHOMETRIC.value,
+]
+
+
+def add_convert_dem_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``convert-dem`` subcommand (real vertical-datum conversion)."""
+    parser = subparsers.add_parser(
+        "convert-dem",
+        help="Convert a downloaded DEM to a WGS84-ellipsoidal, SARscape-ready DEM.",
+        description=(
+            "Convert an already-downloaded raw DEM's vertical datum from "
+            "orthometric (EGM96/EGM2008) to the WGS84 ellipsoid SARscape expects, "
+            "by adding the geoid undulation from the bundled EGM96 grid, and write "
+            "it under the SARscape-ready '<region>_dem.tif' name. Datasets that are "
+            "already ellipsoidal (SRTMGL1_E/AW3D30_E) are copied through unchanged. "
+            "Use --plan-only to print the planned steps without converting. Real "
+            "conversion needs the optional 'convert' extra (rasterio); install it "
+            "with 'uv sync --extra convert'. This is local-only: no network, no "
+            "credentials."
+        ),
+    )
+    parser.add_argument(
+        "--region-name",
+        dest="region_name",
+        required=True,
+        help="Region name (normalized to a SARscape-safe name; used in output paths).",
+    )
+    parser.add_argument(
+        "--output-root",
+        dest="output_root",
+        required=True,
+        help=(
+            "Output root: reads <output-root>/<region>/04_dem/raw/, writes the "
+            "SARscape-ready DEM under <output-root>/<region>/04_dem/ and results "
+            "under <output-root>/dem_convert/."
+        ),
+    )
+    _add_processing_aoi_group(parser)
+    parser.add_argument(
+        "--dem-dataset",
+        dest="dem_dataset",
+        default=DemDataset.COP30.value,
+        choices=[member.value for member in DemDataset],
+        help="DEM dataset that was downloaded (default: COP30); sets the source datum.",
+    )
+    parser.add_argument(
+        "--dem-buffer",
+        dest="dem_buffer",
+        type=float,
+        default=0.05,
+        help="DEM request bbox buffer in degrees (default: 0.05); must match download-dem.",
+    )
+    parser.add_argument(
+        "--source-vertical-datum",
+        dest="source_vertical_datum",
+        default="auto",
+        choices=_CONVERT_DATUM_CHOICES,
+        help="Source vertical datum (default: auto, inferred from the dataset).",
+    )
+    parser.add_argument(
+        "--target-vertical-datum",
+        dest="target_vertical_datum",
+        default=VerticalDatum.WGS84_ELLIPSOID.value,
+        choices=_CONVERT_DATUM_CHOICES[1:],
+        help="Target vertical datum (default: WGS84_ELLIPSOID, SARscape-ready).",
+    )
+    parser.add_argument(
+        "--geoid-grid",
+        dest="geoid_grid",
+        default=None,
+        help=(
+            "Optional path to a custom geoid .npz (e.g. an EGM2008 grid built with "
+            "scripts/build_geoid_npz.py); defaults to the bundled EGM96 grid."
+        ),
+    )
+    parser.add_argument(
+        "--plan-only",
+        dest="plan_only",
+        action="store_true",
+        help="Print the planned conversion steps and exit (no rasterio, no output).",
+    )
+    return parser
+
+
+def run_convert_dem(args: argparse.Namespace) -> int:
+    """Run ``convert-dem``. --plan-only prints steps; otherwise converts the DEM."""
+    try:
+        region_safe_name = sarscape_safe_name(args.region_name)
+    except ValueError as exc:
+        logger.error("invalid region name %r: %s", args.region_name, exc)
+        return _EXIT_ERROR
+
+    try:
+        processing_aoi = _resolve_processing_aoi(args)
+    except (InputValidationError, InsarPrepError) as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+    if processing_aoi is None:
+        sys.stderr.write(
+            f"[{ErrorCode.AOI001.value}] a Processing AOI is required; pass one of "
+            "--bbox WEST SOUTH EAST NORTH, --aoi-geojson PATH, --aoi-wkt WKT, "
+            "--aoi-shp PATH, --aoi-kml PATH, --aoi-kmz PATH, or --aoi-file PATH\n"
+        )
+        return _EXIT_ERROR
+
+    if args.source_vertical_datum == "auto":
+        source_datum = dataset_source_vertical_datum(args.dem_dataset)
+        if source_datum is VerticalDatum.UNKNOWN:
+            sys.stderr.write(
+                f"[{ErrorCode.DEM002.value}] cannot infer the source vertical datum for dataset "
+                f"{args.dem_dataset!r}; pass --source-vertical-datum explicitly.\n"
+            )
+            return _EXIT_ERROR
+    else:
+        source_datum = VerticalDatum(args.source_vertical_datum)
+    target_datum = VerticalDatum(args.target_vertical_datum)
+
+    output_root = Path(args.output_root)
+    try:
+        request_plan = create_dem_request_plan(
+            region_id="",
+            region_safe_name=region_safe_name,
+            processing_aoi=processing_aoi,
+            output_root=output_root,
+            dataset=args.dem_dataset,
+            buffer_degrees=args.dem_buffer,
+            source_vertical_datum=source_datum,
+            target_vertical_datum=target_datum,
+        )
+    except InsarPrepError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    conversion_plan = create_dem_conversion_plan(request_plan)
+    report = validate_dem_conversion_plan(conversion_plan)
+
+    sys.stdout.write(
+        "DEM conversion plan:\n"
+        f"  dataset: {conversion_plan.dataset}\n"
+        f"  vertical datum: {source_datum.value} -> {target_datum.value}\n"
+        f"  requires geoid: {conversion_plan.requires_geoid}\n"
+        f"  raw DEM: {conversion_plan.raw_dem_path}\n"
+        f"  SARscape-ready DEM: {conversion_plan.sarscape_ready_dem_path}\n"
+    )
+    for issue in report.issues:
+        sys.stdout.write(f"  [{issue.severity.value}] {issue.code}: {issue.message}\n")
+    if report.has_errors:
+        sys.stderr.write("DEM conversion plan is invalid; see the issues above.\n")
+        return _EXIT_ERROR
+
+    if args.plan_only:
+        sys.stdout.write("Plan only: no conversion performed.\n")
+        return _EXIT_OK
+
+    if importlib.util.find_spec("rasterio") is None:
+        sys.stderr.write(
+            f"[{ErrorCode.DEM003.value}] real DEM conversion needs the optional 'convert' extra; "
+            "install it with 'uv sync --extra convert' (or pip install rasterio)\n"
+        )
+        return _EXIT_ERROR
+
+    try:
+        summary = run_dem_conversion(
+            [conversion_plan], output_root, geoid_grid_path=args.geoid_grid
+        )
+    except InsarPrepError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    sys.stdout.write(
+        f"DEM conversion finished: {summary.summary_line()}.\nResults: {summary.results_path}\n"
+    )
+    for result in summary.results:
+        sys.stdout.write(f"  {result.region_safe_name}: {mask_text(result.message)}\n")
+    return _EXIT_ERROR if summary.has_failures else _EXIT_OK
+
+
 def add_dem_auth_subparser(subparsers) -> argparse.ArgumentParser:
     """Register the ``dem-auth`` subcommand (manage the OpenTopography API key)."""
     parser = subparsers.add_parser(
@@ -1130,6 +1317,107 @@ def run_dem_auth(args: argparse.Namespace) -> int:
     except CredentialError as exc:
         sys.stderr.write(f"{exc}\n")
         return _EXIT_ERROR
+
+
+def add_gacos_import_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``gacos-import`` subcommand (organize downloaded GACOS products)."""
+    parser = subparsers.add_parser(
+        "gacos-import",
+        help="Extract, organize, and integrity-check manually downloaded GACOS products.",
+        description=(
+            "GACOS has no public download API, so users request and download "
+            "products manually from the GACOS web service. This command takes the "
+            "archives/folders you downloaded, extracts .zip/.tar.gz, copies the "
+            "YYYYMMDD.ztd / .ztd.rsc / .tif products into the region's GACOS "
+            "directory under canonical names, and integrity-checks each date (the "
+            ".ztd byte size must equal 4 x WIDTH x FILE_LENGTH from its .rsc). It "
+            "never contacts GACOS or stores credentials. Pass --cart to compare the "
+            "imported dates against the acquisition dates of a local ASF cart."
+        ),
+    )
+    parser.add_argument(
+        "--region-name",
+        dest="region_name",
+        required=True,
+        help="Region name (normalized to a SARscape-safe name; used in output paths).",
+    )
+    parser.add_argument(
+        "--output-root",
+        dest="output_root",
+        required=True,
+        help=(
+            "Output root: products land under <output-root>/<region>/05_atmosphere/gacos/requests/."
+        ),
+    )
+    parser.add_argument(
+        "--source",
+        dest="sources",
+        action="append",
+        required=True,
+        metavar="PATH",
+        help="A GACOS archive (.zip/.tar.gz), a folder, or a product file. Repeatable.",
+    )
+    parser.add_argument(
+        "--cart",
+        dest="cart",
+        default=None,
+        help="Optional ASF cart file; its acquisition dates drive the coverage check.",
+    )
+    parser.add_argument(
+        "--move",
+        dest="move",
+        action="store_true",
+        help="Move (instead of copy) loose source product files into the region directory.",
+    )
+    return parser
+
+
+def run_gacos_import(args: argparse.Namespace) -> int:
+    """Run ``gacos-import``: extract, organize, and integrity-check GACOS products."""
+    try:
+        region_safe_name = sarscape_safe_name(args.region_name)
+    except ValueError as exc:
+        logger.error("invalid region name %r: %s", args.region_name, exc)
+        return _EXIT_ERROR
+
+    output_directory = Path(args.output_root) / region_safe_name / Path(*GACOS_REQUESTS_SUBDIR)
+
+    expected_dates = None
+    if args.cart:
+        try:
+            scenes = parse_asf_cart_file(args.cart)
+        except InsarPrepError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return _EXIT_ERROR
+        expected_dates = extract_gacos_dates_from_scenes(scenes)
+
+    try:
+        result = import_gacos_products(
+            args.sources,
+            output_directory,
+            expected_dates=expected_dates,
+            move=args.move,
+        )
+    except (InputValidationError, InsarPrepError) as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    sys.stdout.write(
+        "GACOS import:\n"
+        f"  output directory: {result.output_directory}\n"
+        f"  imported files: {result.summary['imported_file_count']}\n"
+        f"  product dates: {result.summary['product_date_count']} "
+        f"({result.summary['valid_product_count']} valid)\n"
+    )
+    if expected_dates is not None:
+        sys.stdout.write(
+            f"  expected dates: {len(expected_dates)}, "
+            f"missing: {result.summary['missing_date_count']}, "
+            f"extra: {result.summary['extra_date_count']}\n"
+        )
+    for issue in result.issues:
+        sys.stdout.write(f"  [{issue.severity.value}] {issue.code}: {issue.message}\n")
+    return _EXIT_ERROR if result.has_errors else _EXIT_OK
 
 
 def add_auth_subparser(subparsers) -> argparse.ArgumentParser:
