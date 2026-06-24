@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QApplication
 
+from insar_prep import i18n
 from insar_prep.gui.main_window import MainWindow
 
 
@@ -30,6 +31,8 @@ def launch_gui(argv: list[str] | None = None) -> int:
     Returns the Qt event-loop exit code.
     """
     app = create_application(argv)
+    # Apply the persisted UI language before the window builds its widgets.
+    i18n.load_saved_language()
     window = MainWindow()
     window.show()
     return app.exec()

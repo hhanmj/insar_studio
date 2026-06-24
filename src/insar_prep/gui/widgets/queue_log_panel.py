@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
+
 
 class QueueLogPanel(QWidget):
     """A placeholder task-queue list above a read-only log view."""
@@ -31,7 +33,8 @@ class QueueLogPanel(QWidget):
         queue_container = QWidget()
         queue_layout = QVBoxLayout(queue_container)
         queue_layout.setContentsMargins(0, 0, 0, 0)
-        queue_layout.addWidget(QLabel("Task queue"))
+        self.queue_title_label = QLabel(i18n.tr("queue.tasks"))
+        queue_layout.addWidget(self.queue_title_label)
         self.queue_view = QListWidget()
         self.queue_view.setObjectName("queue_view")
         self.queue_view.addItem("(no tasks)")
@@ -41,7 +44,8 @@ class QueueLogPanel(QWidget):
         log_container = QWidget()
         log_layout = QVBoxLayout(log_container)
         log_layout.setContentsMargins(0, 0, 0, 0)
-        log_layout.addWidget(QLabel("Log"))
+        self.log_title_label = QLabel(i18n.tr("queue.log"))
+        log_layout.addWidget(self.log_title_label)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("log_view")
         self.log_view.setReadOnly(True)
@@ -51,3 +55,8 @@ class QueueLogPanel(QWidget):
         splitter.addWidget(queue_container)
         splitter.addWidget(log_container)
         layout.addWidget(splitter)
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.queue_title_label.setText(i18n.tr("queue.tasks"))
+        self.log_title_label.setText(i18n.tr("queue.log"))

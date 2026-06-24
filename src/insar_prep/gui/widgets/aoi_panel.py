@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InputValidationError
 from insar_prep.core.models import Aoi
@@ -170,6 +171,11 @@ class AoiPanel(QGroupBox):
         path, _selected = QFileDialog.getOpenFileName(self, "Select AOI file", "", file_filter)
         if path:
             edit.setText(path)
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.setTitle(i18n.tr("aoi.title"))
+        self.apply_button.setText(i18n.tr("aoi.apply"))
 
     def current_mode(self) -> AoiInputMode:
         """Return the currently selected AOI input mode."""

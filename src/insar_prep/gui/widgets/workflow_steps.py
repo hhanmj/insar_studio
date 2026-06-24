@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.gui import WORKFLOW_STEPS
 
 
@@ -25,9 +26,14 @@ class WorkflowStepsWidget(QWidget):
         super().__init__(parent)
         self.setObjectName("workflow_steps")
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Workflow steps"))
+        self.title_label = QLabel(i18n.tr("workflow.title"))
+        layout.addWidget(self.title_label)
         self.step_list = QListWidget()
         self.step_list.setObjectName("workflow_step_list")
         self.step_list.addItems(list(WORKFLOW_STEPS))
         self.step_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         layout.addWidget(self.step_list)
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.title_label.setText(i18n.tr("workflow.title"))

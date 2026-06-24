@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.models import Scene
 from insar_prep.reporting.generator import build_data_preparation_report, save_report
 from insar_prep.reporting.html import html_report_path_for, save_report_html
@@ -74,6 +75,11 @@ class ReportPanel(QGroupBox):
         layout.addWidget(self.generate_button)
         layout.addWidget(self.result_label)
         layout.addWidget(self.paths_view)
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.setTitle(i18n.tr("report.title"))
+        self.generate_button.setText(i18n.tr("report.generate"))
 
     def output_root(self) -> str:
         """Return the entered output root (stripped)."""

@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.exceptions import CredentialError, InsarPrepError
 from insar_prep.core.logging import mask_text
 from insar_prep.core.models import Scene
@@ -182,6 +183,14 @@ class DownloadPanel(QGroupBox):
         self.refresh_credential_status()
 
     # --- inputs ---------------------------------------------------------------
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.setTitle(i18n.tr("download.title"))
+        self.browse_button.setText(i18n.tr("common.browse"))
+        self.login_button.setText(i18n.tr("download.login"))
+        self.download_button.setText(i18n.tr("common.run"))
+        self.cancel_button.setText(i18n.tr("common.cancel"))
 
     def output_dir(self) -> str:
         """Return the entered output root (stripped)."""

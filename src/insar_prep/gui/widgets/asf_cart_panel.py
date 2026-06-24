@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InputValidationError
 from insar_prep.core.models import Scene
@@ -54,6 +55,12 @@ class AsfCartPanel(QGroupBox):
 
         layout = QVBoxLayout(self)
         layout.addLayout(row)
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.setTitle(i18n.tr("asf.title"))
+        self.browse_button.setText(i18n.tr("common.browse"))
+        self.import_button.setText(i18n.tr("asf.import"))
 
     def _browse_for_cart(self) -> None:
         """Open a native file picker and write the chosen cart path into the field."""

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QWidget
 
+from insar_prep import i18n
 from insar_prep.gui.state import GuiState, workspace_display_name
 
 
@@ -22,12 +23,16 @@ class ProjectTreeWidget(QTreeWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("project_tree")
-        self.setHeaderLabel("Workspace")
+        self.setHeaderLabel(i18n.tr("tree.workspace"))
         self._show_placeholder()
 
     def _show_placeholder(self) -> None:
         self.clear()
-        self.addTopLevelItem(QTreeWidgetItem(["Workspace"]))
+        self.addTopLevelItem(QTreeWidgetItem([i18n.tr("tree.workspace")]))
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.setHeaderLabel(i18n.tr("tree.workspace"))
 
     def refresh_from_state(self, state: GuiState) -> None:
         """Rebuild the tree from the given GUI state."""

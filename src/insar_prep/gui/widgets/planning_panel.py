@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.enums import DemDataset, VerticalDatum
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import OrbitMatchingError
@@ -73,9 +74,20 @@ class PlanningPanel(QGroupBox):
 
     # --- orbit ---------------------------------------------------------------
 
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.setTitle(i18n.tr("planning.title"))
+        self.orbit_group.setTitle(i18n.tr("planning.orbit.title"))
+        self.orbit_button.setText(i18n.tr("planning.orbit.button"))
+        self.dem_group.setTitle(i18n.tr("planning.dem.title"))
+        self.dem_button.setText(i18n.tr("planning.dem.button"))
+        self.gacos_group.setTitle(i18n.tr("planning.gacos.title"))
+        self.gacos_button.setText(i18n.tr("planning.gacos.button"))
+
     def _build_orbit_group(self) -> QGroupBox:
         group = QGroupBox("Orbit matching")
         group.setObjectName("planning_orbit_group")
+        self.orbit_group = group
         self.orbit_dir_edit = QLineEdit()
         self.orbit_dir_edit.setObjectName("planning_orbit_dir")
         self.orbit_dir_edit.setPlaceholderText("Local directory of Sentinel-1 orbit (.EOF) files")
@@ -114,6 +126,7 @@ class PlanningPanel(QGroupBox):
     def _build_dem_group(self) -> QGroupBox:
         group = QGroupBox("DEM request + conversion plan")
         group.setObjectName("planning_dem_group")
+        self.dem_group = group
         self.dem_dataset_combo = _enum_combo(DemDataset, DemDataset.COP30, "planning_dem_dataset")
         self.dem_provider_combo = _enum_combo(
             DemProvider, DemProvider.OPENTOPOGRAPHY, "planning_dem_provider"
@@ -178,6 +191,7 @@ class PlanningPanel(QGroupBox):
     def _build_gacos_group(self) -> QGroupBox:
         group = QGroupBox("GACOS request plan + import check")
         group.setObjectName("planning_gacos_group")
+        self.gacos_group = group
         self.gacos_import_dir_edit = QLineEdit()
         self.gacos_import_dir_edit.setObjectName("planning_gacos_import_dir")
         self.gacos_import_dir_edit.setPlaceholderText(

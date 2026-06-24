@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QAbstractItemView, QTableWidget, QTableWidgetItem, QWidget
 
+from insar_prep import i18n
 from insar_prep.core.models import Scene
 
 SCENE_TABLE_COLUMNS = (
@@ -22,6 +23,17 @@ SCENE_TABLE_COLUMNS = (
     "URL",
 )
 
+# i18n keys, one per column (same order as SCENE_TABLE_COLUMNS).
+_SCENE_TABLE_KEYS = (
+    "scene.col.id",
+    "scene.col.platform",
+    "scene.col.acquisition",
+    "scene.col.product",
+    "scene.col.beam",
+    "scene.col.polarization",
+    "scene.col.url",
+)
+
 
 class SceneTableWidget(QTableWidget):
     """A read-only table that mirrors a list of parsed scenes."""
@@ -30,10 +42,14 @@ class SceneTableWidget(QTableWidget):
         super().__init__(parent)
         self.setObjectName("scene_table")
         self.setColumnCount(len(SCENE_TABLE_COLUMNS))
-        self.setHorizontalHeaderLabels(list(SCENE_TABLE_COLUMNS))
+        self.setHorizontalHeaderLabels([i18n.tr(key) for key in _SCENE_TABLE_KEYS])
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.verticalHeader().setVisible(False)
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable column headers for the active language."""
+        self.setHorizontalHeaderLabels([i18n.tr(key) for key in _SCENE_TABLE_KEYS])
 
     def set_scenes(self, scenes: list[Scene]) -> None:
         """Rebuild the table rows from a list of parsed scenes."""

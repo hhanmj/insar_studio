@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.enums import DemDataset
 from insar_prep.core.exceptions import CredentialError, InsarPrepError
 from insar_prep.core.logging import mask_text
@@ -181,6 +182,14 @@ class DemDownloadPanel(QGroupBox):
         index = self.dataset_combo.findData(DemDataset.COP30.value)
         if index >= 0:
             self.dataset_combo.setCurrentIndex(index)
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.setTitle(i18n.tr("dem.title"))
+        self.browse_button.setText(i18n.tr("common.browse"))
+        self.key_button.setText(i18n.tr("dem.key_button"))
+        self.download_button.setText(i18n.tr("common.run"))
+        self.cancel_button.setText(i18n.tr("common.cancel"))
 
     # --- inputs ---------------------------------------------------------------
 

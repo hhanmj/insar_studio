@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.enums import Polarization
 from insar_prep.core.models import Scene
 from insar_prep.quality.scene_checks import check_scene_collection
@@ -65,6 +66,11 @@ class SceneCheckPanel(QGroupBox):
         layout.addWidget(self.errors_label)
         layout.addWidget(self.warnings_label)
         layout.addWidget(self.issues_list)
+
+    def retranslate_ui(self) -> None:
+        """Re-apply translatable text for the active language."""
+        self.setTitle(i18n.tr("scenecheck.title"))
+        self.run_button.setText(i18n.tr("scenecheck.run"))
 
     def expected_polarization(self) -> Polarization | None:
         """Return the selected expected polarization, or ``None`` for ``(any)``."""
