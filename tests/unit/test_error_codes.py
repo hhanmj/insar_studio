@@ -30,6 +30,8 @@ def test_expected_codes_present() -> None:
         "DEM005",
         "GAC001",
         "GAC002",
+        "GAC003",
+        "GAC004",
         "REP001",
         "GUI001",
         "GUI002",

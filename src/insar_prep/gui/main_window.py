@@ -19,7 +19,7 @@ import importlib.util
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QDialog,
     QMainWindow,
@@ -30,11 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.models import Aoi, Scene
 from insar_prep.gui import WINDOW_TITLE
 from insar_prep.gui.dialogs.earthdata_login_dialog import EarthdataLoginDialog
+from insar_prep.gui.dialogs.gacos_email_dialog import GacosEmailDialog
 from insar_prep.gui.dialogs.opentopography_key_dialog import OpenTopographyKeyDialog
 from insar_prep.gui.dialogs.project_dialog import ProjectDialog
 from insar_prep.gui.dialogs.region_dialog import RegionDialog
@@ -44,13 +46,18 @@ from insar_prep.gui.widgets.aoi_panel import AoiPanel
 from insar_prep.gui.widgets.asf_cart_panel import AsfCartPanel
 from insar_prep.gui.widgets.dem_download_panel import DemDownloadPanel, DemDownloadWorker
 from insar_prep.gui.widgets.download_panel import DownloadPanel, DownloadWorker
+from insar_prep.gui.widgets.gacos_download_panel import (
+    GacosDownloadPanel,
+    GacosFetchWorker,
+    GacosRequestWorker,
+)
 from insar_prep.gui.widgets.planning_panel import PlanningPanel
 from insar_prep.gui.widgets.project_tree import ProjectTreeWidget
 from insar_prep.gui.widgets.queue_log_panel import QueueLogPanel
 from insar_prep.gui.widgets.report_panel import ReportPanel
 from insar_prep.gui.widgets.scene_check_panel import SceneCheckPanel
 from insar_prep.gui.widgets.scene_table import SceneTableWidget
-from insar_prep.gui.widgets.status_bar import READY_TEXT, StatusBarWidget
+from insar_prep.gui.widgets.status_bar import StatusBarWidget
 from insar_prep.gui.widgets.workflow_steps import WorkflowStepsWidget
 from insar_prep.providers.asf import (
     AsfDownloadPlan,
@@ -67,7 +74,16 @@ from insar_prep.providers.dem import (
     create_dem_request_plan,
     run_dem_download,
 )
-from insar_prep.providers.gacos import GacosImportCheckReport, GacosPlanningReport
+from insar_prep.providers.gacos import (
+    GacosDownloadRunSummary,
+    GacosImportCheckReport,
+    GacosPlanningReport,
+    GacosRequestRunSummary,
+    extract_gacos_dates_from_scenes,
+    run_gacos_download,
+    run_gacos_request,
+)
+from insar_prep.providers.gacos.planner import GACOS_REQUESTS_SUBDIR
 from insar_prep.providers.orbit import OrbitMatchReport
 from insar_prep.quality.scene_checks import check_scene_collection
 from insar_prep.quality.types import CheckSeverity, SceneCheckReport
@@ -116,6 +132,13 @@ class MainWindow(QMainWindow):
         self.dem_download_panel.cancel_button.clicked.connect(self._on_cancel_dem_download)
         self.dem_download_panel.key_button.clicked.connect(self._on_dem_key_login)
         self._dem_download_worker: DemDownloadWorker | None = None
+        self.gacos_download_panel = GacosDownloadPanel()
+        self.gacos_download_panel.submit_button.clicked.connect(self._on_gacos_submit)
+        self.gacos_download_panel.download_button.clicked.connect(self._on_gacos_fetch)
+        self.gacos_download_panel.cancel_button.clicked.connect(self._on_cancel_gacos)
+        self.gacos_download_panel.email_button.clicked.connect(self._on_gacos_email)
+        self._gacos_request_worker: GacosRequestWorker | None = None
+        self._gacos_fetch_worker: GacosFetchWorker | None = None
         self.queue_log_panel = QueueLogPanel()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -131,6 +154,8 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar_widget)
 
         self._build_toolbar()
+        self._build_menu_bar()
+        self.retranslate_ui()
         self.resize(1000, 640)
 
     def _build_centre(self) -> QScrollArea:
@@ -146,6 +171,7 @@ class MainWindow(QMainWindow):
         self.centre_layout.addWidget(self.report_panel)
         self.centre_layout.addWidget(self.download_panel)
         self.centre_layout.addWidget(self.dem_download_panel)
+        self.centre_layout.addWidget(self.gacos_download_panel)
         self.centre_layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -159,21 +185,95 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("main_toolbar")
         self.addToolBar(toolbar)
 
-        new_workspace = QAction("New Workspace", self)
-        new_workspace.triggered.connect(self._on_new_workspace)
-        toolbar.addAction(new_workspace)
+        self.new_workspace_action = QAction("New Workspace", self)
+        self.new_workspace_action.triggered.connect(self._on_new_workspace)
+        toolbar.addAction(self.new_workspace_action)
 
-        new_project = QAction("New Project", self)
-        new_project.triggered.connect(self._on_new_project)
-        toolbar.addAction(new_project)
+        self.new_project_action = QAction("New Project", self)
+        self.new_project_action.triggered.connect(self._on_new_project)
+        toolbar.addAction(self.new_project_action)
 
-        new_region = QAction("New Region", self)
-        new_region.triggered.connect(self._on_new_region)
-        toolbar.addAction(new_region)
+        self.new_region_action = QAction("New Region", self)
+        self.new_region_action.triggered.connect(self._on_new_region)
+        toolbar.addAction(self.new_region_action)
 
-        earthdata_login = QAction("Earthdata Login", self)
-        earthdata_login.triggered.connect(self._on_earthdata_login)
-        toolbar.addAction(earthdata_login)
+        self.earthdata_login_action = QAction("Earthdata Login", self)
+        self.earthdata_login_action.triggered.connect(self._on_earthdata_login)
+        toolbar.addAction(self.earthdata_login_action)
+
+        self.gacos_email_action = QAction("GACOS Email", self)
+        self.gacos_email_action.triggered.connect(self._on_gacos_email)
+        toolbar.addAction(self.gacos_email_action)
+
+    def _build_menu_bar(self) -> None:
+        """Build the menu bar with a Language switcher and a Help/About entry."""
+        menu_bar = self.menuBar()
+        menu_bar.setObjectName("main_menu_bar")
+
+        self.language_menu = menu_bar.addMenu(i18n.tr("menu.language"))
+        self.language_menu.setObjectName("language_menu")
+        self._language_group = QActionGroup(self)
+        self._language_group.setExclusive(True)
+        self._language_actions: dict[str, QAction] = {}
+        for code, name in i18n.available_languages():
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.setData(code)
+            action.setChecked(code == i18n.get_language())
+            action.triggered.connect(lambda _checked=False, c=code: self._on_change_language(c))
+            self._language_group.addAction(action)
+            self.language_menu.addAction(action)
+            self._language_actions[code] = action
+
+        self.help_menu = menu_bar.addMenu(i18n.tr("menu.help"))
+        self.help_menu.setObjectName("help_menu")
+        self.about_action = QAction(i18n.tr("menu.about"), self)
+        self.about_action.triggered.connect(self._on_about)
+        self.help_menu.addAction(self.about_action)
+
+    def _on_change_language(self, code: str) -> None:
+        """Switch the UI language, persist the choice, and retranslate live."""
+        i18n.set_language(code)
+        i18n.save_language(code)
+        self.retranslate_ui()
+
+    def _on_about(self) -> None:
+        from PySide6.QtWidgets import QMessageBox  # noqa: PLC0415 - only needed here
+
+        QMessageBox.information(self, i18n.tr("menu.about"), i18n.tr("about.text"))
+
+    def retranslate_ui(self) -> None:
+        """Re-apply all translatable text after a language change."""
+        self.setWindowTitle(i18n.tr("app.title"))
+        self.new_workspace_action.setText(i18n.tr("toolbar.new_workspace"))
+        self.new_project_action.setText(i18n.tr("toolbar.new_project"))
+        self.new_region_action.setText(i18n.tr("toolbar.new_region"))
+        self.earthdata_login_action.setText(i18n.tr("toolbar.earthdata_login"))
+        self.gacos_email_action.setText(i18n.tr("toolbar.gacos_email"))
+        self.language_menu.setTitle(i18n.tr("menu.language"))
+        self.help_menu.setTitle(i18n.tr("menu.help"))
+        self.about_action.setText(i18n.tr("menu.about"))
+        for code, action in self._language_actions.items():
+            action.setChecked(code == i18n.get_language())
+        # Retranslate every child panel that supports it.
+        for widget in (
+            self.project_tree,
+            self.workflow_steps,
+            self.aoi_panel,
+            self.asf_cart_panel,
+            self.scene_table,
+            self.scene_check_panel,
+            self.planning_panel,
+            self.report_panel,
+            self.download_panel,
+            self.dem_download_panel,
+            self.gacos_download_panel,
+            self.queue_log_panel,
+            self.status_bar_widget,
+        ):
+            retranslate = getattr(widget, "retranslate_ui", None)
+            if callable(retranslate):
+                retranslate()
 
     # --- logic methods (testable without dialogs) -----------------------------
 
@@ -261,7 +361,7 @@ class MainWindow(QMainWindow):
         elif report.has_warnings:
             self.status_bar_widget.set_status(f"Scene check: {warnings} warning(s)")
         else:
-            self.status_bar_widget.set_status(READY_TEXT)
+            self.status_bar_widget.set_ready()
 
     def _require_region(self, action: str):
         """Return the current region, or report a coded GUI002 error and ``None``."""
@@ -680,3 +780,194 @@ class MainWindow(QMainWindow):
         self.dem_download_panel.set_failed(message)
         self.status_bar_widget.set_status(f"DEM download failed: {message}")
         self._dem_download_worker = None
+
+    # --- GACOS request / download ---------------------------------------------
+
+    def _on_gacos_email(self) -> None:
+        GacosEmailDialog(self).exec()
+        self.gacos_download_panel.refresh_email_status()
+
+    def _gacos_request_inputs(self, action: str):
+        """Return ``(region, bbox, dates, output_root)`` for a GACOS request."""
+        region = self._require_region(action)
+        if region is None:
+            return None
+        if region.aoi is None or region.aoi.bbox is None:
+            self.status_bar_widget.set_status(
+                str(InsarPrepError("set an AOI before requesting GACOS", code=ErrorCode.AOI001))
+            )
+            return None
+        output_root = self.gacos_download_panel.output_dir()
+        if not output_root:
+            error = InsarPrepError("output root is required", code=ErrorCode.GUI003)
+            self.status_bar_widget.set_status(str(error))
+            return None
+        dates = self.gacos_download_panel.manual_dates()
+        if not dates:
+            dates = extract_gacos_dates_from_scenes(region.scenes)
+        if not dates:
+            self.status_bar_widget.set_status(
+                str(
+                    InsarPrepError(
+                        "import scenes or enter dates before requesting GACOS",
+                        code=ErrorCode.GAC001,
+                    )
+                )
+            )
+            return None
+        bbox = region.aoi.bbox.buffer(0.05)
+        return region, bbox, dates, output_root
+
+    def apply_run_gacos_request(
+        self, *, client: object | None = None
+    ) -> GacosRequestRunSummary | None:
+        """Run the GACOS request synchronously (used headless/in tests)."""
+        inputs = self._gacos_request_inputs("submitting a GACOS request")
+        if inputs is None:
+            return None
+        region, bbox, dates, output_root = inputs
+        hour, minute = self.gacos_download_panel.selected_time()
+        try:
+            summary = run_gacos_request(
+                region_safe_name=region.region_safe_name,
+                bbox=bbox,
+                dates=dates,
+                email="",
+                output_root=output_root,
+                hour=hour,
+                minute=minute,
+                output_format=self.gacos_download_panel.selected_format(),
+                client=client,
+            )
+        except InsarPrepError as exc:
+            self.gacos_download_panel.set_failed(str(exc))
+            self.status_bar_widget.set_status(str(exc))
+            return None
+        self.gacos_download_panel.set_request_summary(summary)
+        self.status_bar_widget.set_status(f"GACOS request: {summary.summary_line()}")
+        return summary
+
+    def apply_run_gacos_download(
+        self, *, client: object | None = None
+    ) -> GacosDownloadRunSummary | None:
+        """Run the GACOS result download synchronously (used headless/in tests)."""
+        region = self._require_region("downloading GACOS results")
+        if region is None:
+            return None
+        urls = self.gacos_download_panel.result_urls()
+        if not urls:
+            self.status_bar_widget.set_status(
+                str(InsarPrepError("paste at least one GACOS link", code=ErrorCode.GAC004))
+            )
+            return None
+        output_root = self.gacos_download_panel.output_dir()
+        if not output_root:
+            error = InsarPrepError("output root is required", code=ErrorCode.GUI003)
+            self.status_bar_widget.set_status(str(error))
+            return None
+        output_dir = Path(output_root) / region.region_safe_name / Path(*GACOS_REQUESTS_SUBDIR)
+        expected = extract_gacos_dates_from_scenes(region.scenes) or None
+        try:
+            summary = run_gacos_download(urls, output_dir, expected_dates=expected, client=client)
+        except InsarPrepError as exc:
+            self.gacos_download_panel.set_failed(str(exc))
+            self.status_bar_widget.set_status(str(exc))
+            return None
+        self.gacos_download_panel.set_download_summary(summary)
+        self.status_bar_widget.set_status(f"GACOS download: {summary.summary_line()}")
+        return summary
+
+    def _on_gacos_submit(self) -> None:
+        """Start the real GACOS request on a background thread."""
+        inputs = self._gacos_request_inputs("submitting a GACOS request")
+        if inputs is None:
+            return
+        if importlib.util.find_spec("requests") is None:
+            self.status_bar_widget.set_status(
+                "real GACOS request needs the 'download' extra (requests); "
+                "install it with 'uv sync --extra download'"
+            )
+            return
+        if self._gacos_request_worker is not None and self._gacos_request_worker.isRunning():
+            self.status_bar_widget.set_status("a GACOS request is already running")
+            return
+        region, bbox, dates, output_root = inputs
+        hour, minute = self.gacos_download_panel.selected_time()
+        self.gacos_download_panel.begin_run("Submitting GACOS request…")
+        worker = GacosRequestWorker(
+            region_safe_name=region.region_safe_name,
+            bbox=bbox,
+            dates=dates,
+            email="",
+            output_root=output_root,
+            hour=hour,
+            minute=minute,
+            output_format=self.gacos_download_panel.selected_format(),
+        )
+        worker.batch_done.connect(self.gacos_download_panel.on_batch_done)
+        worker.run_finished.connect(self._on_gacos_request_finished)
+        worker.run_failed.connect(self._on_gacos_failed)
+        worker.finished.connect(worker.deleteLater)
+        self._gacos_request_worker = worker
+        self.status_bar_widget.set_status("Submitting GACOS request… (Cancel to stop)")
+        worker.start()
+
+    def _on_gacos_fetch(self) -> None:
+        """Start the real GACOS result download on a background thread."""
+        region = self._require_region("downloading GACOS results")
+        if region is None:
+            return
+        urls = self.gacos_download_panel.result_urls()
+        if not urls:
+            self.status_bar_widget.set_status(
+                str(InsarPrepError("paste at least one GACOS link", code=ErrorCode.GAC004))
+            )
+            return
+        output_root = self.gacos_download_panel.output_dir()
+        if not output_root:
+            self.status_bar_widget.set_status(
+                str(InsarPrepError("output root is required", code=ErrorCode.GUI003))
+            )
+            return
+        if importlib.util.find_spec("requests") is None:
+            self.status_bar_widget.set_status(
+                "real GACOS download needs the 'download' extra (requests); "
+                "install it with 'uv sync --extra download'"
+            )
+            return
+        if self._gacos_fetch_worker is not None and self._gacos_fetch_worker.isRunning():
+            self.status_bar_widget.set_status("a GACOS download is already running")
+            return
+        output_dir = Path(output_root) / region.region_safe_name / Path(*GACOS_REQUESTS_SUBDIR)
+        expected = extract_gacos_dates_from_scenes(region.scenes) or None
+        self.gacos_download_panel.begin_run("Downloading GACOS result…")
+        worker = GacosFetchWorker(urls=urls, output_directory=output_dir, expected_dates=expected)
+        worker.fetch_done.connect(self.gacos_download_panel.on_fetch_done)
+        worker.run_finished.connect(self._on_gacos_download_finished)
+        worker.run_failed.connect(self._on_gacos_failed)
+        worker.finished.connect(worker.deleteLater)
+        self._gacos_fetch_worker = worker
+        self.status_bar_widget.set_status("Downloading GACOS result… (Cancel to stop)")
+        worker.start()
+
+    def _on_cancel_gacos(self) -> None:
+        worker = self._gacos_fetch_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            self.status_bar_widget.set_status("Cancelling GACOS download…")
+
+    def _on_gacos_request_finished(self, summary: GacosRequestRunSummary) -> None:
+        self.gacos_download_panel.set_request_summary(summary)
+        self.status_bar_widget.set_status(f"GACOS request: {summary.summary_line()}")
+        self._gacos_request_worker = None
+
+    def _on_gacos_download_finished(self, summary: GacosDownloadRunSummary) -> None:
+        self.gacos_download_panel.set_download_summary(summary)
+        self.status_bar_widget.set_status(f"GACOS download: {summary.summary_line()}")
+        self._gacos_fetch_worker = None
+
+    def _on_gacos_failed(self, message: str) -> None:
+        self.gacos_download_panel.set_failed(message)
+        self.status_bar_widget.set_status(f"GACOS failed: {message}")
+        self._gacos_request_worker = None
+        self._gacos_fetch_worker = None

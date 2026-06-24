@@ -36,6 +36,8 @@ class ErrorCode(StrEnum):
     DEM005 = "DEM005"
     GAC001 = "GAC001"
     GAC002 = "GAC002"
+    GAC003 = "GAC003"
+    GAC004 = "GAC004"
     REP001 = "REP001"
     GUI001 = "GUI001"
     GUI002 = "GUI002"
@@ -66,6 +68,8 @@ ERROR_CODE_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.DEM005: "OpenTopography DEM API key is missing or was rejected.",
     ErrorCode.GAC001: "GACOS date list generation failed.",
     ErrorCode.GAC002: "GACOS product dates are incomplete.",
+    ErrorCode.GAC003: "GACOS request submission failed or the email is missing.",
+    ErrorCode.GAC004: "GACOS result download network/transport error.",
     ErrorCode.REP001: "Report generation failed.",
     ErrorCode.GUI001: "GUI dependency (PySide6) is not installed.",
     ErrorCode.GUI002: "GUI workflow step prerequisite is missing.",

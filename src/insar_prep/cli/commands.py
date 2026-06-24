@@ -82,12 +82,22 @@ from insar_prep.providers.dem.credentials import (
     stored_api_key_status,
 )
 from insar_prep.providers.gacos import (
+    GACOS_PORTAL_URL,
+    GacosEmailSource,
+    GacosOutputFormat,
     check_gacos_products,
+    clear_stored_gacos_email,
     create_gacos_request_plan,
     extract_gacos_dates_from_scenes,
     import_gacos_products,
+    is_valid_email,
+    raise_for_missing_download_extra,
+    store_gacos_email,
+    stored_gacos_email_status,
     validate_gacos_request_plan,
 )
+from insar_prep.providers.gacos import run_gacos_download as _run_gacos_download
+from insar_prep.providers.gacos import run_gacos_request as _run_gacos_request
 from insar_prep.providers.gacos.planner import GACOS_REQUESTS_SUBDIR
 from insar_prep.providers.orbit import match_orbits_for_scenes, scan_orbit_directory
 from insar_prep.quality.scene_checks import check_scene_collection
@@ -1418,6 +1428,412 @@ def run_gacos_import(args: argparse.Namespace) -> int:
     for issue in result.issues:
         sys.stdout.write(f"  [{issue.severity.value}] {issue.code}: {issue.message}\n")
     return _EXIT_ERROR if result.has_errors else _EXIT_OK
+
+
+def _parse_utc_time(value: str) -> tuple[int, int]:
+    """Parse a ``HH:MM`` (or ``HH``) UTC time-of-day into ``(hour, minute)``."""
+    text = value.strip()
+    if ":" in text:
+        hour_str, _, minute_str = text.partition(":")
+    else:
+        hour_str, minute_str = text, "0"
+    try:
+        hour = int(hour_str)
+        minute = int(minute_str or "0")
+    except ValueError as exc:
+        raise InputValidationError(
+            f"invalid --time {value!r}; expected HH:MM in UTC", code=ErrorCode.GAC003
+        ) from exc
+    if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+        raise InputValidationError(
+            f"invalid --time {value!r}; hour 0-23, minute 0-59 (UTC)", code=ErrorCode.GAC003
+        )
+    return hour, minute
+
+
+def add_gacos_auth_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``gacos-auth`` subcommand (manage the stored GACOS email)."""
+    parser = subparsers.add_parser(
+        "gacos-auth",
+        help="Manage your stored GACOS delivery email (OS keyring).",
+        description=(
+            "Store, check, or remove the email address GACOS sends result links to, "
+            "in the OS keyring, so 'gacos-request --submit' can use it. The email is "
+            "not a password (you may also pass --email directly), but storing it once "
+            "keeps it out of shell history. Needs the optional 'download' extra "
+            f"(keyring). Register / submit at {GACOS_PORTAL_URL}."
+        ),
+    )
+    parser.add_argument(
+        "action",
+        choices=["login", "status", "logout"],
+        help="login: store the email; status: show whether one is stored; logout: clear it.",
+    )
+    parser.add_argument(
+        "--email",
+        dest="email",
+        default=None,
+        help="Email to store (for 'login'); if omitted you are prompted.",
+    )
+    return parser
+
+
+def run_gacos_auth(args: argparse.Namespace) -> int:
+    """Run the ``gacos-auth`` subcommand. Returns a process exit code."""
+    try:
+        if args.action == "login":
+            email = args.email if args.email is not None else input("GACOS email: ").strip()
+            if not email:
+                sys.stderr.write("No email entered; nothing stored.\n")
+                return _EXIT_ERROR
+            store_gacos_email(email)
+            sys.stdout.write("Stored GACOS email in the OS keyring.\n")
+            return _EXIT_OK
+        if args.action == "status":
+            status = stored_gacos_email_status()
+            sys.stdout.write(f"Stored GACOS email: {status}\n")
+            return _EXIT_OK
+        removed = clear_stored_gacos_email()
+        sys.stdout.write(
+            "Cleared the stored GACOS email.\n" if removed else "No stored GACOS email to clear.\n"
+        )
+        return _EXIT_OK
+    except CredentialError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+
+def add_gacos_request_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``gacos-request`` subcommand (submit a real GACOS web request)."""
+    parser = subparsers.add_parser(
+        "gacos-request",
+        help="Submit a real GACOS atmospheric-correction request (dry-run by default).",
+        description=(
+            "GACOS has no download API: a request is a web-form submission whose "
+            "result link is emailed to you. This command builds the request "
+            "(bounding box + acquisition dates + UTC time + output format) from a "
+            "local ASF cart (or --dates) and, with --submit, POSTs it to the GACOS "
+            "web form in <=20-date batches. Dry-run is the default and never touches "
+            "the network. --submit needs the optional 'download' extra and your "
+            "GACOS email (stored via 'gacos-auth login', $GACOS_EMAIL, or --email). "
+            "After submitting, watch your inbox for the download link and fetch it "
+            "with 'gacos-download --url'."
+        ),
+    )
+    parser.add_argument(
+        "--region-name",
+        dest="region_name",
+        required=True,
+        help="Region name (normalized to a SARscape-safe name; used in output paths).",
+    )
+    parser.add_argument(
+        "--output-root",
+        dest="output_root",
+        required=True,
+        help="Output root: a results CSV is written under <output-root>/gacos_request/.",
+    )
+    _add_processing_aoi_group(parser)
+    parser.add_argument(
+        "--cart",
+        dest="cart",
+        default=None,
+        help="ASF cart file; its acquisition dates become the GACOS date list.",
+    )
+    parser.add_argument(
+        "--dates",
+        dest="dates",
+        default=None,
+        help="Comma/space-separated YYYYMMDD dates (overrides --cart for the date list).",
+    )
+    parser.add_argument(
+        "--time",
+        dest="time",
+        default="00:00",
+        help="Acquisition time of day in UTC as HH:MM (default: 00:00).",
+    )
+    parser.add_argument(
+        "--output-format",
+        dest="output_format",
+        default=GacosOutputFormat.GEOTIFF.value,
+        choices=[fmt.value for fmt in GacosOutputFormat],
+        help="GACOS product format (default: geotiff).",
+    )
+    parser.add_argument(
+        "--email",
+        dest="email",
+        default=None,
+        help="GACOS delivery email (else resolved from keyring / $GACOS_EMAIL).",
+    )
+    parser.add_argument(
+        "--gacos-buffer",
+        dest="gacos_buffer",
+        type=float,
+        default=0.05,
+        help="GACOS request bbox buffer in degrees (default: 0.05).",
+    )
+    parser.add_argument(
+        "--max-dates-per-batch",
+        dest="max_dates_per_batch",
+        type=int,
+        default=20,
+        help="Maximum dates per submitted batch (1-20; default: 20).",
+    )
+    parser.add_argument(
+        "--submit",
+        dest="submit",
+        action="store_true",
+        help="Actually POST the request to GACOS (default: dry-run preview only).",
+    )
+    return parser
+
+
+def _gacos_request_dates(args: argparse.Namespace) -> list | None:
+    """Resolve the GACOS date list from --dates or --cart (None on error)."""
+    if args.dates:
+        from datetime import datetime  # noqa: PLC0415 - local, only needed here
+
+        tokens = [tok for tok in args.dates.replace(",", " ").split() if tok]
+        parsed: list = []
+        for token in tokens:
+            try:
+                parsed.append(datetime.strptime(token, "%Y%m%d").date())
+            except ValueError:
+                sys.stderr.write(
+                    f"[{ErrorCode.GAC001.value}] invalid date {token!r}; use YYYYMMDD\n"
+                )
+                return None
+        return sorted(set(parsed))
+    if args.cart:
+        try:
+            scenes = parse_asf_cart_file(args.cart)
+        except InsarPrepError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return None
+        return extract_gacos_dates_from_scenes(scenes)
+    sys.stderr.write(
+        f"[{ErrorCode.GAC001.value}] provide acquisition dates via --cart or --dates\n"
+    )
+    return None
+
+
+def run_gacos_request(args: argparse.Namespace) -> int:
+    """Run ``gacos-request``. Dry-run previews the batches; --submit POSTs them."""
+    try:
+        region_safe_name = sarscape_safe_name(args.region_name)
+    except ValueError as exc:
+        logger.error("invalid region name %r: %s", args.region_name, exc)
+        return _EXIT_ERROR
+
+    try:
+        processing_aoi = _resolve_processing_aoi(args)
+    except (InputValidationError, InsarPrepError) as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+    if processing_aoi is None:
+        sys.stderr.write(
+            f"[{ErrorCode.AOI001.value}] a Processing AOI is required; pass one of "
+            "--bbox WEST SOUTH EAST NORTH, --aoi-geojson PATH, --aoi-wkt WKT, "
+            "--aoi-shp PATH, --aoi-kml PATH, --aoi-kmz PATH, or --aoi-file PATH\n"
+        )
+        return _EXIT_ERROR
+
+    dates = _gacos_request_dates(args)
+    if dates is None:
+        return _EXIT_ERROR
+    if not dates:
+        sys.stderr.write(f"[{ErrorCode.GAC001.value}] no acquisition dates found\n")
+        return _EXIT_ERROR
+
+    try:
+        hour, minute = _parse_utc_time(args.time)
+    except InputValidationError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    request_bbox = processing_aoi.bbox.buffer(args.gacos_buffer)
+    output_format = GacosOutputFormat(args.output_format)
+
+    sys.stdout.write(
+        "GACOS request:\n"
+        f"  region: {region_safe_name}\n"
+        f"  bbox (W,S,E,N): {request_bbox.west}, {request_bbox.south}, "
+        f"{request_bbox.east}, {request_bbox.north}\n"
+        f"  dates: {len(dates)} (UTC {hour:02d}:{minute:02d})\n"
+        f"  output format: {output_format.value}\n"
+    )
+
+    if not args.submit:
+        batches = (len(dates) + args.max_dates_per_batch - 1) // args.max_dates_per_batch
+        sys.stdout.write(
+            f"Dry-run only: would submit {batches} batch(es) to GACOS. No network access. "
+            "Re-run with --submit to POST the request.\n"
+        )
+        return _EXIT_OK
+
+    try:
+        raise_for_missing_download_extra()
+    except InsarPrepError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    email = (args.email or "").strip()
+    if email and not is_valid_email(email):
+        sys.stderr.write(f"[{ErrorCode.GAC003.value}] {email!r} is not a valid email\n")
+        return _EXIT_ERROR
+
+    try:
+        summary = _run_gacos_request(
+            region_safe_name=region_safe_name,
+            bbox=request_bbox,
+            dates=dates,
+            email=email,
+            output_root=Path(args.output_root),
+            hour=hour,
+            minute=minute,
+            output_format=output_format,
+            email_source=GacosEmailSource.AUTO,
+            max_dates_per_batch=args.max_dates_per_batch,
+        )
+    except InsarPrepError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    sys.stdout.write(f"GACOS request finished: {summary.summary_line()}.\n")
+    if summary.results_path is not None:
+        sys.stdout.write(f"Results: {summary.results_path}\n")
+    for result in summary.results:
+        sys.stdout.write(
+            f"  batch {result.batch_index}/{result.batch_count}: "
+            f"{result.outcome.value} - {mask_text(result.message)}\n"
+        )
+    if summary.submitted:
+        sys.stdout.write(
+            "Watch your email for the GACOS download link(s), then run "
+            "'insar-prep gacos-download --url <link>'.\n"
+        )
+    return _EXIT_ERROR if summary.has_failures else _EXIT_OK
+
+
+def add_gacos_download_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``gacos-download`` subcommand (fetch the emailed GACOS archive)."""
+    parser = subparsers.add_parser(
+        "gacos-download",
+        help="Download GACOS result archive(s) from the emailed link and import them.",
+        description=(
+            "Fetch the GACOS result archive(s) from the download link(s) GACOS "
+            "emailed you (after 'gacos-request --submit'), then extract, organize, "
+            "and integrity-check the products into the region's GACOS directory "
+            "(reusing the same importer as 'gacos-import'). Pass each link with "
+            "--url (repeatable) or a file of links with --url-file. Needs the "
+            "optional 'download' extra. Pass --cart to check coverage against the "
+            "scene dates."
+        ),
+    )
+    parser.add_argument(
+        "--region-name",
+        dest="region_name",
+        required=True,
+        help="Region name (normalized to a SARscape-safe name; used in output paths).",
+    )
+    parser.add_argument(
+        "--output-root",
+        dest="output_root",
+        required=True,
+        help=(
+            "Output root: products land under <output-root>/<region>/05_atmosphere/gacos/requests/."
+        ),
+    )
+    parser.add_argument(
+        "--url",
+        dest="urls",
+        action="append",
+        default=None,
+        metavar="URL",
+        help="A GACOS result download link (http/https/ftp). Repeatable.",
+    )
+    parser.add_argument(
+        "--url-file",
+        dest="url_file",
+        default=None,
+        help="A text file with one GACOS result link per line.",
+    )
+    parser.add_argument(
+        "--cart",
+        dest="cart",
+        default=None,
+        help="Optional ASF cart file; its acquisition dates drive the coverage check.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        dest="max_retries",
+        type=int,
+        default=3,
+        help="Maximum attempts per link on transient failures (default: 3).",
+    )
+    return parser
+
+
+def run_gacos_download(args: argparse.Namespace) -> int:
+    """Run ``gacos-download``: fetch the emailed archive(s) and import the products."""
+    try:
+        region_safe_name = sarscape_safe_name(args.region_name)
+    except ValueError as exc:
+        logger.error("invalid region name %r: %s", args.region_name, exc)
+        return _EXIT_ERROR
+
+    urls: list[str] = list(args.urls or [])
+    if args.url_file:
+        try:
+            text = Path(args.url_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            sys.stderr.write(f"[{ErrorCode.GAC004.value}] could not read --url-file: {exc}\n")
+            return _EXIT_ERROR
+        urls.extend(line.strip() for line in text.splitlines() if line.strip())
+    if not urls:
+        sys.stderr.write(f"[{ErrorCode.GAC004.value}] provide at least one --url or a --url-file\n")
+        return _EXIT_ERROR
+
+    try:
+        raise_for_missing_download_extra()
+    except InsarPrepError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    expected_dates = None
+    if args.cart:
+        try:
+            scenes = parse_asf_cart_file(args.cart)
+        except InsarPrepError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return _EXIT_ERROR
+        expected_dates = extract_gacos_dates_from_scenes(scenes)
+
+    output_directory = Path(args.output_root) / region_safe_name / Path(*GACOS_REQUESTS_SUBDIR)
+    try:
+        summary = _run_gacos_download(
+            urls,
+            output_directory,
+            expected_dates=expected_dates,
+            email_source=GacosEmailSource.AUTO,
+            max_retries=args.max_retries,
+        )
+    except InsarPrepError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    sys.stdout.write(f"GACOS download finished: {summary.summary_line()}.\n")
+    if summary.results_path is not None:
+        sys.stdout.write(f"Results: {summary.results_path}\n")
+    if summary.import_result is not None:
+        sys.stdout.write(
+            f"  imported into: {summary.import_result.output_directory}\n"
+            f"  product dates: {summary.import_result.summary['product_date_count']} "
+            f"({summary.import_result.summary['valid_product_count']} valid)\n"
+        )
+        for issue in summary.import_result.issues:
+            sys.stdout.write(f"  [{issue.severity.value}] {issue.code}: {issue.message}\n")
+    has_import_errors = summary.import_result.has_errors if summary.import_result else False
+    return _EXIT_ERROR if (summary.has_failures or has_import_errors) else _EXIT_OK
 
 
 def add_auth_subparser(subparsers) -> argparse.ArgumentParser:

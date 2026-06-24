@@ -25,7 +25,10 @@ from insar_prep.cli.commands import (
     add_dem_auth_subparser,
     add_download_asf_subparser,
     add_download_dem_subparser,
+    add_gacos_auth_subparser,
+    add_gacos_download_subparser,
     add_gacos_import_subparser,
+    add_gacos_request_subparser,
     add_gui_subparser,
     add_plan_asf_downloads_subparser,
     add_prepare_subparser,
@@ -35,7 +38,10 @@ from insar_prep.cli.commands import (
     run_dem_auth,
     run_download_asf,
     run_download_dem,
+    run_gacos_auth,
+    run_gacos_download,
     run_gacos_import,
+    run_gacos_request,
     run_gui,
     run_plan_asf_downloads,
     run_prepare,
@@ -61,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_download_dem_subparser(subparsers)
     add_convert_dem_subparser(subparsers)
     add_gacos_import_subparser(subparsers)
+    add_gacos_request_subparser(subparsers)
+    add_gacos_download_subparser(subparsers)
+    add_gacos_auth_subparser(subparsers)
     add_auth_subparser(subparsers)
     add_dem_auth_subparser(subparsers)
     add_update_check_subparser(subparsers)
@@ -79,6 +88,10 @@ def _command_used_network(args: argparse.Namespace) -> bool:
     command = getattr(args, "command", None)
     if command in ("download-asf", "download-dem"):
         return getattr(args, "download_mode", "dry-run") in ("verify", "real")
+    if command == "gacos-request":
+        return bool(getattr(args, "submit", False))
+    if command == "gacos-download":
+        return True
     if command == "auth":
         return getattr(args, "action", None) == "status" and getattr(args, "test_connection", False)
     return False
@@ -117,6 +130,12 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return run_convert_dem(args)
     if args.command == "gacos-import":
         return run_gacos_import(args)
+    if args.command == "gacos-request":
+        return run_gacos_request(args)
+    if args.command == "gacos-download":
+        return run_gacos_download(args)
+    if args.command == "gacos-auth":
+        return run_gacos_auth(args)
     if args.command == "auth":
         return run_auth(args)
     if args.command == "dem-auth":
