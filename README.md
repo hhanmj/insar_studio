@@ -9,20 +9,23 @@ Sentinel-1 / InSAR beginners.
   local ASF carts, checks scene consistency, matches local precise orbits, plans
   DEM and GACOS requests, checks already-downloaded GACOS products, and writes a
   beginner-friendly data-preparation report.
-- The current version (**v0.12.0 GUI Beta**) runs **offline**: the CLI `prepare`
-  workflow and an optional PySide6 GUI Beta both run locally with no network and
-  no downloads.
+- The **offline core** (CLI `prepare` workflow and the optional PySide6 GUI Beta)
+  runs locally with no network and no downloads. Real downloads are separate,
+  explicit opt-ins behind the `download` extra.
 
-> Current status: **v0.12.0 — GUI Beta.** The offline `insar-prep prepare` CLI
+> Current status: **v0.14.0 — GUI Beta.** The offline `insar-prep prepare` CLI
 > workflow is implemented end to end, and an optional PySide6 **GUI Beta** drives
 > the same offline closed loop (install it with `uv sync --extra gui`). Real
-> Sentinel-1 SLC download is available as an explicit opt-in (`download-asf
-> --download-mode real`, behind the `download` extra); real DEM/GACOS downloads
-> and real DEM vertical-datum conversion are still **not** implemented, and there
-> is **no** official GUI release, installer, or `.exe`. A
-> one-file Windows CLI exe can be built *locally* for testing only. See
+> Sentinel-1 SLC download (`download-asf --download-mode real`) and real DEM
+> download from the OpenTopography Global DEM API (`download-dem --download-mode
+> real`, plus the GUI "DEM Download" panel) are available as explicit opt-ins
+> behind the `download` extra — each user supplies their **own** free
+> OpenTopography API key (none is bundled). Real **GACOS** download and real DEM
+> **vertical-datum conversion** are still **not** implemented (planning only), and
+> there is **no** official GUI release, installer, or `.exe`. A one-file Windows
+> CLI exe can be built *locally* for testing only. See
 > [`docs/release_readiness_v0_12_0_gui_beta.md`](docs/release_readiness_v0_12_0_gui_beta.md)
-> for the current readiness review, and
+> for the most recent readiness review, and
 > [`docs/release_readiness_v0_1_0.md`](docs/release_readiness_v0_1_0.md) for the
 > previous v0.1.0 offline CLI MVP baseline.
 
@@ -61,6 +64,7 @@ uv sync --extra download
 uv run insar-prep --help
 uv run insar-prep --version
 uv run insar-prep prepare --help
+uv run insar-prep update-check   # check GitHub for a newer release
 ```
 
 ## Minimal `prepare` example
@@ -204,24 +208,28 @@ when nothing is wrong it contains a single `INFO` "no warnings" summary row.
 
 ## What this tool does **not** do (by design)
 
-The offline core (`prepare`, `plan-asf-downloads`, `gui`) never performs any of
-the following:
+The strictly offline commands (`prepare`, `plan-asf-downloads`) never touch the
+network. Real downloads are separate, explicit opt-ins behind the `download`
+extra. By design the tool never:
 
-- Download SAR data from ASF / ASF Vertex. (Real Sentinel-1 SLC download is now
-  available, but only as an explicit opt-in: the separate `download-asf
-  --download-mode real` command behind the optional `download` extra — see
+- Downloads SAR data from ASF / ASF Vertex as part of the offline core. (Real
+  Sentinel-1 SLC download is available only as an explicit opt-in: the separate
+  `download-asf --download-mode real` command, or the GUI "ASF SLC Download"
+  panel, behind the optional `download` extra — see
   [ASF Sentinel-1 SLC download](#asf-sentinel-1-slc-download). The offline
   commands themselves still never touch the network.)
-- Download DEMs from OpenTopography (or anywhere else).
-- Submit, scrape, or automate the GACOS web service.
+- Downloads DEMs as part of the offline core. (Real DEM download from the
+  OpenTopography Global DEM API is available only as an explicit opt-in:
+  `download-dem --download-mode real`, or the GUI "DEM Download" panel, behind the
+  `download` extra — see [DEM download (OpenTopography)](#dem-download-opentopography).
+  Each user supplies their own free API key; no key is bundled.)
+- Submit, scrape, or automate the GACOS web service (GACOS is planning only).
 - Perform real DEM vertical-datum conversion (it only *plans* the steps; no
-  GDAL / rasterio / pyproj, no geoid download, no `.tif` files are created).
-- Provide a full GUI workflow. (An optional GUI *skeleton* exists behind the
-  `gui` extra, but it is a read-only shell that runs no workflow, no downloads,
-  and no network access — see [Desktop GUI (beta)](#desktop-gui-beta).)
+  GDAL / rasterio / pyproj, no geoid download, no conversion `.tif` is created —
+  the real download fetches the **raw** DEM only).
 
-It also never reads accounts, stores credentials, or moves / deletes / renames
-your input files.
+It also never reads accounts, stores credentials in a project file, or moves /
+deletes / renames your input files.
 
 ### ASF downloads: offline dry-run planning
 
@@ -290,12 +298,26 @@ uv sync --extra download
 # dry-run (offline plan only, no network) — same plan as plan-asf-downloads:
 uv run insar-prep download-asf --cart tests/fixtures/asf/urls.txt --output-dir ./workspace
 
+# verify (fast network preflight: confirms credentials + ASF reachability
+# without downloading the multi-GB SLCs):
+uv run insar-prep download-asf \
+  --cart tests/fixtures/asf/urls.txt \
+  --output-dir ./workspace \
+  --download-mode verify
+
 # real download (needs the 'download' extra + Earthdata credentials):
 uv run insar-prep download-asf \
   --cart tests/fixtures/asf/urls.txt \
   --output-dir ./workspace \
   --download-mode real
 ```
+
+> **Tip — verify before a big run.** `--download-mode verify` sends one small
+> `Range` request per scene to confirm the whole chain (credential resolution →
+> Earthdata auth → ASF data pool → signed S3 redirect) works and the remote size
+> matches the plan, **without** downloading the archives. Use it to validate
+> credentials and connectivity in seconds before committing to a multi-GB
+> download.
 
 Real download streams each SLC to a `<name>.zip.part` temp file, verifies the
 byte count against `Content-Length`, then **atomically renames** to the final
@@ -306,6 +328,93 @@ hosts and **dropped before any signed S3 redirect**. A per-scene
 `asf_download_plan/asf_download_results.csv` records the outcome of each scene
 (credential-masked). Earthdata Login credentials live only in memory and are
 never written to the repository, logs, reports, or CSVs.
+
+## DEM download (OpenTopography)
+
+Real DEM download from the [OpenTopography Global DEM
+API](https://portal.opentopography.org/apidocs/) is available via the separate
+`download-dem` command (and the GUI "DEM Download" panel). It is **off by
+default** (dry-run) and isolated from the offline core so `prepare` /
+`plan-asf-downloads` never gain a network dependency.
+
+Each user supplies their **own** free OpenTopography API key. **No key is bundled
+or shared** — the free key is rate limited (about 200 calls/24 h for academic
+users, 50/24 h otherwise) and tied to your account, so a shared key would be
+throttled or revoked. Commercial/for-profit use needs an Enterprise key.
+
+1. **Install the optional extra** (adds `requests` + `keyring`; the offline core
+   never needs it):
+
+```bash
+uv sync --extra download
+```
+
+2. **Get a free OpenTopography API key and store it** (interactive, no-echo; the
+   key is saved in your OS keyring, never in a project file):
+
+```bash
+insar-prep dem-auth login     # prints the register -> request-key steps, then prompts
+insar-prep dem-auth status    # shows whether a key is stored (set / none)
+```
+
+   To register: create a free account at
+   <https://portal.opentopography.org/newUser>, log in, open the **myOpenTopo**
+   dashboard, click **Get an API Key**, then **Request API Key**. Alternatively,
+   set the `OPENTOPOGRAPHY_API_KEY` environment variable.
+
+3. **Plan or download the DEM** for a Processing AOI (same AOI flags as
+   `prepare`). Default is a safe offline dry-run; add `--download-mode real` to
+   fetch:
+
+```bash
+# dry-run (offline plan only, no network):
+insar-prep download-dem --region-name shiliushubao_demo --output-root ./workspace \
+  --bbox 110.1 30.8 110.6 31.2 --dem-dataset COP30
+
+# verify (fast preflight: a tiny sub-tile confirms the key + endpoint):
+insar-prep download-dem --region-name shiliushubao_demo --output-root ./workspace \
+  --bbox 110.1 30.8 110.6 31.2 --download-mode verify
+
+# real download (needs the 'download' extra + an OpenTopography API key):
+insar-prep download-dem --region-name shiliushubao_demo --output-root ./workspace \
+  --bbox 110.1 30.8 110.6 31.2 --download-mode real
+```
+
+Real download streams the GeoTIFF to a `<name>.tif.part` temp file, verifies the
+GeoTIFF magic bytes and (when present) the `Content-Length`, then **atomically
+renames** to `<output-root>/<region>/04_dem/raw/<region>_<dataset>_raw.tif`;
+an already-present DEM is skipped, so a re-run is idempotent. Transient failures
+are retried with backoff (`--max-retries`); a rejected key (HTTP 401/403) maps to
+`DEM005`. A credential-masked `dem_download/dem_download_results.csv` records the
+outcome. Supported datasets map to OpenTopography `demtype`s: COP30, COP90,
+SRTMGL1 (+ ellipsoidal), NASADEM, and AW3D30 (+ ellipsoidal); `USER_LOCAL` is not
+downloadable. The downloaded DEM is the **raw** product — real vertical-datum
+conversion to an ellipsoidal, SARscape-ready DEM is still planning-only.
+
+## Update notifications
+
+`insar-prep` checks the project's public GitHub Releases to let you know when a
+newer version is available:
+
+```bash
+uv run insar-prep update-check
+```
+
+- **On demand:** `update-check` queries the latest release and reports whether
+  you are up to date or a newer version exists (with a download link).
+- **Automatic:** after a command that *already uses the network* (`download-asf
+  --download-mode verify`/`real`, `auth status --test`), a one-line "update
+  available" notice may be printed to stderr. This is **best-effort** (never
+  blocks or fails a command), **throttled** (the network is queried at most once
+  per 24 h, cached per user), and **opt-out** — set `INSAR_NO_UPDATE_CHECK=1` to
+  disable it. The strictly offline commands (`prepare` / `plan-asf-downloads` /
+  dry-run) never trigger it, so they keep touching no network.
+
+The check uses only the Python standard library (no extra dependency, no
+credentials), so it also works in the packaged `.exe`. It relies on the
+maintainer publishing GitHub Releases: pushing a `v*` tag triggers
+`.github/workflows/release.yml`, which builds the Windows one-file exe and
+attaches it to the Release that the update check then reports.
 
 ## SARscape naming constraints
 
@@ -325,7 +434,7 @@ src/insar_prep/      # core package (importable as insar_prep)
   gui/               # optional PySide6 desktop GUI (beta skeleton; `gui` extra)
   core/              # data models, naming, logging, errors, events
   processing/        # AOI handling
-  providers/         # asf, orbit, dem, gacos (all offline/local)
+  providers/         # asf, orbit, dem, gacos (offline planning; asf+dem add opt-in real download)
   quality/           # scene consistency checks
   queue/             # offline task queue framework
   reporting/         # JSON + Markdown report backend
@@ -383,10 +492,18 @@ generates the same five-file set as the CLI — JSON, Markdown, HTML,
 scene/orbit/DEM/GACOS results produced above; the output paths are listed and the
 status bar reflects the overall result. This completes the offline beta loop
 (Workspace → Project → Region → AOI → ASF cart → scene check → offline planning →
-reports). It performs no downloads and no network access, and — like the CLI — it
-does **not** implement real ASF/DEM/GACOS downloads or real DEM vertical-datum
-conversion. Those remain intentionally deferred. There is **no** official GUI
-release, installer, or `.exe`; the GUI Beta runs from source via `uv`.
+reports), which performs no network access.
+
+Two **optional real-download panels** sit at the end of the workflow, mirroring
+the CLI and behind the `download` extra: an **ASF SLC Download** panel (Earthdata
+login dialog + dry-run / real, on a cancellable background thread) and a **DEM
+Download (OpenTopography)** panel (dataset selector, dry-run / real, a cancellable
+background thread, and a one-click *OpenTopography API Key* dialog that embeds the
+register → request-key guidance and stores your own key in the OS keyring). Like
+the CLI, the GUI does **not** implement real GACOS download or real DEM
+vertical-datum conversion — those remain intentionally deferred. There is **no**
+official GUI release, installer, or `.exe`; the GUI Beta runs from source via
+`uv`.
 
 For step-by-step install/launch/usage and a pre-delivery checklist, see:
 

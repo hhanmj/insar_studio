@@ -159,6 +159,84 @@ def test_download_asf_real_happy_path_monkeypatched(
     assert list((out_dir / "02_slc").glob("*.zip"))
 
 
+def test_download_asf_verify_happy_path_monkeypatched(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ban_network(monkeypatch)
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: object() if name == "requests" else real_find_spec(name, *a, **k),
+    )
+    monkeypatch.setattr(
+        commands,
+        "resolve_credentials",
+        lambda source: ResolvedCredential(source=source, use_netrc=True),
+    )
+
+    class _FakeDownloader:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+        def verify(self, request: object) -> DownloadResult:
+            return DownloadResult(
+                scene_id=request.scene_id,  # type: ignore[attr-defined]
+                outcome=DownloadOutcome.VERIFIED,
+                bytes_written=64,
+                message="reachable and authenticated; remote size 4000000000 bytes",
+            )
+
+    monkeypatch.setattr(commands, "RealAsfDownloader", _FakeDownloader)
+
+    out_dir = tmp_path / "out"
+    code = main(
+        [
+            "download-asf",
+            "--cart",
+            str(URLS_CART),
+            "--output-dir",
+            str(out_dir),
+            "--download-mode",
+            "verify",
+            "--credential-source",
+            "netrc",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "ASF network verify finished:" in out
+    assert "verified" in out
+    # verify never writes an SLC archive.
+    assert not list(tmp_path.rglob("*.zip"))
+    results_csv = out_dir / "asf_download_plan" / "asf_download_results.csv"
+    assert results_csv.exists()
+
+
+def test_download_asf_verify_missing_credentials_is_offline_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ban_network(monkeypatch)
+    monkeypatch.delenv("EARTHDATA_TOKEN", raising=False)
+    out_dir = tmp_path / "out"
+    code = main(
+        [
+            "download-asf",
+            "--cart",
+            str(URLS_CART),
+            "--output-dir",
+            str(out_dir),
+            "--download-mode",
+            "verify",
+            "--credential-source",
+            "env-token",
+        ]
+    )
+    assert code != 0
+    assert not list(tmp_path.rglob("*.zip"))
+
+
 def test_credential_source_choices_cover_all_sources() -> None:
     # Guard: all supported sources are exposed on the CLI choices.
     assert {member.value for member in CredentialSource} == {

@@ -39,12 +39,15 @@ class _FakeResponse:
         *,
         status_code: int = 200,
         content_length: int | None = None,
+        content_range: str | None = None,
         chunks: tuple[bytes, ...] = (b"slc-bytes",),
     ) -> None:
         self.status_code = status_code
         self.headers: dict[str, str] = {}
         if content_length is not None:
             self.headers["Content-Length"] = str(content_length)
+        if content_range is not None:
+            self.headers["Content-Range"] = content_range
         self._chunks = chunks
 
     def __enter__(self) -> _FakeResponse:
@@ -249,6 +252,63 @@ def test_build_earthdata_session_attaches_and_confines_token() -> None:
     )
     session.rebuild_auth(drop, None)
     assert "Authorization" not in drop.headers
+
+
+def test_verify_success_reports_remote_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ban_network(monkeypatch)
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status_code=206,
+                content_range="bytes 0-65535/4000000000",
+                chunks=(b"x" * 10,),
+            )
+        ]
+    )
+    result = _downloader(session, verify_bytes=10).verify(_request(tmp_path))
+    assert result.outcome is DownloadOutcome.VERIFIED
+    assert "4000000000" in result.message
+    # verify writes nothing to disk.
+    assert not (tmp_path / "02_slc" / "S1A_demo.zip").exists()
+    assert not list(tmp_path.rglob("*.part"))
+
+
+def test_verify_notes_size_mismatch_against_plan(tmp_path: Path) -> None:
+    session = _FakeSession(
+        [_FakeResponse(status_code=206, content_range="bytes 0-9/500", chunks=(b"x" * 10,))]
+    )
+    result = _downloader(session, verify_bytes=10).verify(_request(tmp_path, expected_size=999))
+    assert result.outcome is DownloadOutcome.VERIFIED
+    assert "999" in result.message
+
+
+def test_verify_credentials_rejected_dl004(tmp_path: Path) -> None:
+    session = _FakeSession([_FakeResponse(status_code=403)])
+    result = _downloader(session).verify(_request(tmp_path))
+    assert result.outcome is DownloadOutcome.FAILED
+    assert result.error_code == "DL004"
+
+
+def test_verify_transport_error_dl005(tmp_path: Path) -> None:
+    session = _FakeSession([ConnectionResetError("boom")])
+    result = _downloader(session).verify(_request(tmp_path))
+    assert result.outcome is DownloadOutcome.FAILED
+    assert result.error_code == "DL005"
+
+
+def test_verify_no_url_asf003(tmp_path: Path) -> None:
+    result = _downloader(_FakeSession([])).verify(_request(tmp_path, url=None))
+    assert result.outcome is DownloadOutcome.FAILED
+    assert result.error_code == "ASF003"
+
+
+def test_verify_http_404_fails_dl005(tmp_path: Path) -> None:
+    session = _FakeSession([_FakeResponse(status_code=404)])
+    result = _downloader(session).verify(_request(tmp_path))
+    assert result.outcome is DownloadOutcome.FAILED
+    assert result.error_code == "DL005"
 
 
 @pytest.mark.real_download

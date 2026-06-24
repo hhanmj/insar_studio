@@ -58,11 +58,26 @@ from insar_prep.providers.asf.downloader import (
 )
 from insar_prep.providers.asf.scene_parser import deduplicate_scenes
 from insar_prep.providers.dem import (
+    DemDownloadOutcome,
+    DemKeySource,
     DemProvider,
+    RealDemDownloader,
     create_dem_conversion_plan,
     create_dem_request_plan,
+    dem_download_request_from_plan,
+    opentopo_demtype,
+    resolve_dem_api_key,
+    run_dem_download,
     validate_dem_conversion_plan,
     validate_dem_request_plan,
+)
+from insar_prep.providers.dem.credentials import (
+    OPENTOPO_API_KEY_ENV,
+    OPENTOPO_API_KEY_URL,
+    clear_stored_api_key,
+    opentopo_api_key_guidance,
+    store_api_key,
+    stored_api_key_status,
 )
 from insar_prep.providers.gacos import (
     check_gacos_products,
@@ -617,8 +632,10 @@ def add_download_asf_subparser(subparsers) -> argparse.ArgumentParser:
         description=(
             "Write an ASF SLC download plan (JSON + CSV) and, with "
             "--download-mode real, fetch the SLCs from ASF using NASA Earthdata "
-            "credentials. Dry-run is the default and never touches the network. "
-            "Real download requires the optional 'download' extra (requests). "
+            "credentials. Use --download-mode verify for a fast network preflight "
+            "that checks the whole credential + ASF + redirect chain without "
+            "downloading the multi-GB archives. Dry-run is the default and never "
+            "touches the network. verify/real require the optional 'download' extra. "
             "Set up credentials once with 'insar-prep auth login' (saved in the OS "
             "keyring) or the GUI 'Earthdata Login' dialog; the default "
             f"--credential-source auto then falls back to ${EARTHDATA_TOKEN_ENV} or "
@@ -643,8 +660,13 @@ def add_download_asf_subparser(subparsers) -> argparse.ArgumentParser:
         "--download-mode",
         dest="download_mode",
         default="dry-run",
-        choices=["dry-run", "real"],
-        help="dry-run (default, offline plan only) or real (fetch SLCs; needs credentials).",
+        choices=["dry-run", "verify", "real"],
+        help=(
+            "dry-run (default, offline plan only), verify (network preflight: a "
+            "small Range request per scene confirms credentials + ASF reachability "
+            "without downloading the multi-GB SLCs), or real (fetch the SLCs). "
+            "verify and real need credentials and the optional 'download' extra."
+        ),
     )
     parser.add_argument(
         "--credential-source",
@@ -742,15 +764,18 @@ def run_download_asf(args: argparse.Namespace) -> int:
 
     if args.download_mode == "dry-run":
         sys.stdout.write(
-            "Dry-run only: no network access, no SLCs downloaded. "
-            "Re-run with --download-mode real to fetch the SLCs.\n"
+            "Dry-run only: no network access, no SLCs downloaded. Re-run with "
+            "--download-mode verify (network preflight) or --download-mode real "
+            "(fetch the SLCs).\n"
         )
         return _EXIT_OK
 
-    # --- Real download path (network + credentials; opt-in only). ---
+    # --- Network paths (verify / real): both need credentials + the extra. ---
+    verify_only = args.download_mode == "verify"
     if importlib.util.find_spec("requests") is None:
+        action = "network verify" if verify_only else "real download"
         sys.stderr.write(
-            f"[{ErrorCode.DL004.value}] real download needs the optional 'download' extra; "
+            f"[{ErrorCode.DL004.value}] {action} needs the optional 'download' extra; "
             "install it with 'uv sync --extra download' (or pip install requests)\n"
         )
         return _EXIT_ERROR
@@ -763,13 +788,14 @@ def run_download_asf(args: argparse.Namespace) -> int:
 
     requests_to_run = download_requests_from_scenes(unique_scenes, slc_dir=output_dir / SLC_SUBDIR)
     if not requests_to_run:
-        logger.error("no scenes with a download URL; nothing to download")
+        action = "verify" if verify_only else "download"
+        logger.error("no scenes with a download URL; nothing to %s", action)
         return _EXIT_ERROR
 
     downloader = RealAsfDownloader(resolved=resolved, max_retries=args.max_retries)
     results: list[DownloadResult] = []
     for request in requests_to_run:
-        result = downloader.download(request)
+        result = downloader.verify(request) if verify_only else downloader.download(request)
         results.append(result)
         logger.info(
             "scene %s: %s (%d bytes)%s",
@@ -784,6 +810,16 @@ def run_download_asf(args: argparse.Namespace) -> int:
     counts = {outcome: 0 for outcome in DownloadOutcome}
     for result in results:
         counts[result.outcome] += 1
+
+    if verify_only:
+        sys.stdout.write(
+            "ASF network verify finished: "
+            f"{counts[DownloadOutcome.VERIFIED]} verified, "
+            f"{counts[DownloadOutcome.FAILED]} failed.\n"
+            f"Results: {results_path}\n"
+        )
+        return _EXIT_ERROR if counts[DownloadOutcome.FAILED] else _EXIT_OK
+
     sys.stdout.write(
         "ASF download finished: "
         f"{counts[DownloadOutcome.SUCCESS]} downloaded, "
@@ -796,6 +832,304 @@ def run_download_asf(args: argparse.Namespace) -> int:
     if counts[DownloadOutcome.FAILED] or counts[DownloadOutcome.INTERRUPTED]:
         return _EXIT_ERROR
     return _EXIT_OK
+
+
+def _add_processing_aoi_group(parser: argparse.ArgumentParser) -> None:
+    """Add the mutually exclusive Processing AOI source flags to ``parser``.
+
+    Mirrors the ``prepare`` AOI flags so ``download-dem`` accepts exactly the same
+    inputs and reuses :func:`_resolve_processing_aoi`. All expect EPSG:4326 lon/lat.
+    """
+    aoi_group = parser.add_mutually_exclusive_group()
+    aoi_group.add_argument(
+        "--bbox",
+        dest="bbox",
+        nargs=4,
+        type=float,
+        default=None,
+        metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+        help="Processing AOI bounds in degrees: WEST SOUTH EAST NORTH (EPSG:4326).",
+    )
+    aoi_group.add_argument(
+        "--aoi-geojson",
+        dest="aoi_geojson",
+        default=None,
+        metavar="PATH",
+        help="Processing AOI from a GeoJSON file (EPSG:4326 lon/lat).",
+    )
+    aoi_group.add_argument(
+        "--aoi-wkt",
+        dest="aoi_wkt",
+        default=None,
+        metavar="WKT",
+        help="Processing AOI from a WKT string (EPSG:4326 lon/lat).",
+    )
+    aoi_group.add_argument(
+        "--aoi-shp",
+        dest="aoi_shp",
+        default=None,
+        metavar="PATH",
+        help="Processing AOI from an ESRI Shapefile (.shp; EPSG:4326 lon/lat).",
+    )
+    aoi_group.add_argument(
+        "--aoi-kml",
+        dest="aoi_kml",
+        default=None,
+        metavar="PATH",
+        help="Processing AOI from a KML file (.kml; WGS84 lon/lat).",
+    )
+    aoi_group.add_argument(
+        "--aoi-kmz",
+        dest="aoi_kmz",
+        default=None,
+        metavar="PATH",
+        help="Processing AOI from a zipped KML (.kmz; WGS84 lon/lat).",
+    )
+    aoi_group.add_argument(
+        "--aoi-file",
+        dest="aoi_file",
+        default=None,
+        metavar="PATH",
+        help="Processing AOI from any supported vector file, auto-detected by extension.",
+    )
+
+
+def add_download_dem_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``download-dem`` subcommand (dry-run default; real opt-in)."""
+    parser = subparsers.add_parser(
+        "download-dem",
+        help="Plan or download a DEM for an AOI from OpenTopography (dry-run by default).",
+        description=(
+            "Build a DEM request plan for a Processing AOI and, with "
+            "--download-mode real, download the DEM raster from the OpenTopography "
+            "Global DEM API. Use --download-mode verify for a fast preflight (a tiny "
+            "sub-tile) that confirms the API key works without fetching the full DEM. "
+            "Dry-run is the default and never touches the network. verify/real require "
+            "the optional 'download' extra and a personal OpenTopography API key: each "
+            "user supplies their OWN free key (no key is bundled), stored once with "
+            "'insar-prep dem-auth login' (OS keyring) or via the "
+            f"${OPENTOPO_API_KEY_ENV} environment variable. Get a free key at "
+            f"{OPENTOPO_API_KEY_URL}."
+        ),
+    )
+    parser.add_argument(
+        "--region-name",
+        dest="region_name",
+        required=True,
+        help="Region name (normalized to a SARscape-safe name; used in output paths).",
+    )
+    parser.add_argument(
+        "--output-root",
+        dest="output_root",
+        required=True,
+        help=(
+            "Output root: the DEM lands under "
+            "<output-root>/<region>/04_dem/raw/ and results under "
+            "<output-root>/dem_download/."
+        ),
+    )
+    _add_processing_aoi_group(parser)
+    parser.add_argument(
+        "--dem-dataset",
+        dest="dem_dataset",
+        default=DemDataset.COP30.value,
+        choices=[member.value for member in DemDataset],
+        help="DEM dataset to fetch (default: COP30). USER_LOCAL is not downloadable.",
+    )
+    parser.add_argument(
+        "--dem-buffer",
+        dest="dem_buffer",
+        type=float,
+        default=0.05,
+        help="DEM request bbox buffer in degrees (default: 0.05).",
+    )
+    parser.add_argument(
+        "--download-mode",
+        dest="download_mode",
+        default="dry-run",
+        choices=["dry-run", "verify", "real"],
+        help=(
+            "dry-run (default, offline plan only), verify (preflight: fetch a tiny "
+            "sub-tile to confirm the API key + endpoint), or real (download the DEM). "
+            "verify and real need the optional 'download' extra and an API key."
+        ),
+    )
+    parser.add_argument(
+        "--api-key-source",
+        dest="api_key_source",
+        default=DemKeySource.AUTO.value,
+        choices=[member.value for member in DemKeySource],
+        help=(
+            "OpenTopography API-key source for verify/real: auto (keyring -> "
+            f"${OPENTOPO_API_KEY_ENV}), keyring, or env. Default: auto. "
+            "Configure once with 'insar-prep dem-auth login'."
+        ),
+    )
+    parser.add_argument(
+        "--max-retries",
+        dest="max_retries",
+        type=int,
+        default=3,
+        help="Maximum attempts on transient failures (default: 3).",
+    )
+    return parser
+
+
+def run_download_dem(args: argparse.Namespace) -> int:
+    """Run ``download-dem``. Dry-run plans only; real fetches the DEM."""
+    try:
+        region_safe_name = sarscape_safe_name(args.region_name)
+    except ValueError as exc:
+        logger.error("invalid region name %r: %s", args.region_name, exc)
+        return _EXIT_ERROR
+
+    try:
+        processing_aoi = _resolve_processing_aoi(args)
+    except (InputValidationError, InsarPrepError) as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+    if processing_aoi is None:
+        sys.stderr.write(
+            f"[{ErrorCode.AOI001.value}] a Processing AOI is required; pass one of "
+            "--bbox WEST SOUTH EAST NORTH, --aoi-geojson PATH, --aoi-wkt WKT, "
+            "--aoi-shp PATH, --aoi-kml PATH, --aoi-kmz PATH, or --aoi-file PATH\n"
+        )
+        return _EXIT_ERROR
+
+    output_root = Path(args.output_root)
+    try:
+        plan = create_dem_request_plan(
+            region_id="",
+            region_safe_name=region_safe_name,
+            processing_aoi=processing_aoi,
+            output_root=output_root,
+            dataset=args.dem_dataset,
+            buffer_degrees=args.dem_buffer,
+        )
+    except InsarPrepError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
+
+    report = validate_dem_request_plan(plan)
+    if report.has_errors:
+        for issue in report.issues:
+            logger.error("DEM plan issue %s: %s", issue.code, issue.message)
+        sys.stderr.write("DEM request plan is invalid; see the logged issues.\n")
+        return _EXIT_ERROR
+
+    bbox = plan.request_bbox
+    demtype = opentopo_demtype(args.dem_dataset)
+    sys.stdout.write(
+        "DEM request plan:\n"
+        f"  dataset: {plan.dataset} (OpenTopography demtype: {demtype or 'N/A'})\n"
+        f"  bbox (W,S,E,N): {bbox.west}, {bbox.south}, {bbox.east}, {bbox.north}\n"
+        f"  destination: {plan.raw_dem_path}\n"
+    )
+
+    if args.download_mode == "dry-run":
+        sys.stdout.write(
+            "Dry-run only: no network access, no DEM downloaded. Re-run with "
+            "--download-mode verify (preflight) or --download-mode real (download).\n"
+        )
+        return _EXIT_OK
+
+    if demtype is None:
+        sys.stderr.write(
+            f"[{ErrorCode.DEM001.value}] dataset {plan.dataset!r} cannot be downloaded "
+            "from OpenTopography; choose a global dataset (e.g. COP30) or supply the DEM "
+            "locally (USER_LOCAL).\n"
+        )
+        return _EXIT_ERROR
+
+    verify_only = args.download_mode == "verify"
+    if importlib.util.find_spec("requests") is None:
+        action = "preflight" if verify_only else "real download"
+        sys.stderr.write(
+            f"[{ErrorCode.DEM005.value}] DEM {action} needs the optional 'download' extra; "
+            "install it with 'uv sync --extra download' (or pip install requests)\n"
+        )
+        return _EXIT_ERROR
+
+    try:
+        resolved = resolve_dem_api_key(DemKeySource(args.api_key_source))
+    except CredentialError as exc:
+        sys.stderr.write(f"{exc}\n\n{opentopo_api_key_guidance()}\n")
+        return _EXIT_ERROR
+
+    if verify_only:
+        downloader = RealDemDownloader(resolved=resolved, max_retries=args.max_retries)
+        request = dem_download_request_from_plan(plan)
+        result = downloader.verify(request)
+        sys.stdout.write(f"DEM preflight: {result.outcome.value} ({mask_text(result.message)})\n")
+        return _EXIT_OK if result.outcome is DemDownloadOutcome.VERIFIED else _EXIT_ERROR
+
+    downloader = RealDemDownloader(resolved=resolved, max_retries=args.max_retries)
+    summary = run_dem_download([plan], output_root, downloader=downloader)
+    sys.stdout.write(
+        f"DEM download finished: {summary.summary_line()}.\nResults: {summary.results_path}\n"
+    )
+    return _EXIT_ERROR if summary.has_failures else _EXIT_OK
+
+
+def add_dem_auth_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``dem-auth`` subcommand (manage the OpenTopography API key)."""
+    parser = subparsers.add_parser(
+        "dem-auth",
+        help="Manage your stored OpenTopography API key (OS keyring).",
+        description=(
+            "Store, check, or remove your personal OpenTopography API key in the OS "
+            "keyring so 'download-dem --download-mode real' can use it. Each user "
+            "supplies their OWN free key (none is bundled, to avoid sharing a rate "
+            "limit). The key is never accepted as a flag; 'dem-auth login' prompts "
+            f"without echo. Get a free key at {OPENTOPO_API_KEY_URL}. Needs the "
+            "optional 'download' extra (keyring)."
+        ),
+    )
+    parser.add_argument(
+        "action",
+        choices=["login", "status", "logout"],
+        help="login: store the API key; status: show whether one is stored; logout: clear it.",
+    )
+    parser.add_argument(
+        "--key-stdin",
+        dest="key_stdin",
+        action="store_true",
+        help="Read the API key from stdin instead of prompting (for 'login').",
+    )
+    return parser
+
+
+def run_dem_auth(args: argparse.Namespace) -> int:
+    """Run the ``dem-auth`` subcommand. Returns a process exit code."""
+    try:
+        if args.action == "login":
+            if args.key_stdin:
+                api_key = sys.stdin.readline().strip()
+            else:
+                sys.stdout.write(opentopo_api_key_guidance() + "\n\n")
+                api_key = getpass.getpass("Paste OpenTopography API key: ").strip()
+            if not api_key:
+                sys.stderr.write("No API key entered; nothing stored.\n")
+                return _EXIT_ERROR
+            store_api_key(api_key)
+            sys.stdout.write("Stored OpenTopography API key in the OS keyring.\n")
+            return _EXIT_OK
+        if args.action == "status":
+            status = stored_api_key_status()
+            sys.stdout.write(f"Stored OpenTopography API key: {status}\n")
+            if status == "none":
+                sys.stdout.write("\n" + opentopo_api_key_guidance() + "\n")
+            return _EXIT_OK
+        removed = clear_stored_api_key()
+        sys.stdout.write(
+            "Cleared the stored OpenTopography API key.\n"
+            if removed
+            else "No stored OpenTopography API key to clear.\n"
+        )
+        return _EXIT_OK
+    except CredentialError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_ERROR
 
 
 def add_auth_subparser(subparsers) -> argparse.ArgumentParser:
@@ -907,6 +1241,51 @@ def run_auth(args: argparse.Namespace) -> int:
     except CredentialError as exc:
         sys.stderr.write(f"{exc}\n")
         return _EXIT_ERROR
+
+
+def add_update_check_subparser(subparsers) -> argparse.ArgumentParser:
+    """Register the ``update-check`` subcommand (check GitHub for a newer release)."""
+    parser = subparsers.add_parser(
+        "update-check",
+        help="Check GitHub for a newer insar-prep release (network, best-effort).",
+        description=(
+            "Query the project's public GitHub releases and report whether a newer "
+            "version is available. Uses only the standard library (no credentials, "
+            "no extra dependency). The automatic check that runs after other "
+            "commands can be disabled by setting INSAR_NO_UPDATE_CHECK=1."
+        ),
+    )
+    parser.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=5.0,
+        help="Network timeout in seconds for the GitHub request (default: 5).",
+    )
+    return parser
+
+
+def run_update_check(args: argparse.Namespace) -> int:
+    """Run the ``update-check`` subcommand. Returns a process exit code."""
+    from insar_prep.core.update_check import (
+        GITHUB_REPO,
+        check_for_update,
+        format_update_notice,
+        releases_page_url,
+    )
+
+    info = check_for_update(timeout=args.timeout)
+    if info is None:
+        sys.stderr.write(
+            "Could not check for updates (offline, rate-limited, or no release "
+            f"published yet). See {releases_page_url(GITHUB_REPO)}\n"
+        )
+        return _EXIT_OK
+    if info.update_available:
+        sys.stdout.write(format_update_notice(info) + "\n")
+    else:
+        sys.stdout.write(f"insar-prep is up to date ({info.current_version}).\n")
+    return _EXIT_OK
 
 
 def add_gui_subparser(subparsers) -> argparse.ArgumentParser:

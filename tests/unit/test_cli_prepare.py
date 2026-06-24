@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from insar_prep import __version__
 from insar_prep.cli.main import main
 from insar_prep.core.naming import sarscape_safe_name
 
@@ -52,7 +53,7 @@ def test_version_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "insar-prep 0.12.0" in capsys.readouterr().out
+    assert f"insar-prep {__version__}" in capsys.readouterr().out
 
 
 def test_prepare_help_exits_zero() -> None:

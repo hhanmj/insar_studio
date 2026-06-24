@@ -54,6 +54,10 @@ _DEFAULT_CHUNK_SIZE = 1024 * 1024
 _DEFAULT_TIMEOUT = 60.0
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_BACKOFF = 2.0
+# Bytes fetched by the network preflight (``verify``): enough to prove the whole
+# credential -> EDL -> data-pool -> signed-redirect chain works without pulling
+# the multi-GB SLC archive.
+_DEFAULT_VERIFY_BYTES = 64 * 1024
 
 
 class DownloadOutcome(StrEnum):
@@ -63,6 +67,7 @@ class DownloadOutcome(StrEnum):
     FAILED = "failed"
     INTERRUPTED = "interrupted"
     SKIPPED = "skipped"
+    VERIFIED = "verified"
 
 
 class DownloadRequest(InsarBaseModel):
@@ -206,6 +211,19 @@ def _content_length(response: object) -> int | None:
         return None
 
 
+def _content_range_total(response: object) -> int | None:
+    """Parse the total size from a ``Content-Range: bytes 0-N/TOTAL`` header."""
+    headers = getattr(response, "headers", {}) or {}
+    raw = headers.get("Content-Range") or headers.get("content-range")
+    if not raw or "/" not in str(raw):
+        return None
+    total = str(raw).rsplit("/", 1)[-1].strip()
+    try:
+        return int(total)
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_unlink(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -284,6 +302,7 @@ class RealAsfDownloader:
         backoff_seconds: float = _DEFAULT_BACKOFF,
         chunk_size: int = _DEFAULT_CHUNK_SIZE,
         timeout: float = _DEFAULT_TIMEOUT,
+        verify_bytes: int = _DEFAULT_VERIFY_BYTES,
         cancel_event: Event | None = None,
     ) -> None:
         self.credential_source = credential_source
@@ -291,6 +310,7 @@ class RealAsfDownloader:
         self.backoff_seconds = max(0.0, backoff_seconds)
         self.chunk_size = max(1, chunk_size)
         self.timeout = timeout
+        self.verify_bytes = max(1, verify_bytes)
         self.cancel_event = cancel_event
         self._resolved = resolved
         self._session = session
@@ -432,6 +452,88 @@ class RealAsfDownloader:
             outcome=DownloadOutcome.INTERRUPTED,
             message="cancelled by user; partial .part kept for resume",
             error_code=ErrorCode.DL001.value,
+        )
+
+    def verify(self, request: DownloadRequest) -> DownloadResult:
+        """Network preflight for one scene without saving the full archive.
+
+        Sends a small ``Range`` request and confirms the whole chain works:
+        credential resolution -> EDL authentication -> ASF data pool reachable ->
+        the signed redirect is followed and still returns data. Nothing is written
+        to disk. Returns a :class:`DownloadResult` with outcome
+        :attr:`DownloadOutcome.VERIFIED` on success (or ``FAILED``); never raises.
+        """
+        if not request.url:
+            return DownloadResult(
+                scene_id=request.scene_id,
+                outcome=DownloadOutcome.FAILED,
+                message="no download URL for scene",
+                error_code=ErrorCode.ASF003.value,
+            )
+        try:
+            session = self._ensure_session()
+        except CredentialError as exc:
+            return DownloadResult(
+                scene_id=request.scene_id,
+                outcome=DownloadOutcome.FAILED,
+                message=mask_text(str(exc)),
+                error_code=ErrorCode.DL004.value,
+            )
+
+        headers = {"Range": f"bytes=0-{self.verify_bytes - 1}"}
+        try:
+            with session.get(  # type: ignore[attr-defined]
+                request.url,
+                stream=True,
+                timeout=self.timeout,
+                allow_redirects=True,
+                headers=headers,
+            ) as response:
+                status = int(getattr(response, "status_code", 200))
+                if status in (401, 403):
+                    return DownloadResult(
+                        scene_id=request.scene_id,
+                        outcome=DownloadOutcome.FAILED,
+                        message="Earthdata credentials were rejected (HTTP 401/403)",
+                        error_code=ErrorCode.DL004.value,
+                    )
+                # 416 (range not satisfiable) still proves the chain is reachable
+                # and authenticated; anything else >=400 is a real failure.
+                if status >= 400 and status != 416:
+                    return DownloadResult(
+                        scene_id=request.scene_id,
+                        outcome=DownloadOutcome.FAILED,
+                        message=f"HTTP {status} from data pool",
+                        error_code=ErrorCode.DL005.value,
+                    )
+                sample = 0
+                for chunk in response.iter_content(chunk_size=self.chunk_size):
+                    if chunk:
+                        sample += len(chunk)
+                    if sample >= self.verify_bytes:
+                        break
+                total = _content_range_total(response)
+                if total is None and status != 206:
+                    total = _content_length(response)
+        except Exception as exc:  # noqa: BLE001 - transport errors are masked, not raised
+            return DownloadResult(
+                scene_id=request.scene_id,
+                outcome=DownloadOutcome.FAILED,
+                message=mask_text(f"{type(exc).__name__}: {exc}"),
+                error_code=ErrorCode.DL005.value,
+            )
+
+        note = "reachable and authenticated"
+        if total is not None:
+            note += f"; remote size {total} bytes"
+            if request.expected_size is not None and total != request.expected_size:
+                note += f" (plan expected {request.expected_size})"
+        logger.info("verified %s: %s", request.scene_id, note)
+        return DownloadResult(
+            scene_id=request.scene_id,
+            outcome=DownloadOutcome.VERIFIED,
+            bytes_written=sample,
+            message=note,
         )
 
 

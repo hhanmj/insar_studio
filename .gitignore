@@ -76,8 +76,9 @@ Thumbs.db
 参考项目/
 *.exe
 
-# ---- Local real-data test folder (Task 047/048; never commit real inputs) ----
-# Holds a user-provided ASF cart (.py) + AOI vector files used for manual
-# landing tests. Third-party / data only; excluded from git and (via
-# respect-gitignore) from ruff.
+# ---- Local real-data test folders (Task 047/048/052; never commit real inputs) ----
+# Hold a user-provided ASF cart (.py) + AOI vector files used for manual landing
+# tests. Third-party / data only; excluded from git and (via respect-gitignore)
+# from ruff.
 insarassistantreal_test/
+insar_realtest_package/

@@ -58,13 +58,13 @@
 - **name**: OpenTopography Global Datasets API
 - **url**: https://portal.opentopography.org/apidocs/
 - **license**: 非开源代码，受 API 使用条款 + 各 DEM 数据集许可（COP/SRTM/NASADEM/ALOS）约束。
-- **last_checked_date**: 2026-06-18
+- **last_checked_date**: 2026-06-23
 - **purpose**: 按 bbox 下载 COP30/COP90/SRTMGL1/NASADEM/ALOS 等 DEM。
 - **use_as_dependency**: N/A（直接 HTTP 调官方 API，不依赖个人封装库）。
 - **copy_code_allowed**: N/A（以官方 API 文档为准）。
-- **integration_plan**: 在 `providers/dem/` 直接用 `requests` 调 `globaldem`（demtype + south/north/west/east + API_Key），保存原始 DEM。
-- **risk**: 中。需 API key（keyring）；有速率限制；**数据需按各数据集要求标注引用**。
-- **notes**: 可借鉴点=数据集枚举、bbox 参数、输出格式。不应实现=绕过限速 / 隐藏数据来源。后续 Task=Task 010。
+- **integration_plan**: **已落地（Task 052）**。在 `providers/dem/downloader.py` 用 `requests`（可选 `download` extra）直连 `GET /API/globaldem`（demtype + south/north/west/east + outputFormat=GTiff + API_Key），保存原始 DEM；`.part` 临时文件 + 原子改名 + GeoTIFF 魔数/体积校验 + 重试。API key 由**用户自备**（keyring / 环境变量），代码不内置、不分发。
+- **risk**: 中。需 API key（keyring）；有速率限制（学术 200/24h、非学术 50/24h，绑定账号、禁分享、商用需 Enterprise）；**数据需按各数据集要求标注引用**。
+- **notes**: 可借鉴点=数据集枚举（→`opentopo_demtype` 映射）、bbox 参数、`API_Key` 查询串、GeoTIFF 输出。不应实现=绕过限速 / 隐藏数据来源 / 内置共享 key。已落地=Task 052（仅按官方 API 文档实现，未复制任何第三方源码）。
 
 ### 4. pyroSAR
 
@@ -129,7 +129,7 @@
 - **copy_code_allowed**: **否（硬性，许可证不明）**。
 - **integration_plan**: 仅作概念参考——OpenTopography 客户端分层、行政边界处理、校验器思路，落到我们自研的 `providers/dem`、`processing/validators`。
 - **risk**: **高**。① 许可证不明；② 目录内含 `.env`（疑似凭据）和整套 `Lib/site-packages`（GDAL 等）共约 5500 文件；必须隔离、严禁入库。
-- **notes**: 可借鉴点=DEM API 分层、administrative_boundary（与中国边界合规交叉印证）、validator。不应复制=任何源码与 `.env`。后续 Task=Task 005（行政边界）、Task 010/011（DEM）。
+- **notes**: 可借鉴点=DEM API 分层、administrative_boundary（与中国边界合规交叉印证）、validator。不应复制=任何源码与 `.env`。已落地=Task 052（**仅概念参考** OpenTopography 客户端分层；DEM 下载实现按官方 API 文档自研于 `providers/dem/`，未复制其任何源码）。后续 Task=Task 005（行政边界）。
 
 ### 9. Sentinel1_OrbitDownloader.exe（本地 参考项目）
 
@@ -178,12 +178,12 @@
 |---|---|---|---|---|---|---|
 | 1 | asf_search | BSD-3-Clause | 否(改用 requests) | 否(仅概念) | 概念借鉴 ASFSession.rebuild_auth | 049(已落地) |
 | 2 | sentineleof | MIT | 是 | 否（封装） | `providers/orbit` 适配器 | 009 |
-| 3 | OpenTopography API | 条款/数据许可 | N/A | N/A | `providers/dem` 直连 API | 010 |
+| 3 | OpenTopography API | 条款/数据许可 | N/A | N/A | `providers/dem` 直连 API | 010 / 052(已落地) |
 | 4 | pyroSAR | MIT | 否/谨慎 | 否 | 仅架构参考 | 002 / 011 |
 | 5 | RAiDER | Apache-2.0 | 可选(v2+) | 否（留NOTICE） | `providers/atmosphere` 可选 | 012+ |
 | 6 | PyAPS | **GPL-3.0** | **否(传染)** | **否** | 仅外部工具/接口 | 012+ |
 | 7 | geo-downloader | MIT | 否(非Py) | 否 | 下载器/GUI 交互参考 | 008 / 014 |
-| 8 | DEMdownloader(本地) | **不明** | 否 | **否** | 仅概念参考(含.env,隔离) | 005 / 010 / 011 |
+| 8 | DEMdownloader(本地) | **不明** | 否 | **否** | 仅概念参考(含.env,隔离) | 005 / 052(已落地,仅概念) |
 | 9 | OrbitDownloader.exe(本地) | 不明 | 否 | N/A | 仅行为参考 | 009 |
 | 10 | EZ-InSAR (MIESAR) | **GPL-3.0** | **否(传染/MATLAB)** | **否** | 仅架构/UX 参考(数据准备模块/多传感器) | GUI/多传感器 |
 | 11 | awesome-sar | 清单(各工具不同) | 否(清单) | N/A | 候选工具目录;选用前逐一登记 | — |

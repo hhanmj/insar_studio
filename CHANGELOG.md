@@ -7,8 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-23
+
 ### Added
 
+- Real DEM download from OpenTopography (Task 052): the planning-only DEM module
+  gained an **opt-in real download** of the raster DEM from the OpenTopography
+  Global DEM API, mirroring the credential-safe architecture of the ASF SLC
+  downloader. New `src/insar_prep/providers/dem/downloader.py` adds
+  `RealDemDownloader` (calls `GET /API/globaldem` with `demtype` + bbox +
+  `API_Key`, streams to a `<name>.tif.part` temp file, verifies the GeoTIFF magic
+  bytes + non-empty/`Content-Length` size, **atomically renames** on success,
+  skips already-present targets, retries transient 429/5xx with backoff, maps a
+  rejected key (HTTP 401/403) to `DEM005`, and supports cancellation), a
+  `verify()` preflight that fetches a tiny ~0.01 deg sub-tile to confirm the key +
+  endpoint without downloading the full DEM, a `FakeDemDownloader` for offline
+  tests, and an `opentopo_demtype()` map (COP30/COP90/SRTMGL1(_E)/NASADEM/
+  AW3D30(_E); USER_LOCAL is not downloadable). A new
+  `src/insar_prep/providers/dem/credentials.py` resolves the **per-user**
+  OpenTopography API key (keyring or `OPENTOPOGRAPHY_API_KEY` env; never a CLI
+  flag, never persisted to the repo, kept out of `repr`) and exposes a shared
+  registration-to-key onboarding guide (`opentopo_api_key_guidance()`), and
+  `src/insar_prep/providers/dem/download_runner.py` adds the shared
+  `run_dem_download()` orchestration + a credential-masked
+  `dem_download/dem_download_results.csv` + `DemDownloadRunSummary` reused by the
+  CLI and GUI. Added error code `DEM005` (OpenTopography key missing/rejected).
+  The OpenTopography API interface is borrowed from the official API docs
+  (`THIRD_PARTY_REFERENCES.md` #3) and the local `DEMdownloader` reference (#8,
+  concept only -- no source copied); no new runtime dependency (real download
+  reuses the optional `download` extra's `requests`/`keyring`).
+- DEM download CLI (Task 052): a new `insar-prep download-dem` command reuses the
+  `prepare` AOI inputs (`--bbox` / `--aoi-geojson` / `--aoi-wkt` / `--aoi-shp` /
+  `--aoi-kml` / `--aoi-kmz` / `--aoi-file`) and offers `--download-mode`
+  `dry-run` (default, offline plan only), `verify` (preflight), or `real`
+  (download), plus `--dem-dataset`, `--dem-buffer`, `--api-key-source`
+  (auto/keyring/env), and `--max-retries`. A new `insar-prep dem-auth`
+  (`login`/`status`/`logout`) stores the user's own OpenTopography key in the OS
+  keyring (interactive/`--key-stdin`, never a plaintext flag) and surfaces the
+  step-by-step "register -> request API key" onboarding (with the free-tier rate
+  limits) on `login`, on `status` when none is stored, and when `download-dem`
+  is missing a key.
+- DEM download GUI (Task 052): a new `DemDownloadPanel`
+  (`src/insar_prep/gui/widgets/dem_download_panel.py`) adds a "DEM Download
+  (OpenTopography)" panel -- output root, dry-run vs real mode, a dataset
+  selector, an inline API-key status with a one-click *OpenTopography API Key…*
+  dialog, Run/Cancel, a progress bar, and a result log -- with the real transfer
+  on a cancellable `DemDownloadWorker(QThread)`. A new
+  `OpenTopographyKeyDialog` (`src/insar_prep/gui/dialogs/opentopography_key_dialog.py`)
+  stores the per-user key in the OS keyring and embeds the same onboarding
+  guidance plus clickable *Open registration page* / *Open API key page* buttons.
+  `main_window.py` wires the panel with guarded `apply_plan_dem_download`
+  (offline) and `apply_run_real_dem_download` (`GUI002`/`GUI003`/`AOI001`)
+  methods and checks the `download` extra via `find_spec`. Added
+  `tests/unit/test_dem_credentials.py`, `tests/unit/test_dem_downloader.py`,
+  `tests/unit/test_dem_download_runner.py`, `tests/e2e/test_download_dem_cli.py`,
+  and `tests/unit/test_gui_dem_download_panel.py` (all fully offline: injected
+  fake downloader/keyring, no network, no real key, no real GeoTIFF; full suite
+  **626 passed, 1 skipped**, ruff clean). `.gitignore` now also ignores the local
+  `insar_realtest_package/` real-data test folder. The offline core
+  (`prepare` / `plan-asf-downloads`) is unchanged; GACOS stays planning-only and
+  real DEM vertical-datum conversion remains deferred.
+
+## [0.13.0] - 2026-06-23
+
+### Added
+
+- Update notifications + ASF network preflight (Task 051): a new
+  `src/insar_prep/core/update_check.py` checks the project's public GitHub
+  Releases for a newer version using **only the standard library** (`urllib`),
+  so it works even in the base `.exe` that does not bundle the `download` extra.
+  It compares the latest release `tag_name` to `__version__` (semver), is
+  **best-effort** (every network/parse error is swallowed and returns `None`,
+  never breaking the command), and persists nothing but a timestamp + the public
+  latest tag. A new `insar-prep update-check` CLI command reports the result on
+  demand; after a command that *already used the network* (`download-asf`
+  verify/real, `auth status --test`) a **throttled** (≤ once/24 h, cached under
+  the per-user cache dir) and **opt-out** (`INSAR_NO_UPDATE_CHECK=1`) one-line
+  "update available" notice is printed to stderr, so the strictly offline
+  commands (`prepare` / `plan-asf-downloads` / dry-run) keep touching no network.
+  A new
+  `download-asf --download-mode verify` performs a fast **network preflight**:
+  `RealAsfDownloader.verify` sends a small `Range` request per scene to confirm
+  the whole chain (credential resolution → Earthdata auth → ASF data pool →
+  signed S3 redirect) works and the remote size matches the plan, **without**
+  downloading the multi-GB SLC archives (new `DownloadOutcome.VERIFIED`). Added
+  a tag-triggered `.github/workflows/release.yml` that builds and smoke-tests the
+  Windows one-file exe and attaches it to the GitHub Release, closing the
+  "ship a feature → tag → release → users are notified" loop. Added
+  `tests/unit/test_update_check.py`, `tests/e2e/test_update_check_cli.py`, verify
+  tests in `tests/unit/test_asf_real_downloader.py` + `tests/e2e/test_asf_download_cli.py`,
+  and a `tests/conftest.py` that disables the auto update check for the suite
+  (full suite **569 passed, 1 skipped**, ruff clean). No new runtime dependency.
 - GUI real ASF SLC download (Task 050): the desktop GUI can now **plan and
   perform the real Sentinel-1 SLC download itself**, not just the offline
   workflow. A new `src/insar_prep/gui/widgets/download_panel.py`

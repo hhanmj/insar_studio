@@ -33,6 +33,7 @@ class ErrorCode(StrEnum):
     DEM002 = "DEM002"
     DEM003 = "DEM003"
     DEM004 = "DEM004"
+    DEM005 = "DEM005"
     GAC001 = "GAC001"
     GAC002 = "GAC002"
     REP001 = "REP001"
@@ -62,6 +63,7 @@ ERROR_CODE_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.DEM002: "DEM vertical datum is unknown.",
     ErrorCode.DEM003: "DEM ellipsoid-height conversion failed.",
     ErrorCode.DEM004: "SARscape DEM naming is invalid.",
+    ErrorCode.DEM005: "OpenTopography DEM API key is missing or was rejected.",
     ErrorCode.GAC001: "GACOS date list generation failed.",
     ErrorCode.GAC002: "GACOS product dates are incomplete.",
     ErrorCode.REP001: "Report generation failed.",
