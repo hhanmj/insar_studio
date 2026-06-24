@@ -114,6 +114,8 @@ Invoke-Step "exe plan-asf-downloads --help" { & $exe plan-asf-downloads --help |
 Invoke-Step "exe download-asf --help" { & $exe download-asf --help | Out-Null }
 Invoke-Step "exe convert-dem --help" { & $exe convert-dem --help | Out-Null }
 Invoke-Step "exe gacos-import --help" { & $exe gacos-import --help | Out-Null }
+Invoke-Step "exe gacos-request --help" { & $exe gacos-request --help | Out-Null }
+Invoke-Step "exe gacos-download --help" { & $exe gacos-download --help | Out-Null }
 
 Write-Host ""
 Write-Host "== exe offline prepare smoke test ==" -ForegroundColor Cyan

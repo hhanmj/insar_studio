@@ -13,27 +13,28 @@ Sentinel-1 / InSAR beginners.
   runs locally with no network and no downloads. Real downloads are separate,
   explicit opt-ins behind the `download` extra.
 
-> Current status: **v0.15.0.** The offline `insar-prep prepare` CLI workflow is
-> implemented end to end, and an optional PySide6 **GUI Beta** drives the same
-> offline closed loop (install it with `uv sync --extra gui`). Real Sentinel-1
-> SLC download (`download-asf --download-mode real`) and real DEM download from
-> the OpenTopography Global DEM API (`download-dem --download-mode real`, plus the
+> Current status: **v0.16.0.** The offline `insar-prep prepare` CLI workflow is
+> implemented end to end, and an optional PySide6 **GUI** drives the same offline
+> closed loop (install it with `uv sync --extra gui`) and now offers a runtime
+> **English / 中文 language switch** (the *Language* menu). Real Sentinel-1 SLC
+> download (`download-asf --download-mode real`) and real DEM download from the
+> OpenTopography Global DEM API (`download-dem --download-mode real`, plus the
 > GUI "DEM Download" panel) are available as explicit opt-ins behind the
 > `download` extra — each user supplies their **own** free OpenTopography API key
-> (none is bundled). **New in v0.15.0:** real **DEM vertical-datum conversion**
-> (`convert-dem`, orthometric → WGS84 ellipsoid via a bundled EGM96 geoid grid,
-> behind the optional `convert` extra) and **GACOS product import**
-> (`gacos-import`, which extracts / organizes / integrity-checks the GACOS
-> products you downloaded **manually**). Real **GACOS download** is still **not**
-> implemented and is intentionally out of scope: GACOS has **no public download
-> API** (web form + email delivery only), so products must be requested and
-> downloaded by hand. There is **no** official GUI release published yet; a
-> one-file Windows CLI/GUI exe and an Inno Setup installer can be built *locally*
-> (see [Packaging](#packaging)). See
-> [`docs/release_readiness_v0_15_0.md`](docs/release_readiness_v0_15_0.md) for the
-> latest readiness review, and
-> [`docs/release_readiness_v0_12_0_gui_beta.md`](docs/release_readiness_v0_12_0_gui_beta.md)
-> for the previous GUI Beta review.
+> (none is bundled). Real **DEM vertical-datum conversion** (`convert-dem`,
+> orthometric → WGS84 ellipsoid via a bundled EGM96 geoid grid, behind the
+> optional `convert` extra) and **GACOS product import** (`gacos-import`) are also
+> available. **New in v0.16.0:** real **GACOS request submission and result
+> download** (`gacos-request` / `gacos-download`, plus the GUI "GACOS Download"
+> panel, behind the `download` extra). GACOS has **no public download API**, so
+> the client automates the two steps the service permits — submitting the web
+> request form and fetching the **emailed** result archive — and the email link
+> itself is pasted in by the user (no mailbox scraping, no browser automation).
+> A one-file Windows CLI/GUI exe and an Inno Setup installer can be built
+> *locally* (see [Packaging](#packaging)) and are published by the tag-triggered
+> release workflow. See
+> [`docs/release_readiness_v0_16_0.md`](docs/release_readiness_v0_16_0.md) for the
+> latest readiness review.
 
 ## Requirements
 
@@ -80,6 +81,8 @@ uv run insar-prep --version
 uv run insar-prep prepare --help
 uv run insar-prep convert-dem --help   # real DEM vertical-datum conversion (convert extra)
 uv run insar-prep gacos-import --help  # organize manually downloaded GACOS products
+uv run insar-prep gacos-request --help # submit a real GACOS request (download extra)
+uv run insar-prep gacos-download --help # fetch the emailed GACOS result (download extra)
 uv run insar-prep update-check         # check GitHub for a newer release
 ```
 
@@ -239,10 +242,14 @@ extra. By design the tool never:
   `download-dem --download-mode real`, or the GUI "DEM Download" panel, behind the
   `download` extra — see [DEM download (OpenTopography)](#dem-download-opentopography).
   Each user supplies their own free API key; no key is bundled.)
-- Submit, scrape, or automate the GACOS web service, drive a browser, or
-  download GACOS products. GACOS has no public download API, so you request and
-  download products **manually**; `insar-prep` only *plans* the request and, with
-  `gacos-import`, *organizes and integrity-checks* the products you already have.
+- Scrape a mailbox, drive a browser, or bypass the GACOS request limits. GACOS
+  has **no public download API**, so the optional real client
+  (`gacos-request` / `gacos-download`, behind the `download` extra) only does what
+  the service allows: it **submits the web request form** and **fetches the
+  emailed result archive** (the email link is pasted in by the user). The offline
+  core still only *plans* the request, and `gacos-import` *organizes and
+  integrity-checks* products you fetched by hand — see
+  [GACOS request and download](#gacos-request-and-download-gacos-request--gacos-download).
 - Perform real DEM vertical-datum conversion **as part of the offline core**. The
   offline core only *plans* the conversion. Real conversion is now available as an
   explicit opt-in — the separate `convert-dem` command behind the `convert` extra
@@ -478,6 +485,61 @@ Products land under `<output-root>/<region>/05_atmosphere/gacos/requests/`. Pass
 (missing dates are reported as errors). Add `--move` to move (instead of copy)
 loose source files.
 
+## GACOS request and download (`gacos-request` / `gacos-download`)
+
+GACOS has **no public download API**: a product is obtained by submitting a
+web-request form and then downloading the archive GACOS **emails** you. The
+optional client automates both ends of that — it is **off by default** and behind
+the `download` extra, and never scrapes a mailbox, drives a browser, or stores a
+password.
+
+1. **Install the optional extra** (adds `requests` + `keyring`):
+
+```bash
+uv sync --extra download
+```
+
+2. **Store the email** GACOS should deliver to (optional; you can also pass
+   `--email` or set `GACOS_EMAIL`):
+
+```bash
+insar-prep gacos-auth login      # stores your GACOS email in the OS keyring
+insar-prep gacos-auth status     # shows the (masked) stored email
+```
+
+3. **Submit the request** for a Processing AOI and a date list (from an ASF cart
+   or `--dates`). The default is a safe offline **dry-run preview**; add
+   `--submit` to actually POST the form (in ≤20-date batches):
+
+```bash
+# dry-run (offline preview only, no network):
+insar-prep gacos-request --region-name shiliushubao_demo --output-root ./workspace \
+  --bbox 110.1 30.8 110.6 31.2 --cart tests/fixtures/asf/urls.txt --time 18:30
+
+# real submission (needs the 'download' extra + your GACOS email):
+insar-prep gacos-request --region-name shiliushubao_demo --output-root ./workspace \
+  --bbox 110.1 30.8 110.6 31.2 --cart tests/fixtures/asf/urls.txt --time 18:30 --submit
+```
+
+   GACOS then emails you a download link per job (this can take minutes to hours).
+
+4. **Download the emailed result** and import it in one step (extract → organize
+   → integrity-check into the region's GACOS directory, reusing the same importer
+   as `gacos-import`):
+
+```bash
+insar-prep gacos-download --region-name shiliushubao_demo --output-root ./workspace \
+  --url "http://www.gacos.net/data/...your-link..." \
+  --cart tests/fixtures/asf/urls.txt   # optional coverage check
+```
+
+Pass `--url` more than once (or `--url-file links.txt`) to fetch several jobs.
+Choose the product format with `--output-format geotiff|binary` on the request
+(GeoTIFF is the default and smaller). The same flow is available from the GUI
+"GACOS Download" panel (submit + fetch on a background thread, plus a *GACOS
+Email* dialog). The download submission/fetch are the only GACOS network calls;
+the offline `prepare` / planning commands never touch GACOS.
+
 ## Update notifications
 
 `insar-prep` checks the project's public GitHub Releases to let you know when a
@@ -582,16 +644,17 @@ status bar reflects the overall result. This completes the offline beta loop
 (Workspace → Project → Region → AOI → ASF cart → scene check → offline planning →
 reports), which performs no network access.
 
-Two **optional real-download panels** sit at the end of the workflow, mirroring
+Three **optional real-download panels** sit at the end of the workflow, mirroring
 the CLI and behind the `download` extra: an **ASF SLC Download** panel (Earthdata
-login dialog + dry-run / real, on a cancellable background thread) and a **DEM
+login dialog + dry-run / real, on a cancellable background thread), a **DEM
 Download (OpenTopography)** panel (dataset selector, dry-run / real, a cancellable
-background thread, and a one-click *OpenTopography API Key* dialog that embeds the
-register → request-key guidance and stores your own key in the OS keyring). Like
-the CLI, the GUI does **not** implement real GACOS download or real DEM
-vertical-datum conversion — those remain intentionally deferred. There is **no**
-official GUI release, installer, or `.exe`; the GUI Beta runs from source via
-`uv`.
+background thread, and a one-click *OpenTopography API Key* dialog), and a
+**GACOS Download** panel (submit the real request and fetch the emailed result on
+a background thread, with a one-click *GACOS Email* dialog). The GUI also exposes
+a **Language** menu to switch between **English** and **中文** at runtime (the
+choice is remembered across launches). A one-file Windows GUI `.exe` and an Inno
+Setup **installer** can be built locally (see [Packaging](#packaging)) and are
+published by the release workflow.
 
 For step-by-step install/launch/usage and a pre-delivery checklist, see:
 

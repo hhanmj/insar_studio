@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-24
+
+### Added
+
+- Real GACOS request submission and result download (Task 054): GACOS has **no
+  public download API**, so the new opt-in client automates the two steps the
+  service actually permits. `src/insar_prep/providers/gacos/downloader.py` adds
+  `RealGacosClient.submit()` (POSTs the GACOS web form at
+  `http://www.gacos.net/M/action_page.php` with the bounding box, a `YYYYMMDD`
+  date list, the UTC time-of-day, the output format, and the delivery email) and
+  `RealGacosClient.fetch()` (streams the emailed result archive over http/https
+  /ftp to a `.part` temp file and **atomically renames** it), plus a
+  `FakeGacosClient` for offline tests and `GacosRequest`/`GacosSubmitResult`/
+  `GacosFetchResult` types. `src/insar_prep/providers/gacos/download_runner.py`
+  adds `run_gacos_request()` (splits dates into ≤20-date batches and writes a
+  credential-safe `gacos_request/gacos_request_results.csv`) and
+  `run_gacos_download()` (fetches the archive[s] into a `downloads/` staging
+  folder, then **reuses the existing importer** to extract, organize, and
+  integrity-check the products into `05_atmosphere/gacos/requests/`).
+  `src/insar_prep/providers/gacos/credentials.py` resolves the per-user GACOS
+  delivery email (keyring or `GACOS_EMAIL` env; masked in logs, kept out of
+  `repr`). The real client needs the optional `download` extra (`requests`);
+  the offline core is unchanged. Added error codes `GAC003`
+  (submission/email) and `GAC004` (download/transport) and the
+  `GACOS_REQUEST_SUBMITTED` / `GACOS_DOWNLOAD_FINISHED` events. Because delivery
+  is by email, the result link is still pasted in by the user — the maximum
+  automation possible without scraping a mailbox; the client never drives a
+  browser or stores a password.
+- GACOS request/download CLI (Task 054): new `insar-prep gacos-request`
+  (build the request from a cart/`--dates` + AOI; dry-run preview by default,
+  `--submit` to POST), `insar-prep gacos-download` (`--url`/`--url-file` to fetch
+  and import the emailed archive[s]), and `insar-prep gacos-auth`
+  (`login`/`status`/`logout` for the stored email). The strictly offline commands
+  keep touching no network; the automatic update notice now also follows
+  `gacos-request --submit` / `gacos-download`.
+- GACOS request/download GUI (Task 054): a new `GacosDownloadPanel` (submit +
+  fetch on cancellable background threads, an inline email status, and a one-click
+  *GACOS Email* dialog) wired into the main window with guarded
+  `apply_run_gacos_request` / `apply_run_gacos_download` methods.
+- Runtime language switching (Task 055): a new dependency-free
+  `src/insar_prep/i18n.py` (English + Simplified Chinese catalog, `tr()`, and a
+  persisted per-user choice). The GUI gains a **Language** menu (English / 中文)
+  that retranslates the whole window live — window title, toolbar, menus, status
+  bar, the project tree, and every panel implement `retranslate_ui()`. The chosen
+  language is saved to a per-user settings file and restored on the next launch.
+- Packaging / release: the version is bumped to `0.16.0`; the tag-triggered
+  `release.yml` now also installs Inno Setup, compiles the Windows **installer**
+  (`insar-prep-gui-<version>-setup.exe`), and publishes it alongside the CLI and
+  GUI exes; the CLI exe build script smoke-tests the new `gacos-request` /
+  `gacos-download` help.
+- Tests: added `tests/unit/test_gacos_credentials.py`,
+  `tests/unit/test_gacos_downloader.py`, `tests/unit/test_gacos_download_runner.py`,
+  `tests/e2e/test_gacos_cli.py`, `tests/unit/test_gui_gacos_download_panel.py`
+  (incl. a live language-switch assertion), and `tests/unit/test_i18n.py`. All are
+  fully offline (injected fake client / session / keyring, sockets banned, no real
+  GACOS account or network). Full suite green, ruff clean.
+
+### Notes
+
+- Real GACOS **download is now supported as far as the service allows**: the
+  request is submitted programmatically and the emailed archive is fetched and
+  imported automatically. GACOS still emails the result link (there is no API to
+  poll), so that one link is pasted in by the user. `gacos-import` remains for
+  products fetched entirely by hand.
+
 ## [0.15.0] - 2026-06-24
 
 ### Added

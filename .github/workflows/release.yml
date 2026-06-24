@@ -5,10 +5,15 @@ name: Release
 # the release the in-app update check ("update-check" / the post-command notice)
 # compares against, so the loop is: tag -> build -> release -> users notified.
 #
-# Two artifacts are published:
-#   * insar-prep.exe      -- the lean CLI (no rasterio; convert-dem needs the GUI)
-#   * insar-prep-gui.exe  -- the full desktop GUI (bundles rasterio + EGM96 geoid,
-#                            so it can do real DEM vertical-datum conversion)
+# Three artifacts are published:
+#   * insar-prep.exe                    -- the lean CLI (no rasterio; convert-dem
+#                                          needs the GUI exe)
+#   * insar-prep-gui.exe                -- the full desktop GUI (bundles rasterio +
+#                                          EGM96 geoid + the download extra, so it
+#                                          can do real DEM conversion and the real
+#                                          ASF/DEM/GACOS downloads)
+#   * insar-prep-gui-<version>-setup.exe -- a standard Windows installer (Inno
+#                                          Setup) wrapping the GUI exe
 
 on:
   push:
@@ -54,7 +59,25 @@ jobs:
       - name: Stage the GUI exe
         run: Copy-Item dist/insar-prep-gui.exe artifacts/
 
-      - name: Publish the exes to the GitHub Release
+      # Compile the standard Windows installer (Inno Setup) that wraps the GUI
+      # exe. Inno Setup is not preinstalled on the runner; install it via Chocolatey.
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Derive the release version from the tag
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build the Windows installer
+        run: pwsh -File scripts/build_windows_installer.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Stage the installer
+        run: Copy-Item dist/insar-prep-gui-*-setup.exe artifacts/
+
+      - name: Publish the exes and installer to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.exe

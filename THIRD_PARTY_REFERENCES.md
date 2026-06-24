@@ -205,9 +205,9 @@
 - **purpose**: 天顶对流层延迟图（`YYYYMMDD.ztd` 小端 4 字节 float + `.ztd.rsc` 头，或 GeoTIFF）。
 - **use_as_dependency**: N/A（**无 API**：网页表单提交 + 邮件链接下载；官方 ReadMe 称"will soon release an API"但至今未出）。
 - **copy_code_allowed**: N/A。
-- **integration_plan**: **已落地（Task 012/013/053）**。`planner` 规划提交日期+bbox（用户手动提交）；`importer`（`gacos-import`）把用户**手动下载**的产物解压/按日期归位/完整性校验（`.ztd` 字节数须 = 4×WIDTH×FILE_LENGTH）；`import_checker` 只读核对。**绝不** submit/scrape/automate 其网页表单、不驱动浏览器、不存凭据。
-- **risk**: 中。完全手动；须标注引用；`.ztd`/`.rsc` 格式以官方 ReadMe 为准。
-- **notes**: 可借鉴点=`.ztd`/`.rsc` 文件约定、5×5°/10 天（现 10×10°/20 期）提交上限。不应实现=任何网页自动化下载。
+- **integration_plan**: **已落地（Task 012/013/053/054）**。`planner` 规划提交日期+bbox；`importer`（`gacos-import`）把用户手动下载的产物解压/按日期归位/完整性校验（`.ztd` 字节数须 = 4×WIDTH×FILE_LENGTH）；`import_checker` 只读核对（以上模块**绝不**联网）。**Task 054 新增**可选真实客户端 `providers/gacos/downloader.py`（可选 `download` extra）：`RealGacosClient.submit()` 用 `requests` 向官方表单 `POST http://www.gacos.net/M/action_page.php`（字段 N/S/W/E/H/M/date/type/email，由公开网页解析得到），`RealGacosClient.fetch()` 下载邮件返回的结果包（http/https/ftp，`.part`+原子改名）后交 `importer` 归位校验。`download_runner` 负责 ≤20 期分批提交与抓取→导入编排。**仍不**驱动浏览器、不抓取邮箱、不存密码；结果链接由用户从邮件粘贴。
+- **risk**: 中。提交→邮件→下载半自动（邮件链接需人工粘贴）；须标注引用；`.ztd`/`.rsc` 与表单字段以官方 ReadMe/网页为准。
+- **notes**: 可借鉴点=`.ztd`/`.rsc` 文件约定、10×10°/20 期提交上限、表单字段名（N/S/W/E/H/M/date/type=2 geotiff /1 binary/email）。不应实现=抓取邮箱/绕过限额/驱动浏览器自动点提交。已落地=Task 054（仅按公开网页表单结构自研，未复制任何第三方源码）。
 
 ---
 
@@ -228,4 +228,4 @@
 | 11 | awesome-sar | 清单(各工具不同) | 否(清单) | N/A | 候选工具目录;选用前逐一登记 | — |
 | 12 | GeographicLib geoid(egm96-15) | MIT/public-domain | 否(仅数据) | N/A | 内置 npz, `providers/dem/geoid` | 053(已落地) |
 | 13 | rasterio | BSD-3-Clause | 是(convert extra) | 否(封装) | `providers/dem/converter` 懒加载 | 053(已落地) |
-| 14 | GACOS | 条款/无API | N/A | N/A | `gacos-import` 仅整理手动下载产物 | 012/013/053(已落地) |
+| 14 | GACOS | 条款/无API | N/A | N/A | `gacos-import` 整理产物 + 真实表单提交/抓取(可选 download extra) | 012/013/053/054(已落地) |
