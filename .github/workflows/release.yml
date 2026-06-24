@@ -1,0 +1,43 @@
+name: Release
+
+# Publish a Windows one-file executable to a GitHub Release whenever a version
+# tag (e.g. v0.13.0) is pushed. This is what end users download, and it is the
+# release the in-app update check ("update-check" / the post-command notice)
+# compares against, so the loop is: tag -> build -> release -> users notified.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      # The download extra (requests + certifi + keyring) is bundled into the exe
+      # so real download / verify / auth work; the dev group provides PyInstaller.
+      - name: Install dependencies
+        run: uv sync --extra download --dev
+
+      # Runs the quality gate (pytest + ruff), builds dist/insar-prep.exe, and
+      # smoke-tests it fully offline.
+      - name: Build and smoke-test the Windows exe
+        run: pwsh -File scripts/build_windows_exe.ps1
+
+      - name: Publish the exe to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/insar-prep.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -73,6 +73,10 @@ Get-ChildItem -Path $RepoRoot -Filter "*.spec" -File -ErrorAction SilentlyContin
     Remove-Item -Force
 
 Invoke-Step "PyInstaller build" {
+    # Exclude the GUI toolkit: the frozen exe is the CLI tool (the GUI runs from
+    # source). Without these excludes, building on a machine that *does* have the
+    # optional `gui` extra installed would bundle PySide6 and roughly double the
+    # exe size.
     uv run pyinstaller `
         --clean `
         --noconfirm `
@@ -85,6 +89,9 @@ Invoke-Step "PyInstaller build" {
         --collect-all certifi `
         --collect-all keyring `
         --copy-metadata keyring `
+        --exclude-module PySide6 `
+        --exclude-module PySide2 `
+        --exclude-module shiboken6 `
         packaging/insar_prep_entry.py
 }
 
