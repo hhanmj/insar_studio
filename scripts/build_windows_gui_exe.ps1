@@ -15,19 +15,34 @@
     nothing (build/, dist/, *.spec are git-ignored).
 
     Unlike the CLI exe (scripts\build_windows_exe.ps1), this build INCLUDES
-    PySide6 -- the resulting exe is much larger (~150-250 MB) and first launch is
-    slower (one-file unpacks to a temp dir).
+    PySide6, so the exe is larger and first launch is slower (one-file unpacks to
+    a temp dir). Size depends on the -WithMap switch:
+      * default (slim)   ~80-130 MB -- no QtWebEngine; the interactive map AOI
+                         picker is disabled (it degrades gracefully) but manual
+                         W/S/E/N entry and all file-based AOI sources still work.
+      * -WithMap         ~250-300 MB -- bundles the Qt WebEngine / Chromium
+                         runtime so the embedded Leaflet map picker works.
 
     The smoke test runs the frozen exe with `--selftest`, which constructs the
     QApplication + main window using the off-screen Qt platform and exits 0,
     proving the frozen build imports and builds the UI without a real display or
     any network access.
 
+.PARAMETER WithMap
+    Bundle the interactive map AOI picker (Leaflet in QtWebEngine). This pulls in
+    the Qt WebEngine / Chromium runtime (~120-160 MB) and roughly triples the exe
+    size, so it is OFF by default. Without it the slim build omits WebEngine and
+    the GUI degrades gracefully (the "Pick on map" button is disabled).
+
 .NOTES
     Run from anywhere; the script resolves the repo root from its own location.
     Requires the `gui`, `download`, and `convert` extras to be installed in the
     active env (uv sync --extra gui --extra download --extra convert).
 #>
+
+param(
+    [switch]$WithMap
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -74,32 +89,91 @@ Get-ChildItem -Path $RepoRoot -Filter "insar-prep-gui.spec" -File -ErrorAction S
 $py = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { $py = "python" }
 
+# Assemble the PyInstaller arguments. The biggest size lever is how much of Qt we
+# bundle:
+#   * slim (default): do NOT --collect-all PySide6. PyInstaller's per-module
+#     PySide6 hooks then bundle only the Qt modules actually imported at module
+#     scope (QtCore / QtGui / QtWidgets). The map picker imports QtWebEngine
+#     lazily (via importlib), so static analysis never sees it; we additionally
+#     hard-exclude the WebEngine / QML / and other heavy optional stacks so
+#     nothing drags the Chromium runtime (~120-160 MB) back in.
+#   * -WithMap: --collect-all PySide6 to guarantee QtWebEngine plus its QML /
+#     Quick / Positioning dependencies are present so the Leaflet map picker runs.
+$pyArgs = @(
+    "-m", "PyInstaller",
+    "--clean",
+    "--noconfirm",
+    "--onefile",
+    "--windowed",
+    "--name", "insar-prep-gui",
+    "--paths", "src"
+)
+
+if ($WithMap) {
+    Write-Host "Map mode: ON  -- bundling QtWebEngine (large exe)" -ForegroundColor Yellow
+    $pyArgs += @("--collect-all", "PySide6")
+}
+else {
+    Write-Host "Map mode: OFF -- slim build, interactive map disabled" -ForegroundColor Yellow
+    # No --collect-all PySide6: the hooks pull only imported Qt modules. Then
+    # hard-exclude the heavy optional stacks so none get dragged back in.
+    $excludeQt = @(
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtWebEngineQuick",
+        "PySide6.QtWebChannel",
+        "PySide6.QtQuick",
+        "PySide6.QtQuickWidgets",
+        "PySide6.QtQml",
+        "PySide6.QtPdf",
+        "PySide6.QtPdfWidgets",
+        "PySide6.QtMultimedia",
+        "PySide6.QtMultimediaWidgets",
+        "PySide6.QtCharts",
+        "PySide6.QtDataVisualization",
+        "PySide6.Qt3DCore",
+        "PySide6.Qt3DRender",
+        "PySide6.QtDesigner",
+        "PySide6.QtUiTools",
+        "PySide6.QtTest",
+        "PySide6.QtSql",
+        "PySide6.QtNetworkAuth",
+        "PySide6.QtBluetooth",
+        "PySide6.QtNfc",
+        "PySide6.QtPositioning",
+        "PySide6.QtSensors",
+        "PySide6.QtSerialPort",
+        "PySide6.QtScxml",
+        "PySide6.QtTextToSpeech"
+    )
+    foreach ($mod in $excludeQt) { $pyArgs += @("--exclude-module", $mod) }
+}
+
+# Common collections shared by both modes: the download extra (requests / certifi
+# / keyring), the convert extra (rasterio + GDAL data/drivers, needed for the real
+# DEM vertical-datum conversion), shapely, pydantic submodules, the package data,
+# and the keyring metadata.
+$pyArgs += @(
+    "--collect-all", "shapely",
+    "--collect-submodules", "pydantic",
+    "--collect-all", "requests",
+    "--collect-all", "certifi",
+    "--collect-all", "keyring",
+    "--collect-all", "rasterio",
+    "--collect-data", "insar_prep",
+    "--copy-metadata", "keyring",
+    "packaging/insar_prep_gui_entry.py"
+)
+
 Invoke-Step "PyInstaller GUI build" {
-    # Bundle PySide6 (incl. Qt platform plugins) + the download extra. The entry
-    # opens the desktop GUI; --windowed means no console window for end users.
-    & $py -m PyInstaller `
-        --clean `
-        --noconfirm `
-        --onefile `
-        --windowed `
-        --name insar-prep-gui `
-        --paths src `
-        --collect-all PySide6 `
-        --collect-all shapely `
-        --collect-submodules pydantic `
-        --collect-all requests `
-        --collect-all certifi `
-        --collect-all keyring `
-        --collect-all rasterio `
-        --collect-data insar_prep `
-        --copy-metadata keyring `
-        packaging/insar_prep_gui_entry.py
+    & $py @pyArgs
 }
 
 $exe = Join-Path $RepoRoot "dist\insar-prep-gui.exe"
 if (-not (Test-Path $exe)) { throw "Expected exe not found: $exe" }
 $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
-Write-Host "Built: $exe ($sizeMb MB)" -ForegroundColor Green
+$mapMode = if ($WithMap) { "with interactive map (QtWebEngine)" } else { "slim, no interactive map" }
+Write-Host "Built: $exe ($sizeMb MB) -- $mapMode" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "== GUI exe off-screen self-test ==" -ForegroundColor Cyan
