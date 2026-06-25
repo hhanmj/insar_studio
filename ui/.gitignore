@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.local
+.vite/
+
+# Dev-only screenshot / headless-browser artifacts (not source)
+.edgeshot*/
+.shot*/
+_shot_*.png
+_native_*.png
+_edge_err.txt

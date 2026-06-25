@@ -40,6 +40,13 @@ convert = [
     "rasterio>=1.3",
     "numpy>=1.24",
 ]
+# Modern desktop UI: a web frontend (React/Vite, built into ui/dist) hosted in a
+# native OS WebView2 window via pywebview. Reuses the existing core in-process (no
+# Rust, no sidecar). Optional: the offline CLI never needs it.
+# Install with: uv sync --extra desktop
+desktop = [
+    "pywebview>=5",
+]
 
 [project.urls]
 Homepage = "https://github.com/hhanmj/insar_assistant"
