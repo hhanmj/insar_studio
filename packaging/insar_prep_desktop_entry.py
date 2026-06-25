@@ -40,6 +40,7 @@ def _selftest() -> int:
             raise RuntimeError("get_app_info failed")
 
         with tempfile.TemporaryDirectory() as tmp:
+
             def check(label: str, result: dict) -> None:
                 if not result.get("ok"):
                     raise RuntimeError(f"{label} failed: {result}")
