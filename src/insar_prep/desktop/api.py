@@ -267,9 +267,7 @@ class Api:
         }
 
     # --------------------------------------------------------------- 1. AOI
-    def set_region_aoi_bbox(
-        self, west: float, east: float, south: float, north: float
-    ) -> dict:
+    def set_region_aoi_bbox(self, west: float, east: float, south: float, north: float) -> dict:
         """Bind a manual bbox (W/E/S/N) as the current region's processing AOI."""
         try:
             from insar_prep.processing.aoi import make_processing_aoi_from_bbox
@@ -328,9 +326,7 @@ class Api:
             return _error_msg("GeoJSON 必须是对象", "AOI001")
         try:
             geometry = _geometry_from_geojson(geojson)
-            aoi = geometry_to_processing_aoi(
-                geometry, source=AoiSource.MANUAL_BBOX
-            )
+            aoi = geometry_to_processing_aoi(geometry, source=AoiSource.MANUAL_BBOX)
             region = self._state.set_current_region_aoi(aoi)
         except InsarPrepError as exc:
             return _error(exc)
@@ -842,8 +838,7 @@ def _conversion_summary(conv_plan: Any) -> dict:
             break
     if not requires:
         message = (
-            f"该 DEM 高程基准已为 {source}（椭球高），无需转换，"
-            "直接复制为 SARscape 就绪 DEM。"
+            f"该 DEM 高程基准已为 {source}（椭球高），无需转换，直接复制为 SARscape 就绪 DEM。"
         )
     elif requires_geoid and geoid:
         message = (

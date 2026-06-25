@@ -4,7 +4,6 @@ import {
   Database,
   FolderOpen,
   KeyRound,
-  Layers,
   Loader2,
   Mountain,
   Pause,
@@ -22,6 +21,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { SceneImportSection } from "@/components/SceneImportSection";
 import {
   BridgeBadge,
@@ -163,7 +163,6 @@ export function Download() {
     }
   }
 
-  const asfItems = (asf?.items as Json[] | undefined) ?? [];
   const gacDates = (gacos?.plan.unique_dates as string[] | undefined) ?? [];
   const dlActive = dlStatus?.state === "running" || dlStatus?.state === "paused";
   const dlPct =
@@ -238,20 +237,18 @@ export function Download() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Satellite className="h-4 w-4 text-primary" />
-              ASF SLC · 真实下载
+              ASF SLC
             </CardTitle>
-            <CardDescription>
-              需要 Earthdata 凭据；SLC 写入 &lt;输出根&gt;/02_slc · 支持暂停 / 停止
-            </CardDescription>
+            <CardDescription>离线规划 + 真实下载（Earthdata 凭据）</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-4">
             <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={onAsf} disabled={!region || asfBusy} size="sm" variant="outline">
+                {asfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+                生成规划
+              </Button>
               <Button onClick={onStartDownload} disabled={!region || dlStarting || dlActive} size="sm">
-                {dlStarting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4" />
-                )}
+                {dlStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 开始下载
               </Button>
               <Button
@@ -283,77 +280,38 @@ export function Download() {
               </Button>
               {dlStatus && dlStatus.state !== "idle" && (
                 <Badge variant={dlActive ? "warning" : "success"} className="ml-auto">
-                  {dlStatus.state === "running" && `下载中 ${dlStatus.done}/${dlStatus.total}`}
+                  {dlStatus.state === "running" && `${dlStatus.done}/${dlStatus.total}`}
                   {dlStatus.state === "paused" && "已暂停"}
-                  {dlStatus.state === "finished" && "已完成"}
+                  {dlStatus.state === "finished" && "完成"}
                   {dlStatus.state === "cancelled" && "已取消"}
                   {dlStatus.state === "failed" && "失败"}
                 </Badge>
               )}
             </div>
-            {dlErr && <ErrorNote text={dlErr} />}
-            {dlStatus && dlStatus.state !== "idle" && (
-              <>
-                <div className="h-2 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full bg-primary transition-all"
-                    style={{ width: `${dlPct}%` }}
-                  />
-                </div>
-                {dlStatus.current_scene && (
-                  <div className="truncate font-mono text-xs text-muted-foreground">
-                    当前：{dlStatus.current_scene}
-                  </div>
-                )}
-                {dlStatus.summary_line && !dlActive && (
-                  <div className="text-sm text-success">{dlStatus.summary_line}</div>
-                )}
-                {dlStatus.error && <ErrorNote text={dlStatus.error} />}
-                {dlStatus.log.length > 0 && (
-                  <div className="max-h-28 overflow-y-auto rounded-md border bg-muted/30 p-2 font-mono text-[11px]">
-                    {dlStatus.log.map((line, i) => (
-                      <div key={i}>{line.detail}</div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Satellite className="h-4 w-4 text-primary" />
-              ASF SLC
-            </CardTitle>
-            <CardDescription>Sentinel-1 IW SLC</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col gap-3">
-            <Button onClick={onAsf} disabled={!region || asfBusy} size="sm">
-              {asfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
-              生成下载规划
-            </Button>
             {asfErr && <ErrorNote text={asfErr} />}
-            {asf && (
-              <div className="rounded-md border bg-muted/30 p-3 text-xs">
-                <KV k="场景数" v={String(asf.scene_count ?? 0)} />
-                <KV k="可下载" v={String(asf.planned_count ?? 0)} />
-                <KV k="缺 URL" v={String(asf.missing_url_count ?? 0)} />
-                <KV k="需凭据" v={asf.credential_required ? "是" : "否"} />
-                <div className="mt-2 max-h-32 space-y-1 overflow-y-auto">
-                  {asfItems.slice(0, 6).map((it, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <Layers className="h-3 w-3 text-muted-foreground" />
-                      <span className="truncate font-mono text-[11px]" title={String(it.scene_id)}>
-                        {String(it.scene_id)}
-                      </span>
-                      <Badge variant="neutral" className="ml-auto shrink-0 text-[10px]">
-                        {String(it.status)}
-                      </Badge>
-                    </div>
-                  ))}
+            {dlErr && <ErrorNote text={dlErr} />}
+            <div className="grid gap-3 md:grid-cols-2">
+              {asf && (
+                <div className="rounded-md border bg-muted/30 p-3 text-xs">
+                  <KV k="场景数" v={String(asf.scene_count ?? 0)} />
+                  <KV k="可下载" v={String(asf.planned_count ?? 0)} />
+                  <KV k="缺 URL" v={String(asf.missing_url_count ?? 0)} />
                 </div>
+              )}
+              {dlStatus && dlStatus.state !== "idle" && (
+                <div className="space-y-2">
+                  <Progress value={dlPct} className="h-2" />
+                  {dlStatus.summary_line && !dlActive && (
+                    <div className="text-xs text-success">{dlStatus.summary_line}</div>
+                  )}
+                </div>
+              )}
+            </div>
+            {dlStatus && dlStatus.log.length > 0 && (
+              <div className="max-h-24 overflow-y-auto rounded-md border bg-muted/30 p-2 font-mono text-[11px]">
+                {dlStatus.log.map((line, i) => (
+                  <div key={i}>{line.detail}</div>
+                ))}
               </div>
             )}
           </CardContent>

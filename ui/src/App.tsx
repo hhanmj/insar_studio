@@ -10,8 +10,10 @@ import { Download } from "@/pages/Download";
 import { Convert } from "@/pages/Convert";
 import { Report } from "@/pages/Report";
 
-const PAGES: Partial<Record<NavKey, () => React.ReactNode>> = {
-  overview: () => <Overview />,
+const PAGES: Partial<
+  Record<NavKey, (props?: { onNavigate?: (key: NavKey) => void }) => React.ReactNode>
+> = {
+  overview: (props) => <Overview onNavigate={props?.onNavigate} />,
   workspace: () => <Workspace />,
   aoi: () => <Aoi />,
   scenes: () => <Scenes />,
@@ -61,9 +63,9 @@ export default function App() {
     <div className="flex h-screen w-screen overflow-hidden">
       <Sidebar active={active} onChange={changeNav} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar dark={dark} onToggleDark={() => setDark((v) => !v)} />
-        <main className="flex-1 overflow-y-auto p-6">
-          {(PAGES[active] ?? (() => <Placeholder navKey={active} />))()}
+        <TopBar dark={dark} onToggleDark={() => setDark((v) => !v)} onNewRegion={() => changeNav("workspace")} />
+        <main className="flex-1 overflow-y-auto p-5">
+          {(PAGES[active] ?? (() => <Placeholder navKey={active} />))({ onNavigate: changeNav })}
         </main>
       </div>
     </div>
