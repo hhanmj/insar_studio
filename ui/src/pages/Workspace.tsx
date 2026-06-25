@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -23,6 +23,7 @@ import {
   addProject,
   addRegion,
   createWorkspace,
+  getTree,
   hasBridge,
   selectProject,
   type ProjectOk,
@@ -74,6 +75,39 @@ export function Workspace() {
   const regions = selectedProjectId
     ? (regionsByProject[selectedProjectId] ?? [])
     : [];
+
+  useEffect(() => {
+    void (async () => {
+      const tree = await getTree();
+      if (!tree.workspace) return;
+      setWorkspace({
+        ok: true,
+        workspace_id: tree.workspace.workspace_id,
+        root: tree.workspace.root,
+        projects: [],
+      });
+      setRoot(tree.workspace.root);
+      setWsName(tree.workspace.name);
+      const projs: ProjectOk[] = tree.projects.map((p) => ({
+        ok: true,
+        project_id: p.project_id,
+        name: p.name,
+        safe_name: p.safe_name,
+      }));
+      setProjects(projs);
+      const byProj: Record<string, RegionOk[]> = {};
+      for (const p of tree.projects) {
+        byProj[p.project_id] = p.regions.map((r) => ({
+          ok: true,
+          region_id: r.region_id,
+          name: r.name,
+          safe_name: r.safe_name,
+        }));
+      }
+      setRegionsByProject(byProj);
+      if (tree.current_project_id) setSelectedProjectId(tree.current_project_id);
+    })();
+  }, []);
 
   async function onCreateWorkspace() {
     setWsBusy(true);

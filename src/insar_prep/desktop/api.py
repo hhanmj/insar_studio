@@ -21,6 +21,7 @@ from typing import Any
 
 from insar_prep import __version__
 from insar_prep.core.exceptions import InsarPrepError
+from insar_prep.desktop.download_job import AsfDownloadJob
 from insar_prep.gui.state import GuiState, workspace_display_name
 
 
@@ -57,6 +58,7 @@ class Api:
         # The DEM dataset is chosen once (in the download step); the vertical-datum
         # conversion is then auto-detected from it, never chosen by the user.
         self._dem_dataset = "COP30"
+        self._asf_download = AsfDownloadJob()
 
     # ------------------------------------------------------------------ app
     def get_app_info(self) -> dict:
@@ -98,6 +100,91 @@ class Api:
             }
         ctx["dem_dataset"] = self._dem_dataset
         return ctx
+
+    def get_tree(self) -> dict:
+        """Return the full Workspace > Project > Region tree (survives nav).
+
+        The panels rebuild their view from this on mount, so the hierarchy is
+        never lost just because the user navigated away and back.
+        """
+        ws = self._state.workspace
+        if ws is None:
+            return {
+                "ok": True,
+                "workspace": None,
+                "projects": [],
+                "current_project_id": None,
+                "current_region_id": None,
+            }
+        projects = []
+        for project in ws.projects:
+            regions = []
+            for region in project.regions:
+                has_bbox = region.aoi is not None and region.aoi.bbox is not None
+                regions.append(
+                    {
+                        "region_id": region.region_id,
+                        "name": region.region_name,
+                        "safe_name": region.region_safe_name,
+                        "has_aoi": has_bbox,
+                        "scene_count": len(region.scenes),
+                    }
+                )
+            projects.append(
+                {
+                    "project_id": project.project_id,
+                    "name": project.project_name,
+                    "safe_name": project.safe_name,
+                    "regions": regions,
+                }
+            )
+        return {
+            "ok": True,
+            "workspace": {
+                "workspace_id": ws.workspace_id,
+                "root": str(ws.workspace_root),
+                "name": workspace_display_name(ws),
+            },
+            "projects": projects,
+            "current_project_id": self._state.current_project_id,
+            "current_region_id": self._state.current_region_id,
+        }
+
+    # ----------------------------------------------------- native dialogs
+    def pick_open_file(self, title: str = "", filters: list | None = None) -> dict:
+        """Open a native file picker; return {ok, path} ('' if cancelled)."""
+        try:
+            import webview  # noqa: PLC0415
+
+            window = webview.active_window()
+            if window is None:
+                return _error_msg("无可用窗口", "GUI000")
+            file_types = tuple(filters) if filters else ("All files (*.*)",)
+            result = window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False, file_types=file_types
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("文件选择", exc)
+        path = ""
+        if result:
+            path = str(result[0] if isinstance(result, (list, tuple)) else result)
+        return {"ok": True, "path": path}
+
+    def pick_directory(self, title: str = "") -> dict:
+        """Open a native folder picker; return {ok, path} ('' if cancelled)."""
+        try:
+            import webview  # noqa: PLC0415
+
+            window = webview.active_window()
+            if window is None:
+                return _error_msg("无可用窗口", "GUI000")
+            result = window.create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("目录选择", exc)
+        path = ""
+        if result:
+            path = str(result[0] if isinstance(result, (list, tuple)) else result)
+        return {"ok": True, "path": path}
 
     def set_dem_dataset(self, dataset: str) -> dict:
         """Set the DEM dataset for the session (conversion is auto-derived)."""
@@ -227,6 +314,35 @@ class Api:
             "region_name": region.region_name,
         }
 
+    def set_region_aoi_geojson(self, geojson: dict) -> dict:
+        """Bind an AOI from an in-memory GeoJSON Feature / Geometry (map drawing)."""
+        try:
+            from insar_prep.core.enums import AoiSource
+            from insar_prep.processing.aoi_import import (
+                _geometry_from_geojson,
+                geometry_to_processing_aoi,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("GeoJSON AOI", exc)
+        if not isinstance(geojson, dict):
+            return _error_msg("GeoJSON 必须是对象", "AOI001")
+        try:
+            geometry = _geometry_from_geojson(geojson)
+            aoi = geometry_to_processing_aoi(
+                geometry, source=AoiSource.MANUAL_BBOX
+            )
+            region = self._state.set_current_region_aoi(aoi)
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "AOI001")
+        return {
+            "ok": True,
+            "aoi": _dump(aoi),
+            "region_id": region.region_id,
+            "region_name": region.region_name,
+        }
+
     # ------------------------------------------------------------ 2. SCENES
     def import_scenes_text(self, text: str) -> dict:
         """Parse pasted granule names / URLs (one per line) into the region."""
@@ -286,6 +402,16 @@ class Api:
             "errors": [],
         }
 
+    def list_scenes(self) -> dict:
+        """Return the current region's imported scenes (for UI rehydration)."""
+        region = self._state.current_region()
+        if region is None:
+            return _error_msg("请先创建或选择区域", "GUI002")
+        return {
+            "ok": True,
+            "scenes": [_scene_row(s) for s in region.scenes],
+        }
+
     def check_scenes(self) -> dict:
         """Run the consistency check on the current region's scenes."""
         region = self._state.current_region()
@@ -325,6 +451,40 @@ class Api:
         except InsarPrepError as exc:
             return _error(exc)
         return {"ok": True, "plan": _dump(plan)}
+
+    def start_asf_download(self, output_dir: str = "", credential_source: str = "auto") -> dict:
+        """Start a real ASF SLC download on a background thread."""
+        region = self._state.current_region()
+        if region is None:
+            return _error_msg("请先创建或选择区域", "GUI002")
+        if not region.scenes:
+            return _error_msg("请先导入场景", "ASF001")
+        out = output_dir.strip() or self._default_output()
+        if not out:
+            return _error_msg("请指定输出根目录", "GUI003")
+        try:
+            from insar_prep.providers.asf.credentials import CredentialSource
+
+            src = CredentialSource((credential_source or "auto").strip().lower())
+        except Exception:  # noqa: BLE001
+            return _error_msg(f"未知凭据来源：{credential_source}", "GUI003")
+        return self._asf_download.start(region.scenes, out, credential_source=src)
+
+    def pause_asf_download(self) -> dict:
+        """Pause between scenes (current scene finishes first)."""
+        return self._asf_download.pause()
+
+    def resume_asf_download(self) -> dict:
+        """Resume a paused download."""
+        return self._asf_download.resume()
+
+    def stop_asf_download(self) -> dict:
+        """Cancel the in-progress download."""
+        return self._asf_download.stop()
+
+    def get_download_status(self) -> dict:
+        """Poll ASF download progress (state, counts, recent log lines)."""
+        return self._asf_download.get_status()
 
     def plan_dem_download(self, output_dir: str = "", dataset: str = "COP30") -> dict:
         """Build + validate (dry-run) the DEM request plan for the region AOI."""
@@ -714,6 +874,8 @@ def _scene_row(scene: Any) -> dict:
         "acquisition_datetime": d.get("acquisition_datetime"),
         "absolute_orbit": d.get("absolute_orbit"),
         "relative_orbit": d.get("relative_orbit"),
+        "path": d.get("path") or d.get("relative_orbit"),
+        "frame": d.get("frame"),
         "orbit_direction": d.get("orbit_direction"),
         "has_url": bool(d.get("url")),
     }

@@ -33,8 +33,9 @@ const NAV_KEYS: NavKey[] = [
 
 function navFromHash(): NavKey {
   if (typeof window === "undefined") return "overview";
-  const key = window.location.hash.replace(/^#/, "") as NavKey;
-  return NAV_KEYS.includes(key) ? key : "overview";
+  const raw = window.location.hash.replace(/^#/, "") as NavKey;
+  if (raw === "scenes") return "download";
+  return NAV_KEYS.includes(raw) ? raw : "overview";
 }
 
 export default function App() {

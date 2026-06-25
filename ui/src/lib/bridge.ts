@@ -71,8 +71,46 @@ export type SceneRow = {
   acquisition_datetime: string;
   absolute_orbit: number | null;
   relative_orbit: number | null;
+  path: number | null;
+  frame: number | null;
   orbit_direction: string;
   has_url: boolean;
+};
+
+export type TreeRegion = {
+  region_id: string;
+  name: string;
+  safe_name: string;
+  has_aoi: boolean;
+  scene_count: number;
+};
+export type TreeProject = {
+  project_id: string;
+  name: string;
+  safe_name: string;
+  regions: TreeRegion[];
+};
+export type Tree = {
+  ok: true;
+  workspace: { workspace_id: string; root: string; name: string } | null;
+  projects: TreeProject[];
+  current_project_id: string | null;
+  current_region_id: string | null;
+};
+export type PickResult = { ok: boolean; path: string };
+
+export type DownloadStatus = {
+  ok: true;
+  state: string;
+  total: number;
+  done: number;
+  current_scene: string;
+  paused: boolean;
+  cancelled: boolean;
+  error: string | null;
+  summary_line: string;
+  results_path: string;
+  log: { scene_id: string; outcome: string; bytes_written: number; detail: string }[];
 };
 
 export type AoiOk = {
@@ -125,6 +163,9 @@ export type ReportResult = ReportOk | ApiError;
 type PyApi = {
   get_app_info: () => Promise<AppInfo>;
   get_context: () => Promise<Context>;
+  get_tree: () => Promise<Tree>;
+  pick_open_file: (title?: string, filters?: string[]) => Promise<PickResult>;
+  pick_directory: (title?: string) => Promise<PickResult>;
   create_workspace: (root: string, name?: string | null) => Promise<WorkspaceResult>;
   add_project: (name: string) => Promise<ProjectResult>;
   select_project: (projectId: string) => Promise<ProjectResult>;
@@ -136,10 +177,17 @@ type PyApi = {
     north: number,
   ) => Promise<AoiResult>;
   set_region_aoi_file: (path: string) => Promise<AoiResult>;
+  set_region_aoi_geojson: (geojson: Json) => Promise<AoiResult>;
   import_scenes_text: (text: string) => Promise<ScenesResult>;
   import_scenes_file: (path: string) => Promise<ScenesResult>;
+  list_scenes: () => Promise<ScenesOk | ApiError>;
   check_scenes: () => Promise<CheckResult>;
   plan_asf_download: (outputDir?: string) => Promise<PlanResult>;
+  start_asf_download: (outputDir?: string, credentialSource?: string) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  pause_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
+  resume_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
+  stop_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
+  get_download_status: () => Promise<DownloadStatus>;
   plan_dem_download: (outputDir?: string, dataset?: string) => Promise<PlanReportResult>;
   plan_gacos_request: (outputDir?: string) => Promise<PlanReportResult>;
   plan_dem_conversion: (outputDir?: string) => Promise<ConvertResult>;
@@ -243,6 +291,47 @@ export async function setDemDataset(
   return { ok: true, dataset };
 }
 
+export async function getTree(): Promise<Tree> {
+  if (hasBridge()) return api().get_tree();
+  const projects: TreeProject[] = [];
+  if (mock.project) {
+    projects.push({
+      ...mock.project,
+      regions: mock.region
+        ? [
+            {
+              region_id: mock.region.region_id,
+              name: mock.region.name,
+              safe_name: mock.region.safe_name,
+              has_aoi: mock.region.has_aoi,
+              scene_count: mock.region.scene_count,
+            },
+          ]
+        : [],
+    });
+  }
+  return {
+    ok: true,
+    workspace: mock.workspace,
+    projects,
+    current_project_id: mock.project?.project_id ?? null,
+    current_region_id: mock.region?.region_id ?? null,
+  };
+}
+
+export async function pickOpenFile(
+  title = "",
+  filters: string[] = [],
+): Promise<PickResult> {
+  if (hasBridge()) return api().pick_open_file(title, filters);
+  return { ok: true, path: "" };
+}
+
+export async function pickDirectory(title = ""): Promise<PickResult> {
+  if (hasBridge()) return api().pick_directory(title);
+  return { ok: true, path: "" };
+}
+
 // ------------------------------------------------------------ workspace tree
 export async function createWorkspace(
   root: string,
@@ -330,6 +419,18 @@ export async function setRegionAoiFile(path: string): Promise<AoiResult> {
   };
 }
 
+export async function setRegionAoiGeojson(geojson: Json): Promise<AoiResult> {
+  if (hasBridge()) return api().set_region_aoi_geojson(geojson);
+  if (!mock.region) return { ok: false, error: "请先创建或选择区域", code: "GUI002" };
+  mock.region = { ...mock.region, has_aoi: true, bbox: MOCK_BBOX };
+  return {
+    ok: true,
+    aoi: { source: "MANUAL_BBOX", role: "PROCESSING_AOI", bbox: MOCK_BBOX },
+    region_id: mock.region.region_id,
+    region_name: mock.region.name,
+  };
+}
+
 // ------------------------------------------------------------------ SCENES
 function mockScene(i: number): SceneRow {
   const day = 12 + i * 12;
@@ -341,8 +442,10 @@ function mockScene(i: number): SceneRow {
     polarization: "DV",
     acquisition_datetime: `2024-03-${day}T22:38:05Z`,
     absolute_orbit: 52914 + i * 175,
-    relative_orbit: null,
-    orbit_direction: "UNKNOWN",
+    relative_orbit: 11,
+    path: 11,
+    frame: 468,
+    orbit_direction: i % 2 === 0 ? "DESCENDING" : "ASCENDING",
     has_url: false,
   };
 }
@@ -371,6 +474,13 @@ export async function importScenesFile(path: string): Promise<ScenesResult> {
   const scenes = [mockScene(0), mockScene(1), mockScene(2)];
   if (mock.region) mock.region = { ...mock.region, scene_count: scenes.length };
   return { ok: true, scenes, duplicates: [], errors: [] };
+}
+
+export async function listScenes(): Promise<ScenesResult> {
+  if (hasBridge()) return api().list_scenes();
+  const n = mock.region?.scene_count ?? 0;
+  if (!n) return { ok: false, error: "请先创建或选择区域", code: "GUI002" };
+  return { ok: true, scenes: Array.from({ length: n }, (_, i) => mockScene(i)), duplicates: [], errors: [] };
 }
 
 export async function checkScenes(): Promise<CheckResult> {
@@ -464,6 +574,67 @@ export async function planAsfDownload(outputDir = ""): Promise<PlanResult> {
     return { ok: false, error: "请先在『影像核查』导入场景", code: "ASF001" };
   }
   return { ok: true, plan: mockAsfPlan() };
+}
+
+let mockDlState: DownloadStatus = {
+  ok: true,
+  state: "idle",
+  total: 0,
+  done: 0,
+  current_scene: "",
+  paused: false,
+  cancelled: false,
+  error: null,
+  summary_line: "",
+  results_path: "",
+  log: [],
+};
+
+export async function startAsfDownload(
+  outputDir = "",
+  credentialSource = "auto",
+): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge()) return api().start_asf_download(outputDir, credentialSource);
+  if (!mock.region?.scene_count) return { ok: false, error: "请先导入场景", code: "ASF001" };
+  mockDlState = {
+    ok: true,
+    state: "finished",
+    total: mock.region.scene_count,
+    done: mock.region.scene_count,
+    current_scene: "",
+    paused: false,
+    cancelled: false,
+    error: null,
+    summary_line: `${mock.region.scene_count} 已下载, 0 跳过, 0 失败, 0 中断`,
+    results_path: "",
+    log: [],
+  };
+  return { ok: true };
+}
+
+export async function pauseAsfDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge()) return api().pause_asf_download();
+  if (mockDlState.state !== "running") return { ok: false, error: "当前没有进行中的下载", code: "GUI004" };
+  mockDlState = { ...mockDlState, state: "paused", paused: true };
+  return { ok: true };
+}
+
+export async function resumeAsfDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge()) return api().resume_asf_download();
+  if (mockDlState.state !== "paused") return { ok: false, error: "下载未处于暂停状态", code: "GUI004" };
+  mockDlState = { ...mockDlState, state: "running", paused: false };
+  return { ok: true };
+}
+
+export async function stopAsfDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge()) return api().stop_asf_download();
+  mockDlState = { ...mockDlState, state: "cancelled", cancelled: true };
+  return { ok: true };
+}
+
+export async function getDownloadStatus(): Promise<DownloadStatus> {
+  if (hasBridge()) return api().get_download_status();
+  return mockDlState;
 }
 
 export async function planDemDownload(
