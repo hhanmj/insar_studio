@@ -23,17 +23,16 @@ import { Progress } from "@/components/ui/progress";
 import { MapCard } from "@/components/MapCard";
 import { BridgeBadge } from "@/components/common";
 import {
+  getActivity,
   getDownloadStatus,
   getTree,
   hasBridge,
+  type ActivityEntry,
   type DownloadStatus,
   type Tree,
 } from "@/lib/bridge";
-import { usePrepContext } from "@/lib/useContext";
-
 import type { NavKey } from "@/components/Sidebar";
-
-type NavFn = (key: NavKey) => void;
+import { usePrepContext } from "@/lib/useContext";
 
 const STEPS = [
   { key: "workspace", label: "工作区" },
@@ -43,19 +42,35 @@ const STEPS = [
   { key: "report", label: "报告" },
 ] as const;
 
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(diff) || diff < 0) return "刚刚";
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins} 分钟前`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return new Date(iso).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+type NavFn = (key: NavKey) => void;
+
 export function Overview({ onNavigate }: { onNavigate?: NavFn }) {
   const bridged = hasBridge();
   const { ctx } = usePrepContext();
   const [tree, setTree] = useState<Tree | null>(null);
   const [dlStatus, setDlStatus] = useState<DownloadStatus | null>(null);
+  const [activities, setActivities] = useState<ActivityEntry[]>([]);
 
   const region = ctx?.region ?? null;
 
   useEffect(() => {
     void getTree().then(setTree);
     void getDownloadStatus().then(setDlStatus);
+    void getActivity().then((r) => setActivities(r.activities));
     const id = window.setInterval(() => {
       void getDownloadStatus().then(setDlStatus);
+      void getActivity().then((r) => setActivities(r.activities));
     }, 2000);
     return () => window.clearInterval(id);
   }, [ctx?.region?.region_id, ctx?.region?.scene_count]);
@@ -298,6 +313,33 @@ export function Overview({ onNavigate }: { onNavigate?: NavFn }) {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">近期活动</CardTitle>
+          <CardDescription>本会话内真实操作记录（重启 exe 后清空）</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {activities.length === 0 ? (
+            <div className="py-6 text-center text-sm text-muted-foreground">
+              暂无活动。创建工作区、绑定 AOI、导入场景或开始下载后会显示在这里。
+            </div>
+          ) : (
+            activities.map((a, i) => (
+              <div
+                key={`${a.ts}-${i}`}
+                className="flex items-start gap-3 border-b border-border/40 pb-2 last:border-0 last:pb-0"
+              >
+                <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" />
+                <div className="flex-1 text-sm">{a.text}</div>
+                <div className="shrink-0 text-xs text-muted-foreground">
+                  {formatRelativeTime(a.ts)}
+                </div>
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

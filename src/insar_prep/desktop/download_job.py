@@ -31,6 +31,8 @@ from insar_prep.providers.asf.scene_parser import deduplicate_scenes
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from insar_prep.desktop.activity_log import ActivityLog
+
 
 @dataclass
 class _JobState:
@@ -55,6 +57,7 @@ class AsfDownloadJob:
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
         self._pause = threading.Event()
+        self._activity: ActivityLog | None = None
 
     def get_status(self) -> dict:
         with self._lock:
@@ -80,12 +83,14 @@ class AsfDownloadJob:
         *,
         credential_source: CredentialSource = CredentialSource.AUTO,
         max_retries: int = 3,
+        activity: ActivityLog | None = None,
     ) -> dict:
         with self._lock:
             if self._status.state in ("running", "paused"):
                 return {"ok": False, "error": "已有下载任务在进行", "code": "GUI004"}
         self._cancel.clear()
         self._pause.clear()
+        self._activity = activity
         with self._lock:
             self._status = _JobState(state="running")
         self._thread = threading.Thread(
@@ -137,6 +142,11 @@ class AsfDownloadJob:
             self._status.log.append(entry)
             self._status.done += 1
             self._status.current_scene = ""
+        if self._activity is not None:
+            self._activity.add(
+                f"SLC {entry['scene_id']}: {result.outcome.value}",
+                kind="download",
+            )
 
     def _run(
         self,
@@ -198,6 +208,9 @@ class AsfDownloadJob:
                 self._status.cancelled = cancelled
                 self._status.summary_line = summary_line
                 self._status.results_path = str(results_path) if results_path else ""
+            if self._activity is not None:
+                prefix = "下载已取消" if cancelled else "下载完成"
+                self._activity.add(f"{prefix}：{summary_line}", kind="download")
         except InsarPrepError as exc:
             with self._lock:
                 self._status.state = "failed"

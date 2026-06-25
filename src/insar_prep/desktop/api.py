@@ -21,6 +21,7 @@ from typing import Any
 
 from insar_prep import __version__
 from insar_prep.core.exceptions import InsarPrepError
+from insar_prep.desktop.activity_log import ActivityLog
 from insar_prep.desktop.download_job import AsfDownloadJob
 from insar_prep.gui.state import GuiState, workspace_display_name
 
@@ -58,7 +59,16 @@ class Api:
         # The DEM dataset is chosen once (in the download step); the vertical-datum
         # conversion is then auto-detected from it, never chosen by the user.
         self._dem_dataset = "COP30"
+        self._dem_dataset = "COP30"
         self._asf_download = AsfDownloadJob()
+        self._activity = ActivityLog()
+
+    def _act(self, text: str, *, kind: str = "info") -> None:
+        self._activity.add(text, kind=kind)
+
+    def get_activity(self, limit: int = 12) -> dict:
+        """Return recent in-session actions for the overview feed."""
+        return self._activity.list(limit=limit)
 
     # ------------------------------------------------------------------ app
     def get_app_info(self) -> dict:
@@ -207,6 +217,7 @@ class Api:
             ws = self._state.create_workspace(root, name)
         except InsarPrepError as exc:
             return _error(exc)
+        self._act(f"创建工作区：{workspace_display_name(ws)}", kind="workspace")
         return {
             "ok": True,
             "workspace_id": ws.workspace_id,
@@ -220,6 +231,7 @@ class Api:
             project = self._state.add_project(name)
         except InsarPrepError as exc:
             return _error(exc)
+        self._act(f"添加项目：{project.project_name}", kind="workspace")
         return {
             "ok": True,
             "project_id": project.project_id,
@@ -246,6 +258,7 @@ class Api:
             region = self._state.add_region(name)
         except InsarPrepError as exc:
             return _error(exc)
+        self._act(f"添加区域：{region.region_name}", kind="workspace")
         return {
             "ok": True,
             "region_id": region.region_id,
@@ -285,6 +298,10 @@ class Api:
             region = self._state.set_current_region_aoi(aoi)
         except InsarPrepError as exc:
             return _error(exc)
+        self._act(
+            f"绑定 AOI（{region.region_name}）W{west} E{east} S{south} N{north}",
+            kind="aoi",
+        )
         return {
             "ok": True,
             "aoi": _dump(aoi),
@@ -305,6 +322,7 @@ class Api:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001 - file/parse errors
             return _error_msg(str(exc), "AOI001")
+        self._act(f"从文件导入 AOI：{Path(path).name} → {region.region_name}", kind="aoi")
         return {
             "ok": True,
             "aoi": _dump(aoi),
@@ -332,6 +350,7 @@ class Api:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "AOI001")
+        self._act(f"地图绘制 AOI 已绑定：{region.region_name}", kind="aoi")
         return {
             "ok": True,
             "aoi": _dump(aoi),
@@ -371,6 +390,10 @@ class Api:
             region = self._state.set_current_region_scenes(unique)
         except InsarPrepError as exc:
             return _error(exc)
+        self._act(
+            f"导入 {len(region.scenes)} 景场景 → {region.region_name}",
+            kind="scenes",
+        )
         return {
             "ok": True,
             "scenes": [_scene_row(s) for s in region.scenes],
@@ -391,6 +414,10 @@ class Api:
             region = self._state.set_current_region_scenes(unique)
         except InsarPrepError as exc:
             return _error(exc)
+        self._act(
+            f"从购物车导入 {len(region.scenes)} 景：{Path(path).name}",
+            kind="scenes",
+        )
         return {
             "ok": True,
             "scenes": [_scene_row(s) for s in region.scenes],
@@ -421,6 +448,11 @@ class Api:
             report = check_scene_collection(region.scenes)
         except InsarPrepError as exc:
             return _error(exc)
+        has_err = bool(getattr(report, "has_errors", False))
+        self._act(
+            f"场景核查：{report.total_scenes} 景" + ("（有阻断项）" if has_err else "（通过）"),
+            kind="scenes",
+        )
         return {"ok": True, "report": _dump(report)}
 
     # ----------------------------------------------------------- 3. DOWNLOAD
@@ -446,6 +478,10 @@ class Api:
             )
         except InsarPrepError as exc:
             return _error(exc)
+        self._act(
+            f"ASF 下载规划：{plan.planned_count} 景可下载 / {plan.scene_count} 景",
+            kind="download",
+        )
         return {"ok": True, "plan": _dump(plan)}
 
     def start_asf_download(self, output_dir: str = "", credential_source: str = "auto") -> dict:
@@ -464,7 +500,10 @@ class Api:
             src = CredentialSource((credential_source or "auto").strip().lower())
         except Exception:  # noqa: BLE001
             return _error_msg(f"未知凭据来源：{credential_source}", "GUI003")
-        return self._asf_download.start(region.scenes, out, credential_source=src)
+        self._act(f"开始 ASF SLC 下载（{len(region.scenes)} 景）", kind="download")
+        return self._asf_download.start(
+            region.scenes, out, credential_source=src, activity=self._activity
+        )
 
     def pause_asf_download(self) -> dict:
         """Pause between scenes (current scene finishes first)."""
@@ -513,6 +552,7 @@ class Api:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "DEM004")
+        self._act(f"DEM 下载规划：{plan.dataset}", kind="download")
         return {"ok": True, "plan": _dump(plan), "report": _dump(report)}
 
     def plan_gacos_request(self, output_dir: str = "") -> dict:
@@ -545,6 +585,8 @@ class Api:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "GAC001")
+        dates = len(getattr(plan, "unique_dates", []) or [])
+        self._act(f"GACOS 请求规划：{dates} 个日期", kind="download")
         return {"ok": True, "plan": _dump(plan), "report": _dump(report)}
 
     def get_credential_status(self) -> dict:
@@ -708,6 +750,10 @@ class Api:
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "REP001")
 
+        self._act(
+            f"生成数据准备报告：{region.region_name} → {html_path.name}",
+            kind="report",
+        )
         return {
             "ok": True,
             "report": _dump(report),

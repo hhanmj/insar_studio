@@ -98,7 +98,8 @@ export type Tree = {
   current_region_id: string | null;
 };
 export type PickResult = { ok: boolean; path: string };
-
+export type ActivityEntry = { ts: string; text: string; kind: string };
+export type ActivityFeed = { ok: true; activities: ActivityEntry[] };
 export type DownloadStatus = {
   ok: true;
   state: string;
@@ -164,6 +165,7 @@ type PyApi = {
   get_app_info: () => Promise<AppInfo>;
   get_context: () => Promise<Context>;
   get_tree: () => Promise<Tree>;
+  get_activity: (limit?: number) => Promise<ActivityFeed>;
   pick_open_file: (title?: string, filters?: string[]) => Promise<PickResult>;
   pick_directory: (title?: string) => Promise<PickResult>;
   create_workspace: (root: string, name?: string | null) => Promise<WorkspaceResult>;
@@ -317,6 +319,11 @@ export async function getTree(): Promise<Tree> {
     current_project_id: mock.project?.project_id ?? null,
     current_region_id: mock.region?.region_id ?? null,
   };
+}
+
+export async function getActivity(limit = 12): Promise<ActivityFeed> {
+  if (hasBridge()) return api().get_activity(limit);
+  return { ok: true, activities: [] };
 }
 
 export async function pickOpenFile(
