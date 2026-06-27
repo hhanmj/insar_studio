@@ -3,53 +3,53 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --radius: 0.875rem;
+  --radius: 1.125rem;
 
-  --background: #eef4f8;
-  --foreground: #101828;
-  --card: rgba(255, 255, 255, 0.72);
+  --background: #f4f7fb;
+  --foreground: #0f172a;
+  --card: rgba(255, 255, 255, 0.66);
   --card-foreground: #101828;
-  --popover: rgba(255, 255, 255, 0.82);
+  --popover: rgba(255, 255, 255, 0.84);
   --popover-foreground: #101828;
-  --primary: #2563eb;
+  --primary: #007aff;
   --primary-foreground: #ffffff;
-  --secondary: #eef2f7;
+  --secondary: rgba(255, 255, 255, 0.54);
   --secondary-foreground: #101828;
-  --muted: rgba(239, 244, 248, 0.76);
+  --muted: rgba(241, 245, 249, 0.72);
   --muted-foreground: #667085;
-  --accent: rgba(255, 255, 255, 0.58);
+  --accent: rgba(255, 255, 255, 0.68);
   --accent-foreground: #101828;
-  --destructive: #ef4444;
+  --destructive: #ff3b30;
   --destructive-foreground: #ffffff;
-  --success: #059669;
-  --warning: #d97706;
-  --border: rgba(148, 163, 184, 0.34);
-  --input: rgba(148, 163, 184, 0.34);
-  --ring: #3b82f6;
+  --success: #34c759;
+  --warning: #ff9500;
+  --border: rgba(255, 255, 255, 0.58);
+  --input: rgba(148, 163, 184, 0.28);
+  --ring: #0a84ff;
 }
 
 .dark {
-  --background: #0c1118;
+  --background: #080d14;
   --foreground: #eef2f7;
-  --card: rgba(17, 24, 39, 0.68);
+  --card: rgba(17, 24, 39, 0.58);
   --card-foreground: #eef2f7;
-  --popover: rgba(17, 24, 39, 0.82);
+  --popover: rgba(17, 24, 39, 0.84);
   --popover-foreground: #eef2f7;
-  --primary: #60a5fa;
+  --primary: #0a84ff;
   --primary-foreground: #07111f;
-  --secondary: #202733;
+  --secondary: rgba(255, 255, 255, 0.1);
   --secondary-foreground: #eef2f7;
-  --muted: rgba(31, 41, 55, 0.68);
+  --muted: rgba(31, 41, 55, 0.62);
   --muted-foreground: #9aa6b2;
-  --accent: rgba(255, 255, 255, 0.1);
+  --accent: rgba(255, 255, 255, 0.12);
   --accent-foreground: #eef2f7;
-  --destructive: #ef4444;
+  --destructive: #ff453a;
   --destructive-foreground: #ffffff;
-  --success: #34d399;
-  --warning: #fbbf24;
-  --border: rgba(148, 163, 184, 0.22);
+  --success: #30d158;
+  --warning: #ffd60a;
+  --border: rgba(255, 255, 255, 0.14);
   --input: rgba(148, 163, 184, 0.26);
-  --ring: #60a5fa;
+  --ring: #0a84ff;
 }
 
 @theme inline {
@@ -93,7 +93,7 @@ body,
 body {
   margin: 0;
   background:
-    linear-gradient(135deg, rgba(231, 240, 247, 0.98), rgba(248, 251, 253, 0.94) 48%, rgba(230, 246, 241, 0.92)),
+    linear-gradient(145deg, rgba(244, 248, 255, 0.98), rgba(255, 255, 255, 0.92) 48%, rgba(235, 248, 255, 0.88)),
     var(--color-background);
   color: var(--color-foreground);
   font-family: "Inter", "Segoe UI", "Microsoft YaHei UI", system-ui, -apple-system,
@@ -104,23 +104,80 @@ body {
 
 .dark body {
   background:
-    linear-gradient(135deg, rgba(12, 17, 24, 0.98), rgba(20, 28, 42, 0.94) 52%, rgba(10, 41, 45, 0.78)),
+    linear-gradient(145deg, rgba(8, 13, 20, 0.98), rgba(17, 24, 39, 0.94) 52%, rgba(8, 47, 73, 0.58)),
     var(--color-background);
 }
 
 .glass-panel {
-  border-radius: 1.25rem;
-  border: 1px solid rgba(255, 255, 255, 0.56);
-  background: rgba(255, 255, 255, 0.58);
-  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
-  backdrop-filter: blur(22px) saturate(1.2);
-  -webkit-backdrop-filter: blur(22px) saturate(1.2);
+  border-radius: 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.64);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.46)),
+    rgba(255, 255, 255, 0.44);
+  box-shadow:
+    0 18px 55px rgba(15, 23, 42, 0.11),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(28px) saturate(1.25);
+  -webkit-backdrop-filter: blur(28px) saturate(1.25);
 }
 
 .dark .glass-panel {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(17, 24, 39, 0.62);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
+  border-color: rgba(255, 255, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.62), rgba(15, 23, 42, 0.42)),
+    rgba(15, 23, 42, 0.44);
+  box-shadow:
+    0 18px 55px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.ios-window {
+  background:
+    linear-gradient(145deg, rgba(246, 249, 255, 0.88), rgba(239, 248, 255, 0.78)),
+    var(--color-background);
+}
+
+.dark .ios-window {
+  background:
+    linear-gradient(145deg, rgba(8, 13, 20, 0.92), rgba(11, 35, 53, 0.72)),
+    var(--color-background);
+}
+
+.ios-topbar {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.56);
+  box-shadow: 0 14px 45px rgba(15, 23, 42, 0.10);
+  backdrop-filter: blur(30px) saturate(1.3);
+  -webkit-backdrop-filter: blur(30px) saturate(1.3);
+}
+
+.dark .ios-topbar {
+  border-bottom-color: rgba(255, 255, 255, 0.12);
+  background: rgba(8, 13, 20, 0.58);
+}
+
+.ios-sidebar {
+  border-right: 1px solid rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: 12px 0 50px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(34px) saturate(1.28);
+  -webkit-backdrop-filter: blur(34px) saturate(1.28);
+}
+
+.dark .ios-sidebar {
+  border-right-color: rgba(255, 255, 255, 0.12);
+  background: rgba(8, 13, 20, 0.38);
+}
+
+select {
+  border-radius: 1rem !important;
+  background-color: rgba(255, 255, 255, 0.58) !important;
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+}
+
+.dark select {
+  background-color: rgba(255, 255, 255, 0.10) !important;
 }
 
 .leaflet-popup-content-wrapper,
@@ -161,4 +218,10 @@ body {
 .leaflet-container {
   font: inherit;
   background: #aadaff;
+}
+
+.leaflet-control,
+.leaflet-control-layers,
+.leaflet-popup-content-wrapper {
+  border-radius: 18px;
 }

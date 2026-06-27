@@ -396,8 +396,8 @@ function MapToolButton({
         onClick?.();
       }}
       className={cn(
-        "flex h-9 w-9 items-center justify-center border-b bg-card text-foreground shadow-sm transition-colors last:border-b-0 hover:bg-accent",
-        active && "bg-foreground text-background hover:bg-foreground",
+        "flex h-10 w-10 items-center justify-center border-b border-white/40 bg-white/56 text-foreground shadow-sm backdrop-blur-2xl transition-all last:border-b-0 hover:bg-white/76 active:scale-[0.98] dark:border-white/10 dark:bg-slate-950/48 dark:hover:bg-white/12",
+        active && "bg-primary text-primary-foreground hover:bg-primary dark:bg-primary",
       )}
     >
       {children}
@@ -453,7 +453,7 @@ function MapToolbar({
         event.stopPropagation();
       }}
     >
-      <div className="overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-white/55 bg-white/42 shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/38">
         <MapToolButton title="放大" onClick={() => map.zoomIn()}>
           <Plus className="h-5 w-5" />
         </MapToolButton>
@@ -461,7 +461,7 @@ function MapToolbar({
           <Minus className="h-5 w-5" />
         </MapToolButton>
       </div>
-      <div className="overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-white/55 bg-white/42 shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/38">
         <MapToolButton
           title="绘制多边形"
           active={drawActive && drawMode === "polygon"}
@@ -477,12 +477,12 @@ function MapToolbar({
           <Square className="h-4 w-4" />
         </MapToolButton>
       </div>
-      <div className="overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-white/55 bg-white/42 shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/38">
         <MapToolButton title="停止绘制" onClick={() => onDrawActiveChange(false)}>
           <Trash2 className="h-4 w-4" />
         </MapToolButton>
       </div>
-      <div className="overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-white/55 bg-white/42 shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/38">
         <MapToolButton title="切换底图" active={layersOpen} onClick={onToggleLayers}>
           <Layers className="h-5 w-5" />
         </MapToolButton>
@@ -685,7 +685,7 @@ function MapStatusOverlay() {
   });
 
   return (
-    <div className="pointer-events-none absolute bottom-4 left-4 z-[520] rounded-lg border border-border/70 bg-card/95 px-3 py-1.5 text-xs shadow-sm backdrop-blur">
+    <div className="pointer-events-none absolute bottom-4 left-4 z-[520] rounded-2xl border border-white/55 bg-white/62 px-3 py-1.5 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62">
       <span className="text-muted-foreground">{status.label}</span>
       <span className="ml-2 font-mono">
         经度: {fmt(status.lng)}　纬度: {fmt(status.lat)}　|　缩放: {status.zoom}
@@ -869,7 +869,7 @@ export function WorkbenchMap({
         <MapStatusOverlay />
       </MapContainer>
 
-      <div className="pointer-events-none absolute bottom-14 left-4 z-[500] max-w-[460px] rounded-lg border border-border/70 bg-card/95 px-3 py-2 text-xs shadow-sm backdrop-blur">
+      <div className="pointer-events-none absolute bottom-14 left-4 z-[500] max-w-[460px] rounded-2xl border border-white/55 bg-white/62 px-3 py-2 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62">
         <div className="flex items-center gap-2 font-medium">
           <MapPinned className="h-3.5 w-3.5 text-primary" />
           {drawActive ? "正在绘制 AOI" : "地图工作区"}
@@ -908,7 +908,7 @@ export function WorkbenchMap({
       {layersOpen && (
         <div
           ref={layerPanelRef}
-          className="pointer-events-auto absolute left-16 top-4 z-[690] max-h-[calc(100%-2rem)] w-[280px] overflow-y-auto rounded-xl border border-border/70 bg-card/95 p-2 shadow-sm backdrop-blur"
+          className="pointer-events-auto absolute left-16 top-4 z-[690] max-h-[calc(100%-2rem)] w-[290px] overflow-y-auto rounded-[24px] border border-white/60 bg-white/74 p-2 shadow-2xl backdrop-blur-3xl dark:border-white/10 dark:bg-slate-950/78"
           style={{ zIndex: 690 }}
           onPointerDown={(event) => event.stopPropagation()}
           onPointerUp={(event) => event.stopPropagation()}
@@ -979,7 +979,7 @@ export function WorkbenchMap({
       )}
 
       {!tilesReady && (
-        <div className="pointer-events-none absolute bottom-16 left-4 z-[500] rounded-md border border-border/70 bg-card/95 px-3 py-2 text-xs shadow-sm backdrop-blur">
+        <div className="pointer-events-none absolute bottom-16 left-4 z-[500] rounded-2xl border border-white/55 bg-white/62 px-3 py-2 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62">
           <div className="flex items-center gap-2">
             <LocateFixed className="h-3.5 w-3.5 animate-pulse text-primary" />
             底图加载中，AOI 坐标输入和任务控制仍可使用

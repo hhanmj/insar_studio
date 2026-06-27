@@ -6,6 +6,16 @@
 // absent, so we fall back to mock data so the UI is always previewable. The mock
 // keeps a tiny shared "current region" context so the panels feel connected.
 
+import { ADMIN_BOUNDARY_INDEX, type AdminBoundaryLite } from "@/data/adminBoundaries";
+
+type AdminBoundaryIndex = {
+  provinces: readonly AdminBoundaryLite[];
+  citiesByProvince: Record<string, readonly AdminBoundaryLite[]>;
+  districtsByCity: Record<string, readonly AdminBoundaryLite[]>;
+};
+
+const ADMIN_INDEX = ADMIN_BOUNDARY_INDEX as unknown as AdminBoundaryIndex;
+
 export type AppInfo = { name: string; version: string; offline: boolean };
 export type ApiError = { ok: false; error: string; code: string | null };
 export type Json = Record<string, unknown>;
@@ -621,6 +631,114 @@ function mockActiveSafeName(): string {
   return mock.region?.safe_name ?? "standalone_download";
 }
 
+function ensureMockRegion(): ContextRegion {
+  if (!mock.workspace) {
+    mock.workspace = {
+      workspace_id: "ws_preview",
+      root: "C:\\InSAR\\preview",
+      name: "预览工作区",
+    };
+  }
+  if (!mock.project) {
+    mock.project = {
+      project_id: "proj_default_task",
+      name: "默认任务",
+      safe_name: "default_task",
+      root: `${mock.workspace.root}\\default_task`,
+    };
+  }
+  if (!mock.region) {
+    mock.region = {
+      region_id: "region_default_area",
+      name: "默认区域",
+      safe_name: "default_area",
+      root: `${mock.project.root}\\default_area`,
+      has_aoi: false,
+      bbox: null,
+      scene_count: 0,
+    };
+  }
+  return mock.region;
+}
+
+function liteToBbox(item: AdminBoundaryLite): Bbox {
+  return {
+    west: item[2],
+    east: item[3],
+    south: item[4],
+    north: item[5],
+    crs: "EPSG:4326",
+  };
+}
+
+function allPreviewDistricts(province: string): AdminBoundaryLite[] {
+  const cityRows = ADMIN_INDEX.citiesByProvince[province] ?? [];
+  return cityRows.flatMap((city) => ADMIN_INDEX.districtsByCity[`${province}|${city[0]}`] ?? []);
+}
+
+function previewBoundaryCandidates(province = "", city = "", district = "", query = ""): AdminBoundary[] {
+  const clean = (value: string) => value.trim();
+  const provinceName = clean(province);
+  const cityName = clean(city);
+  const districtName = clean(district);
+  const queryName = clean(query);
+  const provinceRows = [...ADMIN_INDEX.provinces];
+  const selectedProvince = provinceRows.find((item) => item[0] === provinceName || item[0].includes(provinceName));
+  const cityRows = selectedProvince
+    ? [...(ADMIN_INDEX.citiesByProvince[selectedProvince[0]] ?? [])]
+    : Object.values(ADMIN_INDEX.citiesByProvince).flatMap((items) => [...items]);
+  const selectedCity = cityRows.find((item) => item[0] === cityName || item[0].includes(cityName));
+  const districtRows = selectedProvince
+    ? selectedCity
+      ? [...(ADMIN_INDEX.districtsByCity[`${selectedProvince[0]}|${selectedCity[0]}`] ?? [])]
+      : allPreviewDistricts(selectedProvince[0])
+    : Object.values(ADMIN_INDEX.districtsByCity).flatMap((items) => [...items]);
+
+  const toBoundary = (item: AdminBoundaryLite, parts: string[]): AdminBoundary => {
+    const label = [...parts, item[0]].filter(Boolean).join(" / ");
+    const bbox = liteToBbox(item);
+    return {
+      label,
+      bbox,
+      geojson: polygonFromBbox(bbox),
+      source: "Browser preview boundary index",
+      class: "boundary",
+      type: "administrative",
+      osm_id: item[1],
+    };
+  };
+
+  if (districtName && districtName !== "全部" && districtName !== "不限") {
+    return districtRows
+      .filter((item) => item[0] === districtName || item[0].includes(districtName) || districtName.includes(item[0]))
+      .map((item) => toBoundary(item, [selectedProvince?.[0] ?? provinceName, selectedCity?.[0] ?? cityName]));
+  }
+  if (cityName && cityName !== "全部" && cityName !== "不限") {
+    const rows: AdminBoundary[] = [];
+    if (selectedCity) rows.push(toBoundary(selectedCity, [selectedProvince?.[0] ?? provinceName]));
+    rows.push(
+      ...districtRows
+        .slice(0, 30)
+        .map((item) => toBoundary(item, [selectedProvince?.[0] ?? provinceName, selectedCity?.[0] ?? cityName])),
+    );
+    return rows;
+  }
+  if (provinceName && provinceName !== "全部" && provinceName !== "不限") {
+    const rows: AdminBoundary[] = [];
+    if (selectedProvince) rows.push(toBoundary(selectedProvince, []));
+    rows.push(...cityRows.slice(0, 30).map((item) => toBoundary(item, [selectedProvince?.[0] ?? provinceName])));
+    return rows;
+  }
+  if (queryName) {
+    const all = [...provinceRows, ...cityRows, ...districtRows];
+    return all
+      .filter((item) => item[0] === queryName || item[0].includes(queryName) || queryName.includes(item[0]))
+      .slice(0, 30)
+      .map((item) => toBoundary(item, []));
+  }
+  return [];
+}
+
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
@@ -981,7 +1099,7 @@ export async function setRegionAoiBbox(
     if (res.ok) notifyContextChanged();
     return res;
   }
-  if (!mock.region) return { ok: false, error: "请先创建或选择区域", code: "GUI002" };
+  const region = ensureMockRegion();
   if (!(west < east)) {
     return { ok: false, error: "west must be strictly less than east", code: "AOI001" };
   }
@@ -989,7 +1107,7 @@ export async function setRegionAoiBbox(
     return { ok: false, error: "south must be strictly less than north", code: "AOI001" };
   }
   const bbox: Bbox = { west, east, south, north, crs: "EPSG:4326" };
-  mock.region = { ...mock.region, has_aoi: true, bbox, aoi_geojson: null };
+  mock.region = { ...region, has_aoi: true, bbox, aoi_geojson: null };
   notifyContextChanged();
   return {
     ok: true,
@@ -1005,9 +1123,9 @@ export async function setRegionAoiFile(path: string): Promise<AoiResult> {
     if (res.ok) notifyContextChanged();
     return res;
   }
-  if (!mock.region) return { ok: false, error: "请先创建或选择区域", code: "GUI002" };
+  const region = ensureMockRegion();
   if (!path.trim()) return { ok: false, error: "请提供矢量文件路径", code: "AOI001" };
-  mock.region = { ...mock.region, has_aoi: true, bbox: MOCK_BBOX, aoi_geojson: null };
+  mock.region = { ...region, has_aoi: true, bbox: MOCK_BBOX, aoi_geojson: null };
   notifyContextChanged();
   return {
     ok: true,
@@ -1024,9 +1142,9 @@ export async function setRegionAoiGeojson(geojson: Json): Promise<AoiResult> {
     if (res.ok) notifyContextChanged();
     return res;
   }
-  if (!mock.region) return { ok: false, error: "请先创建或选择区域", code: "GUI002" };
+  const region = ensureMockRegion();
   const bbox = bboxFromGeojson(geojson);
-  mock.region = { ...mock.region, has_aoi: true, bbox, aoi_geojson: geojson };
+  mock.region = { ...region, has_aoi: true, bbox, aoi_geojson: geojson };
   notifyContextChanged();
   return {
     ok: true,
@@ -1050,12 +1168,22 @@ export async function searchAdminBoundaries(
     .map((item) => item.trim())
     .filter((item) => item && item !== "全部" && item !== "不限");
   const label = parts.length ? parts.join(" / ") : "预览行政区";
-  const bbox = query.includes("合肥") || city.includes("合肥")
-    ? { west: 116.6824, east: 117.968, south: 30.9531, north: 32.5386, crs: "EPSG:4326" }
-    : MOCK_BBOX;
+  const results = previewBoundaryCandidates(province, city, district, query).slice(0, Math.max(1, limit));
+  if (results.length) {
+    return {
+      ok: true,
+      query: label,
+      provider: "preview-local-index",
+      warning: "网页预览只内置行政区 bbox；exe 内使用完整不规则边界。",
+      results,
+    };
+  }
+  const bbox = MOCK_BBOX;
   return {
     ok: true,
     query: label,
+    provider: "preview-fallback",
+    warning: "未在预览索引中找到匹配行政区，已返回示例范围。",
     results: [
       {
         label,
@@ -1071,11 +1199,34 @@ export async function searchAdminBoundaries(
 
 export async function getAdminOptions(province = "", city = ""): Promise<AdminOptionsResult> {
   if (hasBridge()) return api().get_admin_options(province, city);
+  const clean = (value: string) => value.trim();
+  const provinceName = clean(province);
+  const cityName = clean(city);
+  const provinces = ADMIN_INDEX.provinces.map((item) => item[0]);
+  const provinceKey =
+    provinces.find((item) => item === provinceName) ??
+    provinces.find((item) => provinceName && (item.includes(provinceName) || provinceName.includes(item))) ??
+    "";
+  const cityRows = provinceKey
+    ? [...(ADMIN_INDEX.citiesByProvince[provinceKey] ?? [])]
+    : Object.values(ADMIN_INDEX.citiesByProvince).flatMap((items) => [...items]);
+  const cityNames = Array.from(new Set(cityRows.map((item) => item[0]))).sort();
+  const cityKey =
+    cityNames.find((item) => item === cityName) ??
+    cityNames.find((item) => cityName && (item.includes(cityName) || cityName.includes(item))) ??
+    "";
+  const districtRows =
+    provinceKey && cityKey
+      ? [...(ADMIN_INDEX.districtsByCity[`${provinceKey}|${cityKey}`] ?? [])]
+      : provinceKey
+        ? allPreviewDistricts(provinceKey)
+        : Object.values(ADMIN_INDEX.districtsByCity).flatMap((items) => [...items]);
+  const districts = Array.from(new Set(districtRows.map((item) => item[0]))).sort();
   return {
     ok: true,
-    provinces: [],
-    cities: [],
-    districts: [],
+    provinces,
+    cities: cityNames,
+    districts,
   };
 }
 

@@ -152,6 +152,40 @@ class Api:
             for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
                 os.environ[key] = proxy
 
+    def _default_workspace_root(self) -> Path:
+        """Return the low-friction workspace root used for direct AOI/SAR actions."""
+        return Path("C:/InSAR/projects")
+
+    def _ensure_current_region(self) -> Any:
+        """Create a minimal default workspace/project/region when the user starts with AOI.
+
+        The workbench intentionally lets users begin from a map selection without
+        understanding the old project tree first. Core state still needs a region
+        object, so this helper prepares one quietly and keeps existing selections
+        untouched whenever they already exist.
+        """
+        if self._state.workspace is None:
+            root = self._default_workspace_root()
+            root.mkdir(parents=True, exist_ok=True)
+            self._state.create_workspace(root, "默认工作区")
+
+        project = self._state.current_project()
+        if project is None:
+            if self._state.workspace and self._state.workspace.projects:
+                project = self._state.select_project(self._state.workspace.projects[0].project_id)
+            else:
+                project = self._state.add_project("default_task")
+                project.project_root.mkdir(parents=True, exist_ok=True)
+
+        region = self._state.current_region()
+        if region is None:
+            if project.regions:
+                region = self._state.select_region(project.regions[0].region_id)
+            else:
+                region = self._state.add_region("default_area")
+                region.region_root.mkdir(parents=True, exist_ok=True)
+        return region
+
     def get_network_settings(self) -> dict:
         """Return proxy/cache/map-token settings used by the desktop shell."""
         return {"ok": True, **self._network_settings}
@@ -665,9 +699,12 @@ class Api:
         except Exception as exc:  # noqa: BLE001 - pydantic ValidationError etc.
             return _error_msg(_format_validation(exc), "AOI001")
         try:
+            self._ensure_current_region()
             region = self._state.set_current_region_aoi(aoi)
         except InsarPrepError as exc:
             return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "GUI003")
         self._save_state()
         self._act(
             f"绑定 AOI（{region.region_name}）W{west} E{east} S{south} N{north}",
@@ -688,6 +725,7 @@ class Api:
             return _missing_dep("矢量文件导入", exc)
         try:
             aoi = load_aoi_from_file(path)
+            self._ensure_current_region()
             region = self._state.set_current_region_aoi(aoi)
             preview_geojson = _geojson_from_aoi_file(path)
             if preview_geojson is not None:
@@ -724,6 +762,7 @@ class Api:
         try:
             geometry = _geometry_from_geojson(geojson)
             aoi = geometry_to_processing_aoi(geometry, source=AoiSource.MANUAL_BBOX)
+            self._ensure_current_region()
             region = self._state.set_current_region_aoi(aoi)
             saved_geojson = _write_region_aoi_geojson(region, geojson)
             if saved_geojson is not None:
