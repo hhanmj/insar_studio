@@ -1,4 +1,4 @@
-"""ASF SLC downloader interface, an offline fake, and the real downloader.
+"""ASF Sentinel-1 downloader interface, an offline fake, and the real downloader.
 
 Defines the :class:`AsfDownloader` interface, a :class:`FakeAsfDownloader` for
 offline testing of retry/error/cancellation paths, and :class:`RealAsfDownloader`
@@ -20,7 +20,7 @@ import os
 import time
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from insar_prep.core.error_codes import ErrorCode
@@ -304,6 +304,8 @@ class RealAsfDownloader:
         timeout: float = _DEFAULT_TIMEOUT,
         verify_bytes: int = _DEFAULT_VERIFY_BYTES,
         cancel_event: Event | None = None,
+        pause_event: Event | None = None,
+        progress_callback: Callable[[str, int, int | None], None] | None = None,
     ) -> None:
         self.credential_source = credential_source
         self.max_retries = max(1, max_retries)
@@ -312,6 +314,8 @@ class RealAsfDownloader:
         self.timeout = timeout
         self.verify_bytes = max(1, verify_bytes)
         self.cancel_event = cancel_event
+        self.pause_event = pause_event
+        self.progress_callback = progress_callback
         self._resolved = resolved
         self._session = session
 
@@ -324,6 +328,15 @@ class RealAsfDownloader:
 
     def _cancelled(self) -> bool:
         return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def _paused(self) -> bool:
+        return self.pause_event is not None and self.pause_event.is_set()
+
+    def _wait_if_paused(self) -> None:
+        while self._paused() and not self._cancelled():
+            time.sleep(0.2)
+        if self._cancelled():
+            raise _Cancelled()
 
     def download(self, request: DownloadRequest) -> DownloadResult:
         """Download one SLC, returning a :class:`DownloadResult` (never raises)."""
@@ -340,6 +353,21 @@ class RealAsfDownloader:
                 bytes_written=dest.stat().st_size,
                 message="already complete; skipped",
             )
+
+        if part.exists() and request.expected_size is not None:
+            part_size = part.stat().st_size
+            if part_size == request.expected_size:
+                part.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(part, dest)
+                return DownloadResult(
+                    scene_id=request.scene_id,
+                    outcome=DownloadOutcome.SUCCESS,
+                    path=dest,
+                    bytes_written=part_size,
+                    message="existing .part matched expected size; finalized",
+                )
+            if part_size > request.expected_size:
+                _safe_unlink(part)
 
         if not request.url:
             return DownloadResult(
@@ -383,9 +411,13 @@ class RealAsfDownloader:
                     message=mask_text(str(exc)),
                     error_code=ErrorCode.DL005.value,
                 )
-            except (_TransientError, _IntegrityMismatch) as exc:
+            except _TransientError as exc:
                 last_error = exc
                 _safe_unlink(part)
+            except _IntegrityMismatch as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    _safe_unlink(part)
             except Exception as exc:  # noqa: BLE001 - transport errors are masked + retried
                 last_error = exc
                 _safe_unlink(part)
@@ -412,27 +444,44 @@ class RealAsfDownloader:
         part: Path,
     ) -> DownloadResult:
         part.parent.mkdir(parents=True, exist_ok=True)
-        written = 0
+        resume_from = part.stat().st_size if part.exists() else 0
+        headers = {"Range": f"bytes={resume_from}-"} if resume_from > 0 else None
         with session.get(  # type: ignore[attr-defined]
-            request.url, stream=True, timeout=self.timeout, allow_redirects=True
+            request.url,
+            stream=True,
+            timeout=self.timeout,
+            allow_redirects=True,
+            headers=headers,
         ) as response:
             status = int(getattr(response, "status_code", 200))
             if status in (401, 403):
                 raise _CredentialRejected()
             if status == 429 or status >= 500:
                 raise _TransientError(f"HTTP {status} from data pool")
+            if status == 416:
+                raise _IntegrityMismatch("server rejected resume range (HTTP 416)")
             if status >= 400:
                 raise _FatalTransport(f"HTTP {status} from data pool")
-            total = _content_length(response)
-            with part.open("wb") as handle:
+            if status == 206 and resume_from > 0:
+                written = resume_from
+                mode = "ab"
+                total = _content_range_total(response)
+            else:
+                written = 0
+                mode = "wb"
+                total = _content_length(response)
+            expected = request.expected_size if request.expected_size is not None else total
+            with part.open(mode) as handle:
                 for chunk in response.iter_content(chunk_size=self.chunk_size):
                     if self._cancelled():
                         raise _Cancelled()
+                    self._wait_if_paused()
                     if chunk:
                         handle.write(chunk)
                         written += len(chunk)
+                        if self.progress_callback is not None:
+                            self.progress_callback(request.scene_id, written, expected)
 
-        expected = request.expected_size if request.expected_size is not None else total
         if expected is not None and written != expected:
             raise _IntegrityMismatch(f"expected {expected} bytes but received {written}")
 
@@ -447,9 +496,12 @@ class RealAsfDownloader:
         )
 
     def _interrupted(self, request: DownloadRequest) -> DownloadResult:
+        part = request.destination.with_name(request.destination.name + ".part")
+        bytes_written = part.stat().st_size if part.exists() else 0
         return DownloadResult(
             scene_id=request.scene_id,
             outcome=DownloadOutcome.INTERRUPTED,
+            bytes_written=bytes_written,
             message="cancelled by user; partial .part kept for resume",
             error_code=ErrorCode.DL001.value,
         )
@@ -572,8 +624,9 @@ def download_requests_from_scenes(
 ) -> list[DownloadRequest]:
     """Build :class:`DownloadRequest` objects for scenes that have a URL.
 
-    The destination mirrors the dry-run planner's ``<output>/02_slc/<granule>.zip``
-    layout. Scenes without a URL are skipped (they cannot be fetched).
+    The destination mirrors the dry-run planner's product-aware layout:
+    SLC -> ``02_slc``, GRD -> ``02_grd``, RAW -> ``02_raw`` and OCN -> ``02_ocn``.
+    Scenes without a URL are skipped (they cannot be fetched).
     """
     requests_out: list[DownloadRequest] = []
     for scene in scenes:
@@ -582,11 +635,15 @@ def download_requests_from_scenes(
         if not url:
             continue
         expected_filename = f"{scene_id}.zip"
+        product = str(getattr(getattr(scene, "product_type", ""), "value", "") or "").lower()
+        destination_dir = slc_dir
+        if product and product != "slc":
+            destination_dir = slc_dir.parent / f"02_{product}"
         requests_out.append(
             DownloadRequest(
                 scene_id=scene_id,
                 expected_filename=expected_filename,
-                destination=slc_dir / expected_filename,
+                destination=destination_dir / expected_filename,
                 url=url,
                 expected_size=getattr(scene, "file_size_remote", None),
             )

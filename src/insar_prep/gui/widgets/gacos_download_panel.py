@@ -207,6 +207,7 @@ class GacosDownloadPanel(QGroupBox):
         self.cancel_button.setObjectName("gacos_cancel_button")
         self.cancel_button.setEnabled(False)
         button_row = QHBoxLayout()
+        button_row.addStretch(1)
         button_row.addWidget(self.submit_button)
         button_row.addWidget(self.download_button)
         button_row.addWidget(self.cancel_button)

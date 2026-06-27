@@ -11,18 +11,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
+
 
 class RegionDialog(QDialog):
     """Collect a region name (the SARscape-safe name is derived from it)."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("New Region")
+        self.setWindowTitle(i18n.tr("dlg.region.title"))
         self._name_edit = QLineEdit()
         self._name_edit.setObjectName("region_name_edit")
 
         form = QFormLayout()
-        form.addRow("Name:", self._name_edit)
+        form.addRow(i18n.tr("common.name"), self._name_edit)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel

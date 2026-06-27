@@ -1,6 +1,6 @@
 """Offline ASF download dry-run planner (Task 033).
 
-Builds a *plan* of the Sentinel-1 SLC downloads implied by a local ASF cart,
+Builds a *plan* of the Sentinel-1 downloads implied by a local ASF cart,
 **without** downloading anything, contacting ASF/Earthdata, verifying remote
 files, or reading credentials. It only consumes the already-parsed
 :class:`~insar_prep.core.models.Scene` list and writes a small
@@ -11,7 +11,7 @@ Credential-safety (see ``docs/asf_download_credential_design.md``): no URL,
 query string, or token is ever written to the plan -- only a ``url_status``
 (present/missing) flag and an ``expected_filename`` derived from the granule
 name. Every cell is additionally passed through ``mask_text`` before reaching
-disk. ``credential_required`` is always true, because real ASF SLC download
+disk. ``credential_required`` is always true, because real ASF Sentinel-1 download
 needs NASA Earthdata Login credentials (not handled here).
 """
 
@@ -41,7 +41,7 @@ SLC_SUBDIR = "02_slc"
 PLAN_JSON_NAME = "asf_download_plan.json"
 PLAN_CSV_NAME = "asf_download_plan.csv"
 
-# Sentinel-1 SLC products are distributed as .zip archives.
+# Sentinel-1 products are distributed as .zip archives.
 _SLC_EXTENSION = ".zip"
 
 # Fixed CSV column order. Do not reorder: downstream readers rely on this header.
@@ -75,7 +75,7 @@ def _utcnow() -> datetime:
 
 
 class AsfDownloadPlanItem(InsarBaseModel):
-    """One planned SLC download (mirrors :data:`ASF_PLAN_COLUMNS`)."""
+    """One planned Sentinel-1 download (mirrors :data:`ASF_PLAN_COLUMNS`)."""
 
     scene_id: str
     platform: str = ""
@@ -109,7 +109,7 @@ class AsfDownloadPlanItem(InsarBaseModel):
 
 
 class AsfDownloadPlan(InsarBaseModel):
-    """A consolidated, offline ASF SLC download plan for one cart."""
+    """A consolidated, offline ASF Sentinel-1 download plan for one cart."""
 
     generated_at: datetime = Field(default_factory=_utcnow)
     source_cart: str = ""
@@ -132,9 +132,16 @@ def _expected_filename(scene: Scene) -> str:
     return f"{scene.scene_id}{_SLC_EXTENSION}"
 
 
-def _planned_path(output_dir: Path, expected_filename: str) -> Path:
-    """Return the *intended* local SLC path (the file is never created here)."""
-    return output_dir / SLC_SUBDIR / expected_filename
+def _product_subdir(scene: Scene) -> str:
+    product = str(getattr(scene.product_type, "value", scene.product_type)).lower()
+    if product == "slc":
+        return SLC_SUBDIR
+    return f"02_{product}"
+
+
+def _planned_path(output_dir: Path, scene: Scene, expected_filename: str) -> Path:
+    """Return the *intended* local product path (the file is never created here)."""
+    return output_dir / _product_subdir(scene) / expected_filename
 
 
 def _acquisition_text(scene: Scene) -> str:
@@ -148,7 +155,7 @@ def _plan_item(scene: Scene, output_dir: Path) -> AsfDownloadPlanItem:
     has_url = bool(scene.url)
     if has_url:
         status = AsfPlanStatus.PLANNED
-        notes = "ASF SLC download requires NASA Earthdata Login credentials"
+        notes = "ASF Sentinel-1 download requires NASA Earthdata Login credentials"
     else:
         status = AsfPlanStatus.MISSING_URL
         notes = "no download URL in cart; remote fetch cannot be planned for this scene"
@@ -161,7 +168,7 @@ def _plan_item(scene: Scene, output_dir: Path) -> AsfDownloadPlanItem:
         polarization=scene.polarization.value,
         url_status="present" if has_url else "missing",
         expected_filename=expected,
-        planned_path=str(_planned_path(output_dir, expected)),
+        planned_path=str(_planned_path(output_dir, scene, expected)),
         status=status,
         credential_required=True,
         notes=notes,

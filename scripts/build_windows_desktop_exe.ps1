@@ -67,13 +67,38 @@ if (-not $SkipUi) {
 }
 if (-not (Test-Path $uiDist)) { throw "ui\dist not found ($uiDist); run without -SkipUi" }
 
+$boundaryDirName = "$([char]0x8FB9)$([char]0x754C)"
+$chinaName = "$([char]0x4E2D)$([char]0x56FD)"
+$provinceName = "$([char]0x7701)"
+$cityName = "$([char]0x5E02)"
+$countyName = "$([char]0x53BF)"
+$boundarySource = Join-Path $RepoRoot $boundaryDirName
+$boundaryStage = Join-Path $RepoRoot ".build_boundaries"
+if (-not (Test-Path $boundarySource)) {
+    throw "Local boundary directory not found: $boundarySource"
+}
+
 # 2. Clean previous desktop build artifacts (leave other dist\ files in place).
 Write-Host ""
 Write-Host "== Clean previous desktop build artifacts ==" -ForegroundColor Cyan
 if (Test-Path (Join-Path $RepoRoot "build")) { Remove-Item -Recurse -Force (Join-Path $RepoRoot "build") }
+if (Test-Path $boundaryStage) { Remove-Item -Recurse -Force $boundaryStage }
 Get-ChildItem -Path $RepoRoot -Filter "insar-prep-desktop.spec" -File -ErrorAction SilentlyContinue |
     Remove-Item -Force
 Remove-Item -Force (Join-Path $RepoRoot "dist\insar-prep-desktop.exe") -ErrorAction SilentlyContinue
+
+New-Item -ItemType Directory -Force -Path $boundaryStage | Out-Null
+$boundaryCopies = @(
+    @{ Source = "$chinaName`_$provinceName.geojson"; Target = "china_province.geojson" },
+    @{ Source = "$chinaName`_$cityName.geojson"; Target = "china_city.geojson" },
+    @{ Source = "$chinaName`_$countyName.geojson"; Target = "china_county.geojson" }
+)
+foreach ($item in $boundaryCopies) {
+    $src = Join-Path $boundarySource $item.Source
+    $dst = Join-Path $boundaryStage $item.Target
+    if (-not (Test-Path $src)) { throw "Boundary file not found: $src" }
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+}
 
 # Call PyInstaller through the venv interpreter directly.
 $py = Join-Path $RepoRoot ".venv\Scripts\python.exe"
@@ -89,6 +114,8 @@ $pyArgs = @(
     "--paths", "src",
     # Bundle the built web frontend so the WebView loads it from file:// offline.
     "--add-data", "ui/dist;insar_prep/desktop/web",
+    # Bundle local administrative boundaries for offline province/city/county AOI.
+    "--add-data", ".build_boundaries;insar_prep/desktop/boundaries",
     # pywebview + its WebView2 backend (pythonnet / clr_loader) + http helpers.
     "--collect-all", "webview",
     "--collect-all", "pythonnet",
@@ -130,6 +157,7 @@ if ($proc.ExitCode -ne 0) {
     throw "Desktop exe self-test failed (exit code $($proc.ExitCode))"
 }
 Write-Host "Desktop exe self-test OK (core exercised end-to-end, exit 0)" -ForegroundColor Green
+Remove-Item -Recurse -Force $boundaryStage -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "== DONE: dist\insar-prep-desktop.exe built and smoke-tested ==" -ForegroundColor Green

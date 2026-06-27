@@ -151,6 +151,7 @@ class DemDataset(StrEnum):
 
     COP30 = "COP30"
     COP90 = "COP90"
+    SRTM_GL3 = "SRTM_GL3"
     SRTM_GL1 = "SRTM_GL1"
     SRTM_GL1_ELLIPSOIDAL = "SRTM_GL1_ELLIPSOIDAL"
     NASADEM = "NASADEM"

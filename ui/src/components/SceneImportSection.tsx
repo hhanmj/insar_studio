@@ -23,9 +23,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { ErrorNote, FieldLabel } from "@/components/common";
 import {
   checkScenes,
+  formatBridgeError,
   importScenesFile,
+  importScenesDirectory,
   importScenesText,
   listScenes,
+  pickDirectory,
   pickOpenFile,
   type Json,
   type SceneRow,
@@ -57,12 +60,26 @@ function orbitLabel(dir: string): string {
   return "—";
 }
 
+function formatBytes(value: number | null | undefined): string {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = n;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
+}
+
 export function SceneImportSection() {
   const { ctx, refresh } = usePrepContext();
   const region = ctx?.region ?? null;
 
   const [text, setText] = useState("");
   const [path, setPath] = useState("");
+  const [slcDir, setSlcDir] = useState("");
   const [scenes, setScenes] = useState<SceneRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,10 +90,6 @@ export function SceneImportSection() {
   const [cError, setCError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!region) {
-      setScenes([]);
-      return;
-    }
     void (async () => {
       const res = await listScenes();
       if (res.ok) setScenes(res.scenes);
@@ -101,7 +114,7 @@ export function SceneImportSection() {
         setError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
       }
     } catch (e) {
-      setError(String(e));
+      setError(formatBridgeError(e));
     } finally {
       setBusy(false);
     }
@@ -109,10 +122,15 @@ export function SceneImportSection() {
 
   async function onBrowseCart() {
     const pick = await pickOpenFile("选择 ASF 购物车文件", [
-      "ASF cart (*.py;*.csv;*.geojson;*.json;*.txt)",
+      "ASF cart (*.py;*.metalink;*.csv;*.geojson;*.json;*.txt;*.metadata;*.meta;*.met)",
       "All files (*.*)",
     ]);
     if (pick.ok && pick.path) setPath(pick.path);
+  }
+
+  async function onBrowseSlcDir() {
+    const pick = await pickDirectory("选择已有 Sentinel-1 数据目录");
+    if (pick.ok && pick.path) setSlcDir(pick.path);
   }
 
   async function onCheck() {
@@ -123,7 +141,7 @@ export function SceneImportSection() {
       if (res.ok) setReport(res.report);
       else setCError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
-      setCError(String(e));
+      setCError(formatBridgeError(e));
     } finally {
       setCBusy(false);
     }
@@ -144,14 +162,14 @@ export function SceneImportSection() {
           <Textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder={"S1A_IW_SLC__1SDV_20240312T223805_..._8F5C\nS1A_IW_SLC__1SDV_20240324T223805_..._1A2B"}
+            placeholder={"S1A_IW_SLC__1SDV_20240312T223805_..._8F5C\nS1A_IW_GRDH_1SDV_20240324T223805_..._1A2B"}
             spellCheck={false}
             className="min-h-[100px] font-mono text-xs"
           />
           <div className="flex flex-wrap items-center gap-3">
             <Button
               onClick={() => handleImport(() => importScenesText(text))}
-              disabled={!region || busy || !text.trim()}
+              disabled={busy || !text.trim()}
             >
               {busy ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -160,29 +178,67 @@ export function SceneImportSection() {
               )}
               导入粘贴内容
             </Button>
-            <span className="text-xs text-muted-foreground">或从购物车文件：</span>
+            <span className="text-xs text-muted-foreground">或从 ASF 文件：</span>
             <div className="flex min-w-[280px] flex-1 items-center gap-2">
               <Input
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
-                placeholder="选择 .py / .csv / .geojson 购物车"
+                placeholder="选择 .py / .metalink / .csv / .geojson / metadata"
                 spellCheck={false}
                 readOnly
                 className="font-mono text-xs"
               />
-              <Button variant="outline" onClick={onBrowseCart} disabled={!region || busy}>
+              <Button variant="outline" onClick={onBrowseCart} disabled={busy}>
                 <FolderOpen className="h-4 w-4" />
                 浏览
               </Button>
               <Button
                 onClick={() => handleImport(() => importScenesFile(path.trim()))}
-                disabled={!region || busy || !path.trim()}
+                disabled={busy || !path.trim()}
               >
                 <FileUp className="h-4 w-4" />
                 导入
               </Button>
             </div>
           </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-xs text-muted-foreground">已有 Sentinel-1 数据目录：</span>
+            <div className="flex min-w-[280px] flex-1 items-center gap-2">
+              <Input
+                value={slcDir}
+                onChange={(e) => setSlcDir(e.target.value)}
+                placeholder="自动识别目录内 SLC / GRD .zip / .SAFE 文件名"
+                spellCheck={false}
+                readOnly
+                className="font-mono text-xs"
+              />
+              <Button variant="outline" onClick={onBrowseSlcDir} disabled={busy}>
+                <FolderOpen className="h-4 w-4" />
+                浏览
+              </Button>
+              <Button
+                onClick={() => handleImport(() => importScenesDirectory(slcDir.trim()))}
+                disabled={busy || !slcDir.trim()}
+              >
+                <FileUp className="h-4 w-4" />
+                识别目录
+              </Button>
+            </div>
+          </div>
+          {busy && (
+            <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                <span className="font-medium">正在解析场景并补全 ASF 元数据</span>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-primary/10">
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Path、Frame、覆盖范围和文件大小需要向 ASF 元数据服务查询，网络慢时会多等一会儿。
+              </div>
+            </div>
+          )}
           {notes && (
             <div className="inline-flex items-center gap-1.5 text-sm text-success">
               <CheckCircle2 className="h-4 w-4" />
@@ -221,12 +277,15 @@ export function SceneImportSection() {
                   <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
                     <th className="px-3 py-2 font-medium">Scene ID</th>
                     <th className="px-3 py-2 font-medium">平台</th>
+                    <th className="px-3 py-2 font-medium">产品</th>
                     <th className="px-3 py-2 font-medium">升降轨</th>
                     <th className="px-3 py-2 font-medium">Path</th>
                     <th className="px-3 py-2 font-medium">Frame</th>
                     <th className="px-3 py-2 font-medium">极化</th>
                     <th className="px-3 py-2 font-medium">采集时间</th>
                     <th className="px-3 py-2 font-medium">绝对轨道</th>
+                    <th className="px-3 py-2 font-medium">大小</th>
+                    <th className="px-3 py-2 font-medium">覆盖</th>
                     <th className="px-3 py-2 font-medium">URL</th>
                   </tr>
                 </thead>
@@ -240,6 +299,7 @@ export function SceneImportSection() {
                         {s.scene_id}
                       </td>
                       <td className="px-3 py-2">{s.platform}</td>
+                      <td className="px-3 py-2">{s.product_type}</td>
                       <td className="px-3 py-2">{orbitLabel(s.orbit_direction)}</td>
                       <td className="px-3 py-2">{s.path ?? s.relative_orbit ?? "—"}</td>
                       <td className="px-3 py-2">{s.frame ?? "—"}</td>
@@ -248,6 +308,14 @@ export function SceneImportSection() {
                         {s.acquisition_datetime?.slice(0, 16).replace("T", " ")}
                       </td>
                       <td className="px-3 py-2">{s.absolute_orbit ?? "—"}</td>
+                      <td className="px-3 py-2">{formatBytes(s.file_size_remote)}</td>
+                      <td className="px-3 py-2">
+                        {s.footprint_bbox ? (
+                          <Badge variant="success">有</Badge>
+                        ) : (
+                          <Badge variant="neutral">—</Badge>
+                        )}
+                      </td>
                       <td className="px-3 py-2">
                         {s.has_url ? (
                           <Badge variant="success">有</Badge>
@@ -270,12 +338,23 @@ export function SceneImportSection() {
             <CardTitle>一致性核查</CardTitle>
             <CardDescription>产品类型 / 波束 / 极化 / 重复项 / 覆盖</CardDescription>
           </div>
-          <Button onClick={onCheck} disabled={!region || cBusy || scenes.length === 0}>
+          <Button onClick={onCheck} disabled={cBusy || scenes.length === 0}>
             {cBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
             运行核查
           </Button>
         </CardHeader>
         <CardContent className="space-y-4">
+          {cBusy && (
+            <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                <span className="font-medium">正在核查场景一致性</span>
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                正在检查产品类型、波束、极化、重复项和覆盖信息。
+              </div>
+            </div>
+          )}
           {cError && <ErrorNote text={cError} />}
           {report ? (
             <>

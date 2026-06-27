@@ -21,6 +21,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
@@ -70,9 +71,13 @@ class ReportPanel(QGroupBox):
         form = QFormLayout()
         form.addRow("Output root:", self.output_root_edit)
 
+        generate_row = QHBoxLayout()
+        generate_row.addStretch(1)
+        generate_row.addWidget(self.generate_button)
+
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(self.generate_button)
+        layout.addLayout(generate_row)
         layout.addWidget(self.result_label)
         layout.addWidget(self.paths_view)
 

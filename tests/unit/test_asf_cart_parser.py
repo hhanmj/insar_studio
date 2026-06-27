@@ -12,6 +12,7 @@ from insar_prep.providers.asf.cart_parser import (
     parse_asf_cart_file,
     parse_asf_csv,
     parse_asf_geojson,
+    parse_asf_metalink,
     parse_asf_python_script,
     parse_url_text,
 )
@@ -66,6 +67,25 @@ def test_geojson_without_features_raises(tmp_path: Path) -> None:
 def test_cart_file_dispatch_on_txt() -> None:
     scenes = parse_asf_cart_file(FIXTURES / "urls.txt")
     assert {scene.scene_id for scene in scenes} == {S1A_NAME, S1B_NAME}
+
+
+def test_parse_metalink_preserves_download_url(tmp_path: Path) -> None:
+    metalink = tmp_path / "cart.metalink"
+    metalink.write_text(
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="{S1A_NAME}.zip">
+    <url>{S1A_URL}</url>
+  </file>
+</metalink>
+""",
+        encoding="utf-8",
+    )
+    scenes = parse_asf_metalink(metalink)
+    assert len(scenes) == 1
+    assert scenes[0].scene_id == S1A_NAME
+    assert scenes[0].url == S1A_URL
+    assert parse_asf_cart_file(metalink)[0].scene_id == S1A_NAME
 
 
 def test_cart_file_unsupported_extension(tmp_path: Path) -> None:

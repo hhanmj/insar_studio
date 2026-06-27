@@ -16,3 +16,15 @@ from insar_prep.core.update_check import UPDATE_CHECK_OPT_OUT_ENV
 @pytest.fixture(autouse=True)
 def _disable_auto_update_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(UPDATE_CHECK_OPT_OUT_ENV, "1")
+
+
+@pytest.fixture(autouse=True)
+def _default_language() -> None:
+    """Reset the GUI language to English before each test for determinism.
+
+    Tests that exercise the language switch set their own language inside the
+    test; this guard keeps that state from leaking into later tests.
+    """
+    from insar_prep import i18n
+
+    i18n.set_language("en")

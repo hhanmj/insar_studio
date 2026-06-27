@@ -96,6 +96,7 @@ def _downloader(session: object, **kw: object) -> RealDemDownloader:
 
 def test_demtype_mapping() -> None:
     assert opentopo_demtype(DemDataset.COP30) == "COP30"
+    assert opentopo_demtype(DemDataset.SRTM_GL3) == "SRTMGL3"
     assert opentopo_demtype(DemDataset.SRTM_GL1_ELLIPSOIDAL) == "SRTMGL1_E"
     assert opentopo_demtype(DemDataset.AW3D30_ELLIPSOIDAL) == "AW3D30_E"
     assert opentopo_demtype(DemDataset.USER_LOCAL) is None

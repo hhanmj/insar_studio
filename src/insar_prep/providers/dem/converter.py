@@ -44,6 +44,7 @@ _GEOID_SOURCES = frozenset({VerticalDatum.EGM96, VerticalDatum.EGM2008, Vertical
 _DATASET_SOURCE_DATUM: dict[str, VerticalDatum] = {
     DemDataset.COP30.value: VerticalDatum.EGM2008,
     DemDataset.COP90.value: VerticalDatum.EGM2008,
+    DemDataset.SRTM_GL3.value: VerticalDatum.EGM96,
     DemDataset.SRTM_GL1.value: VerticalDatum.EGM96,
     DemDataset.NASADEM.value: VerticalDatum.EGM96,
     DemDataset.AW3D30.value: VerticalDatum.EGM96,

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QPushButton,
@@ -59,9 +60,13 @@ class SceneCheckPanel(QGroupBox):
         form = QFormLayout()
         form.addRow("Expected polarization:", self.polarization_combo)
 
+        run_row = QHBoxLayout()
+        run_row.addStretch(1)
+        run_row.addWidget(self.run_button)
+
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(self.run_button)
+        layout.addLayout(run_row)
         layout.addWidget(self.total_label)
         layout.addWidget(self.errors_label)
         layout.addWidget(self.warnings_label)

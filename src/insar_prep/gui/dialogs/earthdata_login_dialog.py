@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.exceptions import CredentialError
 from insar_prep.providers.asf.credentials import (
     EARTHDATA_TOKEN_URL,
@@ -35,25 +36,18 @@ from insar_prep.providers.asf.credentials import (
     stored_credential_status,
 )
 
-_HELP_TEXT = (
-    "Sign in to NASA Earthdata to download Sentinel-1 SLCs. Paste a personal "
-    "token (recommended) — click 'Open Earthdata token page' to generate one, "
-    "then copy it here — or enter your username and password. Credentials are "
-    "stored only in your operating system's secret store (never in a project file)."
-)
-
 
 class EarthdataLoginDialog(QDialog):
     """Collect and store Earthdata credentials in the OS keyring."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Earthdata Login")
+        self.setWindowTitle(i18n.tr("dlg.earthdata.title"))
 
         self._token_edit = QLineEdit()
         self._token_edit.setObjectName("earthdata_token_edit")
         self._token_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._token_edit.setPlaceholderText("Paste your Earthdata bearer token (recommended)")
+        self._token_edit.setPlaceholderText(i18n.tr("dlg.earthdata.token_ph"))
 
         self._username_edit = QLineEdit()
         self._username_edit.setObjectName("earthdata_username_edit")
@@ -62,26 +56,26 @@ class EarthdataLoginDialog(QDialog):
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
         form = QFormLayout()
-        form.addRow("Token:", self._token_edit)
-        form.addRow("or Username:", self._username_edit)
-        form.addRow("Password:", self._password_edit)
+        form.addRow(i18n.tr("dlg.earthdata.token"), self._token_edit)
+        form.addRow(i18n.tr("dlg.earthdata.username"), self._username_edit)
+        form.addRow(i18n.tr("dlg.earthdata.password"), self._password_edit)
 
-        help_label = QLabel(_HELP_TEXT)
+        help_label = QLabel(i18n.tr("dlg.earthdata.help"))
         help_label.setWordWrap(True)
 
-        self._open_page_button = QPushButton("Open Earthdata token page")
+        self._open_page_button = QPushButton(i18n.tr("dlg.earthdata.open_page"))
         self._open_page_button.setObjectName("earthdata_open_page_button")
         self._open_page_button.clicked.connect(self._open_token_page)
-        self._save_button = QPushButton("Save")
+        self._save_button = QPushButton(i18n.tr("common.save"))
         self._save_button.setObjectName("earthdata_save_button")
         self._save_button.clicked.connect(self.save_credentials)
-        self._test_button = QPushButton("Test connection")
+        self._test_button = QPushButton(i18n.tr("dlg.earthdata.test"))
         self._test_button.setObjectName("earthdata_test_button")
         self._test_button.clicked.connect(self.test_connection)
-        self._clear_button = QPushButton("Clear stored")
+        self._clear_button = QPushButton(i18n.tr("common.clear_stored"))
         self._clear_button.setObjectName("earthdata_clear_button")
         self._clear_button.clicked.connect(self.clear_credentials)
-        self._close_button = QPushButton("Close")
+        self._close_button = QPushButton(i18n.tr("common.close"))
         self._close_button.setObjectName("earthdata_close_button")
         self._close_button.clicked.connect(self.accept)
 
@@ -123,7 +117,7 @@ class EarthdataLoginDialog(QDialog):
         except CredentialError as exc:
             self._set_status(str(exc))
             return
-        self._set_status(f"Stored Earthdata credential: {status}")
+        self._set_status(i18n.tr("dlg.earthdata.status", status=status))
 
     def save_credentials(self) -> bool:
         """Persist the entered token or username/password to the OS keyring."""
@@ -133,12 +127,13 @@ class EarthdataLoginDialog(QDialog):
         try:
             if token:
                 store_token(token)
-                self._set_status("Saved Earthdata token to the OS keyring.")
+                self._set_status(i18n.tr("dlg.earthdata.saved_token"))
             elif username and password:
+                # The username is intentionally NOT echoed back here.
                 store_login(username, password)
-                self._set_status(f"Saved Earthdata login for {username} to the OS keyring.")
+                self._set_status(i18n.tr("dlg.earthdata.saved_login"))
             else:
-                self._set_status("Enter a token, or both a username and password.")
+                self._set_status(i18n.tr("dlg.earthdata.need_input"))
                 return False
         except CredentialError as exc:
             self._set_status(str(exc))
@@ -156,9 +151,7 @@ class EarthdataLoginDialog(QDialog):
             self._set_status(str(exc))
             return False
         self._set_status(
-            "Cleared stored Earthdata credentials."
-            if removed
-            else "No stored Earthdata credentials to clear."
+            i18n.tr("dlg.earthdata.cleared") if removed else i18n.tr("dlg.earthdata.none_to_clear")
         )
         return removed
 
@@ -170,12 +163,13 @@ class EarthdataLoginDialog(QDialog):
             self._set_status(str(exc))
             return
         if importlib.util.find_spec("requests") is None:
-            self._set_status("Install the 'download' extra (requests) to test the connection.")
+            self._set_status(i18n.tr("dlg.earthdata.need_extra"))
             return
         from insar_prep.providers.asf.downloader import probe_earthdata_auth
 
         ok, message = probe_earthdata_auth(resolved)
-        self._set_status(f"Connection test: {'OK' if ok else 'FAILED'} ({message})")
+        key = "dlg.earthdata.test_ok" if ok else "dlg.earthdata.test_fail"
+        self._set_status(i18n.tr(key, msg=message))
 
     def _open_token_page(self) -> None:
         QDesktopServices.openUrl(QUrl(EARTHDATA_TOKEN_URL))

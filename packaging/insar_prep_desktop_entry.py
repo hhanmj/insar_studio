@@ -38,6 +38,9 @@ def _selftest() -> int:
         api = Api()
         if not api.get_app_info().get("ok"):
             raise RuntimeError("get_app_info failed")
+        admin_options = api.get_admin_options(province="湖北省", city="恩施土家族苗族自治州")
+        if not admin_options.get("ok") or "巴东县" not in admin_options.get("districts", []):
+            raise RuntimeError(f"bundled local boundaries unavailable: {admin_options}")
 
         with tempfile.TemporaryDirectory() as tmp:
 

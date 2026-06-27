@@ -66,9 +66,11 @@ class _FakeSession:
     def __init__(self, actions: list[object]) -> None:
         self._actions = list(actions)
         self.calls = 0
+        self.requests: list[dict[str, object]] = []
 
     def get(self, url: str, **kwargs: object) -> _FakeResponse:
         self.calls += 1
+        self.requests.append({"url": url, **kwargs})
         action = self._actions.pop(0) if self._actions else _FakeResponse()
         if isinstance(action, Exception):
             raise action
@@ -143,6 +145,20 @@ def test_transient_then_success(tmp_path: Path) -> None:
     result = _downloader(session, max_retries=3).download(_request(tmp_path))
     assert result.outcome is DownloadOutcome.SUCCESS
     assert session.calls == 2
+
+
+def test_resume_from_existing_part_uses_range(tmp_path: Path) -> None:
+    dest = tmp_path / "02_slc" / "S1A_demo.zip"
+    part = dest.with_name(dest.name + ".part")
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"abc")
+    session = _FakeSession(
+        [_FakeResponse(status_code=206, content_range="bytes 3-4/5", chunks=(b"de",))]
+    )
+    result = _downloader(session).download(_request(tmp_path, expected_size=5))
+    assert result.outcome is DownloadOutcome.SUCCESS
+    assert dest.read_bytes() == b"abcde"
+    assert session.requests[0]["headers"] == {"Range": "bytes=3-"}
 
 
 def test_persistent_transient_fails_dl005(tmp_path: Path) -> None:

@@ -150,9 +150,13 @@ class PlanningPanel(QGroupBox):
         form.addRow("Provider:", self.dem_provider_combo)
         form.addRow("Source datum:", self.dem_source_combo)
         form.addRow("Target datum:", self.dem_target_combo)
+        dem_button_row = QHBoxLayout()
+        dem_button_row.addStretch(1)
+        dem_button_row.addWidget(self.dem_button)
+
         layout = QVBoxLayout(group)
         layout.addLayout(form)
-        layout.addWidget(self.dem_button)
+        layout.addLayout(dem_button_row)
         layout.addWidget(self.dem_result_label)
         layout.addWidget(self.dem_paths_label)
         return group

@@ -132,7 +132,7 @@ def test_language_switch_retranslates_ui(tmp_path: Path) -> None:
     window._on_change_language("zh")
     assert i18n.get_language() == "zh"
     assert window.gacos_download_panel.title() == "GACOS 下载"
-    assert window.aoi_panel.title() == "感兴趣区 (AOI)"
+    assert window.aoi_panel.title() == "研究范围（AOI）"
     assert window.new_workspace_action.text() == "新建工作区"
     window._on_change_language("en")
     assert window.gacos_download_panel.title() == "GACOS Download"

@@ -25,7 +25,7 @@ import {
   PageHeader,
   RegionBanner,
 } from "@/components/common";
-import { generateReport, hasBridge, type Json } from "@/lib/bridge";
+import { formatBridgeError, generateReport, hasBridge, type Json } from "@/lib/bridge";
 import { usePrepContext } from "@/lib/useContext";
 
 const FILE_META: Record<string, { label: string; icon: typeof FileJson }> = {
@@ -72,7 +72,7 @@ export function Report() {
         });
       else setError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
-      setError(String(e));
+      setError(formatBridgeError(e));
     } finally {
       setBusy(false);
     }

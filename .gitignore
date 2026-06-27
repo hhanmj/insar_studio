@@ -39,6 +39,9 @@ smoke_package/
 .coverage.*
 htmlcov/
 coverage.xml
+.tmp_*
+.ui_preview*/
+_shots/
 
 # ---- OS / editor ----
 .DS_Store

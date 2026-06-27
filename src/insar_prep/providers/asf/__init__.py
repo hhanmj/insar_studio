@@ -1,4 +1,4 @@
-"""ASF (Alaska Satellite Facility) cart/scene parsing and SLC download.
+"""ASF (Alaska Satellite Facility) cart/scene parsing and Sentinel-1 download.
 
 Cart/scene parsing and the dry-run download planner are strictly offline (no
 network, no credentials). Real, credentialed Sentinel-1 SLC download lives in
@@ -14,6 +14,7 @@ from insar_prep.providers.asf.cart_parser import (
     parse_asf_cart_file,
     parse_asf_csv,
     parse_asf_geojson,
+    parse_asf_metalink,
     parse_asf_python_script,
     parse_url_text,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "parse_asf_cart_file",
     "parse_asf_csv",
     "parse_asf_geojson",
+    "parse_asf_metalink",
     "parse_asf_python_script",
     "parse_scene_name",
     "parse_url_text",

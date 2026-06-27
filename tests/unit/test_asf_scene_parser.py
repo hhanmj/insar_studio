@@ -1,4 +1,4 @@
-"""Tests for Sentinel-1 SLC scene-name parsing (Task 006)."""
+"""Tests for Sentinel-1 scene-name parsing (Task 006)."""
 
 from __future__ import annotations
 
@@ -65,9 +65,13 @@ def test_polarization_code_to_channels() -> None:
     assert polarization_code_to_channels("DV") == ("VV", "VH")
 
 
-def test_non_slc_raises() -> None:
-    with pytest.raises(InputValidationError):
-        parse_scene_name("S1A_IW_GRDH_1SDV_20240101T100000_20240101T100027_052000_064ABC_1234")
+def test_grd_scene_is_supported() -> None:
+    scene = parse_scene_name(
+        "S1A_IW_GRDH_1SDV_20240101T100000_20240101T100027_052000_064ABC_1234"
+    )
+    assert scene.product_type is ProductType.GRD
+    assert scene.beam_mode is BeamMode.IW
+    assert scene.polarization is Polarization.DV
 
 
 def test_non_sentinel_raises() -> None:

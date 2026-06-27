@@ -1,10 +1,16 @@
-import { useMemo, useState } from "react";
-import type { LatLngBoundsExpression, LatLngExpression } from "leaflet";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type {
+  LatLng,
+  LatLngBoundsExpression,
+  LatLngExpression,
+  LeafletMouseEvent,
+} from "leaflet";
 import {
   MapContainer,
   Polyline,
   Rectangle,
   TileLayer,
+  useMap,
   useMapEvents,
   ZoomControl,
 } from "react-leaflet";
@@ -35,6 +41,20 @@ function centerFromBbox(bbox: Bbox): LatLngExpression {
   return [(bbox.south + bbox.north) / 2, (bbox.west + bbox.east) / 2];
 }
 
+function FitToBbox({ bbox }: { bbox: Bbox }) {
+  const map = useMap();
+
+  useEffect(() => {
+    map.fitBounds(boundsFromBbox(bbox), {
+      animate: false,
+      maxZoom: 12,
+      padding: [24, 24],
+    });
+  }, [bbox.east, bbox.north, bbox.south, bbox.west, map]);
+
+  return null;
+}
+
 function DrawLayer({
   mode,
   active,
@@ -48,34 +68,87 @@ function DrawLayer({
   onPolygon: (ring: [number, number][]) => void;
   onPoint: (lat: number, lng: number) => void;
 }) {
-  const [start, setStart] = useState<L.LatLng | null>(null);
-  const [current, setCurrent] = useState<L.LatLng | null>(null);
-  const [sketch, setSketch] = useState<L.LatLng[]>([]);
+  const map = useMap();
+  const [start, setStart] = useState<LatLng | null>(null);
+  const [current, setCurrent] = useState<LatLng | null>(null);
+  const [sketch, setSketch] = useState<LatLng[]>([]);
+  const [hover, setHover] = useState<LatLng | null>(null);
+
+  const appendUniquePoint = useCallback((points: LatLng[], point: LatLng) => {
+    const last = points[points.length - 1];
+    if (last && last.distanceTo(point) < 0.5) return points;
+    return [...points, point];
+  }, []);
+
+  const finishPolygon = useCallback(
+    (extra?: LatLng) => {
+      const points = extra ? appendUniquePoint(sketch, extra) : sketch;
+      if (points.length < 3) {
+        setSketch([]);
+        setHover(null);
+        return;
+      }
+      const ring: [number, number][] = points.map((p) => [p.lng, p.lat]);
+      const first = ring[0];
+      const last = ring[ring.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1]) ring.push(first);
+      onPolygon(ring);
+      setSketch([]);
+      setHover(null);
+    },
+    [appendUniquePoint, onPolygon, sketch],
+  );
+
+  useEffect(() => {
+    if (!active) return;
+    const dragWasEnabled = map.dragging.enabled();
+    const dblClickWasEnabled = map.doubleClickZoom.enabled();
+    if (mode === "rect" || mode === "polygon") map.dragging.disable();
+    if (mode === "polygon") map.doubleClickZoom.disable();
+    return () => {
+      if (dragWasEnabled) map.dragging.enable();
+      else map.dragging.disable();
+      if (dblClickWasEnabled) map.doubleClickZoom.enable();
+      else map.doubleClickZoom.disable();
+    };
+  }, [active, map, mode]);
+
+  useEffect(() => {
+    setStart(null);
+    setCurrent(null);
+    setSketch([]);
+    setHover(null);
+  }, [mode]);
+
+  useEffect(() => {
+    if (!active || mode !== "polygon") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Enter") finishPolygon();
+      if (event.key === "Escape") {
+        setSketch([]);
+        setHover(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active, finishPolygon, mode]);
 
   useMapEvents({
     mousedown(e) {
-      if (!active) return;
+      if (!active || mode !== "rect") return;
+      e.originalEvent.preventDefault();
       if (mode === "rect") {
         setStart(e.latlng);
         setCurrent(e.latlng);
-      } else if (mode === "point") {
-        onPoint(e.latlng.lat, e.latlng.lng);
-      } else {
-        setSketch([e.latlng]);
       }
     },
     mousemove(e) {
       if (!active) return;
       if (mode === "rect" && start) setCurrent(e.latlng);
-      if (mode === "polygon" && sketch.length) {
-        const last = sketch[sketch.length - 1];
-        if (last.distanceTo(e.latlng) > 25) {
-          setSketch((prev) => [...prev, e.latlng]);
-        }
-      }
+      if (mode === "polygon" && sketch.length) setHover(e.latlng);
     },
     mouseup() {
-      if (!active) return;
+      if (!active || mode !== "rect") return;
       if (mode === "rect" && start && current) {
         const south = Math.min(start.lat, current.lat);
         const north = Math.max(start.lat, current.lat);
@@ -86,16 +159,22 @@ function DrawLayer({
         }
         setStart(null);
         setCurrent(null);
-      } else if (mode === "polygon" && sketch.length >= 3) {
-        const ring: [number, number][] = sketch.map((p) => [p.lng, p.lat]);
-        if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) {
-          ring.push(ring[0]);
-        }
-        onPolygon(ring);
-        setSketch([]);
-      } else if (mode === "polygon") {
-        setSketch([]);
       }
+    },
+    click(e: LeafletMouseEvent) {
+      if (!active) return;
+      if (mode === "point") {
+        onPoint(e.latlng.lat, e.latlng.lng);
+      }
+      if (mode === "polygon") {
+        setSketch((prev) => appendUniquePoint(prev, e.latlng));
+        setHover(null);
+      }
+    },
+    dblclick(e: LeafletMouseEvent) {
+      if (!active || mode !== "polygon") return;
+      e.originalEvent.preventDefault();
+      finishPolygon(e.latlng);
     },
   });
 
@@ -115,10 +194,11 @@ function DrawLayer({
     );
   }
 
-  if (mode === "polygon" && sketch.length > 1) {
+  const polygonPreview = hover ? [...sketch, hover] : sketch;
+  if (mode === "polygon" && polygonPreview.length > 1) {
     return (
       <Polyline
-        positions={sketch.map((p) => [p.lat, p.lng])}
+        positions={polygonPreview.map((p) => [p.lat, p.lng])}
         pathOptions={{ color: "#2563eb", weight: 2.5 }}
       />
     );
@@ -148,26 +228,35 @@ export function AoiDrawMap({
 }) {
   const display = boundBbox ?? bbox;
   const center = centerFromBbox(display);
-  const key = `${display.west},${display.south},${display.east},${display.north}`;
+  const [tilesReady, setTilesReady] = useState(false);
 
   const modeHint = useMemo(() => {
     if (mode === "rect") return "拖拽绘制矩形";
-    if (mode === "polygon") return "按住拖动绘制多边形（画笔）";
-    return "单击设置中心点（自动生成小范围 bbox）";
+    if (mode === "polygon") return "点击加点，双击完成";
+    return "单击设置中心点";
   }, [mode]);
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-lg border">
+    <div className="relative h-full w-full overflow-hidden rounded-lg border bg-[linear-gradient(0deg,rgba(13,148,136,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(13,148,136,0.08)_1px,transparent_1px)] bg-[size:32px_32px]">
       <MapContainer
-        key={key}
         center={center}
         zoom={10}
         scrollWheelZoom
         zoomControl={false}
-        className="h-full w-full cursor-crosshair"
-        style={{ minHeight }}
+        preferCanvas
+        className={"h-full w-full " + (drawActive ? "cursor-crosshair" : "")}
+        style={{ minHeight, background: "transparent" }}
       >
-        <TileLayer url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OSM" />
+        <TileLayer
+          url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution="&copy; OSM"
+          updateWhenIdle
+          keepBuffer={4}
+          eventHandlers={{
+            load: () => setTilesReady(true),
+          }}
+        />
+        <FitToBbox bbox={display} />
         <ZoomControl position="topright" />
         {boundBbox && (
           <Rectangle
@@ -191,6 +280,11 @@ export function AoiDrawMap({
           {fmt(display.north)}
         </div>
       </div>
+      {!tilesReady && (
+        <div className="pointer-events-none absolute bottom-3 left-3 z-[500] rounded-md border border-border/60 bg-card/90 px-3 py-2 text-[11px] text-muted-foreground shadow-sm backdrop-blur">
+          底图加载中；绘制和 bbox 输入可直接使用
+        </div>
+      )}
     </div>
   );
 }

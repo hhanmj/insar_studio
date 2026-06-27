@@ -27,6 +27,7 @@ from enum import IntEnum
 from pydantic import ValidationError
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -42,7 +43,8 @@ from PySide6.QtWidgets import (
 from insar_prep import i18n
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InputValidationError
-from insar_prep.core.models import Aoi
+from insar_prep.core.models import Aoi, BBox
+from insar_prep.gui.map_picker import MapPickerDialog, is_map_available
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 from insar_prep.processing.aoi_import import load_aoi_from_geojson, load_aoi_from_wkt
 from insar_prep.processing.aoi_vector import (
@@ -115,15 +117,20 @@ class AoiPanel(QGroupBox):
 
         self.apply_button = QPushButton("Set AOI for current region")
         self.apply_button.setObjectName("aoi_apply_button")
+        apply_row = QHBoxLayout()
+        apply_row.addStretch(1)
+        apply_row.addWidget(self.apply_button)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.mode_combo)
         layout.addWidget(self.stack)
-        layout.addWidget(self.apply_button)
+        layout.addLayout(apply_row)
 
     def _build_bbox_page(self) -> QWidget:
         page = QWidget()
-        form = QFormLayout(page)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        form = QFormLayout()
         self.west_edit = QLineEdit()
         self.west_edit.setObjectName("aoi_bbox_west")
         self.south_edit = QLineEdit()
@@ -136,7 +143,41 @@ class AoiPanel(QGroupBox):
         form.addRow("South:", self.south_edit)
         form.addRow("East:", self.east_edit)
         form.addRow("North:", self.north_edit)
+        layout.addLayout(form)
+
+        self.map_button = QPushButton(i18n.tr("aoi.pick_on_map"))
+        self.map_button.setObjectName("aoi_map_button")
+        self.map_button.clicked.connect(self._on_pick_on_map)
+        if not is_map_available():
+            self.map_button.setEnabled(False)
+            self.map_button.setToolTip(i18n.tr("aoi.map.unavailable"))
+        layout.addWidget(self.map_button)
         return page
+
+    def _current_bbox_or_none(self) -> BBox | None:
+        """Return a BBox from the four bbox fields if all are valid, else None."""
+        try:
+            west = float(self.west_edit.text().strip())
+            south = float(self.south_edit.text().strip())
+            east = float(self.east_edit.text().strip())
+            north = float(self.north_edit.text().strip())
+            return BBox(west=west, south=south, east=east, north=north)
+        except (ValueError, ValidationError):
+            return None
+
+    def _on_pick_on_map(self) -> None:
+        """Open the interactive map; on accept, fill the bbox fields."""
+        dialog = MapPickerDialog(self, initial_bbox=self._current_bbox_or_none())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        bbox = dialog.selected_bbox()
+        if bbox is None:
+            return
+        self.west_edit.setText(f"{bbox.west}")
+        self.south_edit.setText(f"{bbox.south}")
+        self.east_edit.setText(f"{bbox.east}")
+        self.north_edit.setText(f"{bbox.north}")
+        self.set_mode(AoiInputMode.BBOX)
 
     def _build_wkt_page(self) -> QWidget:
         page = QWidget()
@@ -176,6 +217,9 @@ class AoiPanel(QGroupBox):
         """Re-apply translatable text for the active language."""
         self.setTitle(i18n.tr("aoi.title"))
         self.apply_button.setText(i18n.tr("aoi.apply"))
+        self.map_button.setText(i18n.tr("aoi.pick_on_map"))
+        if not self.map_button.isEnabled():
+            self.map_button.setToolTip(i18n.tr("aoi.map.unavailable"))
 
     def current_mode(self) -> AoiInputMode:
         """Return the currently selected AOI input mode."""

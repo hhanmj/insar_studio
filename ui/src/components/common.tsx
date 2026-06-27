@@ -73,7 +73,7 @@ export function RegionBanner({ ctx }: { ctx: Context | null }) {
       <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
         <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
         <span>
-          尚未选择区域。请先到『工作区』依次创建 工作区 → 项目 → 区域，本面板将作用于当前区域。
+          尚未选择研究区。请先到『项目设置』创建或选中当前项目，本面板将作用于当前研究区。
         </span>
       </div>
     );

@@ -173,14 +173,31 @@ def clear_stored_credentials(*, keyring_module: ModuleType | None = None) -> boo
     return any(removed)
 
 
+def mask_username(username: str) -> str:
+    """Return a privacy-masked username (first character + ``***``).
+
+    The username is not a secret, but it is personal data, so the GUI/CLI status
+    line shows only enough to recognize which account is configured (e.g.
+    ``h***``) instead of the full login.
+    """
+    username = (username or "").strip()
+    if len(username) <= 1:
+        return "***"
+    return f"{username[0]}***"
+
+
 def stored_credential_status(*, keyring_module: ModuleType | None = None) -> str:
-    """Return a secret-free status: ``token``, ``login:<user>``, or ``none``."""
+    """Return a privacy-safe status: ``token``, ``login:<masked>``, or ``none``.
+
+    A stored username is masked (``login:h***``) so the full login is never shown
+    on screen, in a log, or in a report.
+    """
     kr = get_keyring(keyring_module)
     if kr.get_password(KEYRING_SERVICE, _KR_TOKEN):
         return "token"
     username = kr.get_password(KEYRING_SERVICE, _KR_USERNAME)
     if username and kr.get_password(KEYRING_SERVICE, _KR_PASSWORD):
-        return f"login:{username}"
+        return f"login:{mask_username(username)}"
     return "none"
 
 

@@ -134,7 +134,9 @@ def test_keyring_store_token_and_resolve() -> None:
 def test_keyring_store_login_and_resolve() -> None:
     kr = _FakeKeyring()
     store_login(FAKE_USER, FAKE_PW, keyring_module=kr)
-    assert stored_credential_status(keyring_module=kr) == f"login:{FAKE_USER}"
+    status = stored_credential_status(keyring_module=kr)
+    assert status.startswith("login:")
+    assert FAKE_USER not in status  # the full username is masked
     resolved = resolve_credentials(CredentialSource.KEYRING, keyring_module=kr)
     assert resolved.username == FAKE_USER
     assert resolved.password == FAKE_PW
@@ -147,7 +149,9 @@ def test_keyring_token_and_login_are_mutually_exclusive() -> None:
     store_token(FAKE_TOKEN, keyring_module=kr)
     assert stored_credential_status(keyring_module=kr) == "token"
     store_login(FAKE_USER, FAKE_PW, keyring_module=kr)
-    assert stored_credential_status(keyring_module=kr) == f"login:{FAKE_USER}"
+    status = stored_credential_status(keyring_module=kr)
+    assert status.startswith("login:")
+    assert FAKE_USER not in status  # the full username is masked
 
 
 def test_keyring_clear() -> None:

@@ -152,8 +152,9 @@ class DownloadPanel(QGroupBox):
         self.cancel_button.setObjectName("download_cancel_button")
         self.cancel_button.setEnabled(False)
         button_row = QHBoxLayout()
-        button_row.addWidget(self.download_button)
+        button_row.addStretch(1)
         button_row.addWidget(self.cancel_button)
+        button_row.addWidget(self.download_button)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("download_progress")

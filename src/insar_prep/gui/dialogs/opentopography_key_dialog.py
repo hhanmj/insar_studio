@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.exceptions import CredentialError
 from insar_prep.providers.dem.credentials import (
     OPENTOPO_API_KEY_URL,
@@ -34,48 +35,41 @@ from insar_prep.providers.dem.credentials import (
     stored_api_key_status,
 )
 
-_INTRO_TEXT = (
-    "Enter your personal OpenTopography API key to download DEMs. Each user "
-    "supplies their own free key (no key is bundled, so heavy use never shares a "
-    "rate limit). The key is stored only in your operating system's secret store "
-    "(never in a project file)."
-)
-
 
 class OpenTopographyKeyDialog(QDialog):
     """Collect and store the OpenTopography API key in the OS keyring."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("OpenTopography API Key")
+        self.setWindowTitle(i18n.tr("dlg.opentopo.title"))
 
         self._key_edit = QLineEdit()
         self._key_edit.setObjectName("opentopo_key_edit")
         self._key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key_edit.setPlaceholderText("Paste your OpenTopography API key")
+        self._key_edit.setPlaceholderText(i18n.tr("dlg.opentopo.key_ph"))
 
         form = QFormLayout()
-        form.addRow("API key:", self._key_edit)
+        form.addRow(i18n.tr("dlg.opentopo.key_label"), self._key_edit)
 
-        intro_label = QLabel(_INTRO_TEXT)
+        intro_label = QLabel(i18n.tr("dlg.opentopo.intro"))
         intro_label.setWordWrap(True)
         guidance_label = QLabel(opentopo_api_key_guidance())
         guidance_label.setObjectName("opentopo_guidance_label")
         guidance_label.setWordWrap(True)
 
-        self._register_button = QPushButton("Open registration page")
+        self._register_button = QPushButton(i18n.tr("dlg.opentopo.open_register"))
         self._register_button.setObjectName("opentopo_register_button")
         self._register_button.clicked.connect(self._open_register_page)
-        self._key_page_button = QPushButton("Open API key page")
+        self._key_page_button = QPushButton(i18n.tr("dlg.opentopo.open_key"))
         self._key_page_button.setObjectName("opentopo_key_page_button")
         self._key_page_button.clicked.connect(self._open_key_page)
-        self._save_button = QPushButton("Save")
+        self._save_button = QPushButton(i18n.tr("common.save"))
         self._save_button.setObjectName("opentopo_save_button")
         self._save_button.clicked.connect(self.save_key)
-        self._clear_button = QPushButton("Clear stored")
+        self._clear_button = QPushButton(i18n.tr("common.clear_stored"))
         self._clear_button.setObjectName("opentopo_clear_button")
         self._clear_button.clicked.connect(self.clear_key)
-        self._close_button = QPushButton("Close")
+        self._close_button = QPushButton(i18n.tr("common.close"))
         self._close_button.setObjectName("opentopo_close_button")
         self._close_button.clicked.connect(self.accept)
 
@@ -117,20 +111,20 @@ class OpenTopographyKeyDialog(QDialog):
         except CredentialError as exc:
             self._set_status(str(exc))
             return
-        self._set_status(f"Stored OpenTopography API key: {status}")
+        self._set_status(i18n.tr("dlg.opentopo.status", status=status))
 
     def save_key(self) -> bool:
         """Persist the entered API key to the OS keyring."""
         api_key = self._key_edit.text().strip()
         if not api_key:
-            self._set_status("Enter your OpenTopography API key first.")
+            self._set_status(i18n.tr("dlg.opentopo.need_key"))
             return False
         try:
             store_api_key(api_key)
         except CredentialError as exc:
             self._set_status(str(exc))
             return False
-        self._set_status("Saved OpenTopography API key to the OS keyring.")
+        self._set_status(i18n.tr("dlg.opentopo.saved"))
         # Do not keep the secret lingering in the widget after a successful save.
         self._key_edit.clear()
         return True
@@ -143,9 +137,7 @@ class OpenTopographyKeyDialog(QDialog):
             self._set_status(str(exc))
             return False
         self._set_status(
-            "Cleared the stored OpenTopography API key."
-            if removed
-            else "No stored OpenTopography API key to clear."
+            i18n.tr("dlg.opentopo.cleared") if removed else i18n.tr("dlg.opentopo.none_to_clear")
         )
         return removed
 

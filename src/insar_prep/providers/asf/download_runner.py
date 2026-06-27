@@ -147,7 +147,7 @@ def run_asf_download(
     requests_to_run = download_requests_from_scenes(unique_scenes, slc_dir=output_path / SLC_SUBDIR)
     if not requests_to_run:
         raise InsarPrepError(
-            "no scenes with a download URL; import a cart that includes SLC URLs",
+            "no scenes with a download URL; import an ASF cart that includes download URLs",
             code=ErrorCode.ASF003,
         )
 

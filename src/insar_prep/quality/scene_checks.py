@@ -23,7 +23,9 @@ SCENE_EMPTY = "SCENE_EMPTY"
 SCENE_DUPLICATE_ID = "SCENE_DUPLICATE_ID"
 SCENE_DUPLICATE_TIME = "SCENE_DUPLICATE_TIME"
 SCENE_PRODUCT_MISMATCH = "SCENE_PRODUCT_MISMATCH"
+SCENE_PRODUCT_MIXED = "SCENE_PRODUCT_MIXED"
 SCENE_BEAM_MISMATCH = "SCENE_BEAM_MISMATCH"
+SCENE_BEAM_MIXED = "SCENE_BEAM_MIXED"
 SCENE_POLARIZATION_MISMATCH = "SCENE_POLARIZATION_MISMATCH"
 SCENE_POLARIZATION_MIXED = "SCENE_POLARIZATION_MIXED"
 SCENE_URL_MISSING = "SCENE_URL_MISSING"
@@ -158,6 +160,34 @@ def _check_polarization_mix(scenes: list[Scene]) -> list[CheckIssue]:
     return []
 
 
+def _check_product_mix(scenes: list[Scene]) -> list[CheckIssue]:
+    products = {scene.product_type for scene in scenes}
+    if len(products) > 1:
+        return [
+            CheckIssue(
+                code=SCENE_PRODUCT_MIXED,
+                severity=CheckSeverity.WARNING,
+                message="scene collection mixes product types",
+                details={"product_types": sorted(p.value for p in products)},
+            )
+        ]
+    return []
+
+
+def _check_beam_mix(scenes: list[Scene]) -> list[CheckIssue]:
+    beams = {scene.beam_mode for scene in scenes}
+    if len(beams) > 1:
+        return [
+            CheckIssue(
+                code=SCENE_BEAM_MIXED,
+                severity=CheckSeverity.WARNING,
+                message="scene collection mixes beam modes",
+                details={"beam_modes": sorted(b.value for b in beams)},
+            )
+        ]
+    return []
+
+
 def _check_platform_mix(scenes: list[Scene]) -> list[CheckIssue]:
     platforms = {scene.platform for scene in scenes}
     if len(platforms) > 1:
@@ -237,6 +267,10 @@ def check_scene_collection(
                 invalid=invalid,
             )
         )
+    if expected_product_type is None:
+        issues.extend(_check_product_mix(scenes))
+    if expected_beam_mode is None:
+        issues.extend(_check_beam_mix(scenes))
     issues.extend(_check_polarization_mix(scenes))
     issues.extend(_check_platform_mix(scenes))
     if processing_aoi is not None:

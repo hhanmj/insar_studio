@@ -63,6 +63,7 @@ _TIFF_MAGIC = (b"II*\x00", b"MM\x00*")
 _DATASET_TO_DEMTYPE: dict[str, str] = {
     DemDataset.COP30.value: "COP30",
     DemDataset.COP90.value: "COP90",
+    DemDataset.SRTM_GL3.value: "SRTMGL3",
     DemDataset.SRTM_GL1.value: "SRTMGL1",
     DemDataset.SRTM_GL1_ELLIPSOIDAL.value: "SRTMGL1_E",
     DemDataset.NASADEM.value: "NASADEM",

@@ -71,6 +71,7 @@ def _write_geotiff(path: Path, array: np.ndarray, *, west: float, north: float, 
 
 def test_dataset_source_vertical_datum() -> None:
     assert dataset_source_vertical_datum(DemDataset.COP30) is VerticalDatum.EGM2008
+    assert dataset_source_vertical_datum(DemDataset.SRTM_GL3) is VerticalDatum.EGM96
     assert dataset_source_vertical_datum(DemDataset.SRTM_GL1) is VerticalDatum.EGM96
     assert dataset_source_vertical_datum(DemDataset.SRTM_GL1_ELLIPSOIDAL) is (
         VerticalDatum.WGS84_ELLIPSOID

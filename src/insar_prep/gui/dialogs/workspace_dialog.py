@@ -11,21 +11,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
+
 
 class WorkspaceDialog(QDialog):
     """Collect a workspace display name and (logical) root path."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("New Workspace")
+        self.setWindowTitle(i18n.tr("dlg.workspace.title"))
         self._name_edit = QLineEdit()
         self._name_edit.setObjectName("workspace_name_edit")
         self._root_edit = QLineEdit()
         self._root_edit.setObjectName("workspace_root_edit")
 
         form = QFormLayout()
-        form.addRow("Name:", self._name_edit)
-        form.addRow("Root path:", self._root_edit)
+        form.addRow(i18n.tr("common.name"), self._name_edit)
+        form.addRow(i18n.tr("common.root_path"), self._root_edit)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel

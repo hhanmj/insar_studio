@@ -1,8 +1,8 @@
-"""Sentinel-1 SLC scene-name parsing (Task 006).
+"""Sentinel-1 scene-name parsing (Task 006).
 
-Parses Sentinel-1 SLC granule names (from a bare name or a download URL) into a
+Parses Sentinel-1 granule names (from a bare name or a download URL) into a
 :class:`~insar_prep.core.models.Scene`. No network access and no script
-execution. Non Sentinel-1 / non-SLC names raise ``InputValidationError``.
+execution. Non Sentinel-1 names raise ``InputValidationError``.
 """
 
 from __future__ import annotations
@@ -18,10 +18,11 @@ from insar_prep.core.models import Scene
 
 logger = get_logger("providers.asf.scene")
 
-# Sentinel-1 IW SLC product identifier, e.g.
+# Sentinel-1 product identifier, e.g.
 # S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234
-_S1_SLC_RE = re.compile(
-    r"^S1(?P<sat>[ABC])_IW_SLC(?P<res>[FHM_])_(?P<level>\d)(?P<cls>[SA])(?P<pol>SH|SV|DH|DV)"
+_S1_SCENE_RE = re.compile(
+    r"^S1(?P<sat>[ABCD])_(?P<beam>SM|IW|EW|WV)_(?P<kind>SLC|GRD|RAW|OCN)(?P<res>[FHM_])_"
+    r"(?P<level>\d)(?P<cls>[SA])(?P<pol>SH|SV|DH|DV)"
     r"_(?P<start>\d{8}T\d{6})_(?P<stop>\d{8}T\d{6})_(?P<orbit>\d{6})"
     r"_(?P<datatake>[0-9A-Fa-f]{6})(?:_(?P<unique>[0-9A-Fa-f]{4}))?$"
 )
@@ -35,7 +36,7 @@ _POL_CHANNELS: dict[Polarization, tuple[str, ...]] = {
     Polarization.DV: ("VV", "VH"),
 }
 
-_EXTENSIONS = (".zip", ".SAFE", ".safe")
+_EXTENSIONS = (".zip", ".safe")
 
 
 def polarization_code_to_channels(code: Polarization | str) -> tuple[str, ...]:
@@ -54,28 +55,28 @@ def _granule_base(value: str) -> str:
     else:
         candidate = candidate.replace("\\", "/").rsplit("/", 1)[-1]
     for extension in _EXTENSIONS:
-        if candidate.endswith(extension):
+        if candidate.lower().endswith(extension):
             return candidate[: -len(extension)]
     return candidate
 
 
 def parse_scene_name(scene_name_or_url: str) -> Scene:
-    """Parse a Sentinel-1 SLC granule name or URL into a :class:`Scene`."""
+    """Parse a Sentinel-1 granule name or URL into a :class:`Scene`."""
     base = _granule_base(scene_name_or_url)
-    match = _S1_SLC_RE.match(base)
+    match = _S1_SCENE_RE.match(base)
     if match is None:
         raise InputValidationError(
-            f"not a Sentinel-1 IW SLC granule: {scene_name_or_url!r}",
+            f"not a Sentinel-1 granule: {scene_name_or_url!r}",
             code=ErrorCode.ASF001,
         )
     url = scene_name_or_url.strip() if "://" in scene_name_or_url else None
     acquired = datetime.strptime(match["start"], "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
-    logger.debug("parsed Sentinel-1 SLC granule %r", base)
+    logger.debug("parsed Sentinel-1 granule %r", base)
     return Scene(
         scene_id=base,
         platform=Platform(f"S1{match['sat']}"),
-        product_type=ProductType.SLC,
-        beam_mode=BeamMode.IW,
+        product_type=ProductType(match["kind"]),
+        beam_mode=BeamMode(match["beam"]),
         polarization=Polarization(match["pol"]),
         acquisition_datetime=acquired,
         absolute_orbit=int(match["orbit"]),

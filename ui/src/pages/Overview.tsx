@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Activity,
+  ArrowRight,
   CheckCircle2,
   Circle,
   Database,
@@ -8,7 +10,10 @@ import {
   FolderTree,
   Loader2,
   MapPinned,
+  Radar,
   Satellite,
+  ShieldCheck,
+  TriangleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,23 +29,59 @@ import { MapCard } from "@/components/MapCard";
 import { BridgeBadge } from "@/components/common";
 import {
   getActivity,
-  getDownloadStatus,
-  getTree,
+  getWorkflowStatus,
   hasBridge,
   type ActivityEntry,
-  type DownloadStatus,
-  type Tree,
+  type WorkflowSource,
+  type WorkflowStage,
+  type WorkflowStatus,
 } from "@/lib/bridge";
 import type { NavKey } from "@/components/Sidebar";
 import { usePrepContext } from "@/lib/useContext";
 
-const STEPS = [
-  { key: "workspace", label: "工作区" },
-  { key: "aoi", label: "AOI" },
-  { key: "download", label: "场景/下载" },
-  { key: "convert", label: "DEM 转换" },
-  { key: "report", label: "报告" },
-] as const;
+const SOURCE_ICONS: Record<string, typeof Satellite> = {
+  asf: Satellite,
+  dem: Database,
+  gacos: Radar,
+  report: FileText,
+};
+
+function asNav(value: string): NavKey {
+  const allowed: NavKey[] = [
+    "overview",
+    "workspace",
+    "aoi",
+    "scenes",
+    "download",
+    "convert",
+    "report",
+    "settings",
+  ];
+  return allowed.includes(value as NavKey) ? (value as NavKey) : "overview";
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "done":
+      return "完成";
+    case "running":
+      return "运行中";
+    case "blocked":
+      return "等待前置";
+    case "active":
+      return "下一步";
+    case "configured":
+      return "已配置";
+    case "needs_config":
+      return "待配置";
+    case "ready":
+      return "就绪";
+    case "waiting":
+      return "等待数据";
+    default:
+      return status;
+  }
+}
 
 function formatRelativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -50,240 +91,266 @@ function formatRelativeTime(iso: string): string {
   if (mins < 60) return `${mins} 分钟前`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours} 小时前`;
-  return new Date(iso).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleString("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
-type NavFn = (key: NavKey) => void;
+function stageVariant(status: string): "success" | "warning" | "neutral" {
+  if (status === "done") return "success";
+  if (status === "active" || status === "running") return "warning";
+  return "neutral";
+}
 
-export function Overview({ onNavigate }: { onNavigate?: NavFn }) {
+function sourceVariant(status: string): "success" | "warning" | "neutral" {
+  if (status === "configured" || status === "ready") return "success";
+  if (status === "needs_config") return "warning";
+  return "neutral";
+}
+
+function StageRail({
+  stages,
+  onNavigate,
+}: {
+  stages: WorkflowStage[];
+  onNavigate?: (key: NavKey) => void;
+}) {
+  return (
+    <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-7">
+      {stages.map((stage) => {
+        const active = stage.status === "active" || stage.status === "running";
+        const done = stage.status === "done";
+        return (
+          <button
+            key={stage.id}
+            type="button"
+            onClick={() => onNavigate?.(asNav(stage.nav))}
+            className={
+              "min-h-[112px] rounded-lg border bg-card p-3 text-left transition-colors hover:border-primary/60 " +
+              (active ? "border-primary/70 ring-1 ring-primary/20" : "border-border")
+            }
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div
+                className={
+                  "flex h-8 w-8 items-center justify-center rounded-full border " +
+                  (done
+                    ? "border-success bg-success text-white"
+                    : active
+                      ? "border-primary text-primary"
+                      : "border-border text-muted-foreground")
+                }
+              >
+                {done ? (
+                  <CheckCircle2 className="h-4 w-4" />
+                ) : stage.status === "running" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : active ? (
+                  <ArrowRight className="h-4 w-4" />
+                ) : (
+                  <Circle className="h-4 w-4" />
+                )}
+              </div>
+              <Badge variant={stageVariant(stage.status)}>{statusLabel(stage.status)}</Badge>
+            </div>
+            <div className="mt-3 text-sm font-semibold">{stage.label}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{stage.summary}</div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SourceStrip({ sources }: { sources: WorkflowSource[] }) {
+  return (
+    <div className="grid gap-3 lg:grid-cols-4">
+      {sources.map((source) => {
+        const Icon = SOURCE_ICONS[source.id] ?? Database;
+        const credential =
+          source.credential && !["none", "unavailable"].includes(source.credential)
+            ? `${source.credential} · `
+            : "";
+        return (
+          <div key={source.id} className="rounded-lg border bg-card p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+                >
+                  <Icon className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">{source.label}</div>
+                  <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {credential}
+                    {source.capabilities.join(" / ")}
+                  </div>
+                </div>
+              </div>
+              <Badge variant={sourceVariant(source.status)}>{statusLabel(source.status)}</Badge>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function Overview({ onNavigate }: { onNavigate?: (key: NavKey) => void }) {
   const bridged = hasBridge();
   const { ctx } = usePrepContext();
-  const [tree, setTree] = useState<Tree | null>(null);
-  const [dlStatus, setDlStatus] = useState<DownloadStatus | null>(null);
+  const [workflow, setWorkflow] = useState<WorkflowStatus | null>(null);
   const [activities, setActivities] = useState<ActivityEntry[]>([]);
 
-  const region = ctx?.region ?? null;
-
   useEffect(() => {
-    void getTree().then(setTree);
-    void getDownloadStatus().then(setDlStatus);
-    void getActivity().then((r) => setActivities(r.activities));
-    const id = window.setInterval(() => {
-      void getDownloadStatus().then(setDlStatus);
-      void getActivity().then((r) => setActivities(r.activities));
-    }, 2000);
-    return () => window.clearInterval(id);
-  }, [ctx?.region?.region_id, ctx?.region?.scene_count]);
+    let mounted = true;
+    async function refresh() {
+      const [wf, feed] = await Promise.all([getWorkflowStatus(), getActivity()]);
+      if (!mounted) return;
+      setWorkflow(wf);
+      setActivities(feed.activities);
+    }
+    void refresh();
+    const id = window.setInterval(refresh, 2000);
+    return () => {
+      mounted = false;
+      window.clearInterval(id);
+    };
+  }, [ctx?.workspace?.workspace_id, ctx?.project?.project_id, ctx?.region?.region_id]);
 
-  const regionCount = useMemo(
-    () => tree?.projects.reduce((n, p) => n + p.regions.length, 0) ?? 0,
-    [tree],
+  const region = workflow?.context.region ?? ctx?.region ?? null;
+  const sceneCoverage = workflow?.scene_coverage ?? {
+    bbox: region?.scene_footprint_bbox ?? null,
+    count: region?.scene_footprint_bbox ? 1 : 0,
+  };
+  const download = workflow?.download;
+  const downloadActive = download?.state === "running" || download?.state === "paused";
+  const downloadPct =
+    download && download.total > 0 ? Math.round((download.done / download.total) * 100) : 0;
+
+  const stats = useMemo(
+    () => [
+      {
+        label: "项目",
+        value: workflow ? String(workflow.counts.projects) : "-",
+        sub: workflow?.context.project?.name ?? "尚未选择",
+        icon: FolderTree,
+      },
+      {
+        label: "区域",
+        value: workflow ? String(workflow.counts.regions) : "-",
+        sub: region?.name ?? "尚未选择",
+        icon: MapPinned,
+      },
+      {
+        label: "影像",
+        value: workflow ? String(workflow.counts.scenes) : "-",
+        sub: region?.scene_count ? "已导入 ASF 场景" : "等待导入",
+        icon: Satellite,
+      },
+      {
+        label: "DEM",
+        value: workflow?.dem_dataset ?? "-",
+        sub: "自动判定垂直基准",
+        icon: Database,
+      },
+    ],
+    [workflow, region],
   );
 
-  const stepDone = {
-    workspace: !!ctx?.workspace,
-    aoi: !!region?.has_aoi,
-    download: (region?.scene_count ?? 0) > 0,
-    convert: false,
-    report: false,
-  };
-
-  const activeStep = !stepDone.workspace
-    ? "workspace"
-    : !stepDone.aoi
-      ? "aoi"
-      : !stepDone.download
-        ? "download"
-        : dlStatus?.state === "running" || dlStatus?.state === "paused"
-          ? "download"
-          : "convert";
-
-  const stats = [
-    {
-      label: "项目",
-      value: tree ? String(tree.projects.length) : "—",
-      sub: ctx?.workspace ? "当前工作区" : "未创建工作区",
-      icon: FolderTree,
-    },
-    {
-      label: "区域",
-      value: tree ? String(regionCount) : "—",
-      sub: region ? `当前：${region.name}` : "未选择区域",
-      icon: MapPinned,
-    },
-    {
-      label: "影像 (SLC)",
-      value: region ? String(region.scene_count) : "—",
-      sub: region?.scene_count ? "已导入场景" : "待导入",
-      icon: Satellite,
-    },
-    {
-      label: "凭据",
-      value: bridged ? "系统" : "预览",
-      sub: "Earthdata / OpenTopo / GACOS",
-      icon: FileText,
-    },
-  ];
-
-  const dlActive = dlStatus?.state === "running" || dlStatus?.state === "paused";
-  const dlPct =
-    dlStatus && dlStatus.total > 0 ? Math.round((dlStatus.done / dlStatus.total) * 100) : 0;
-
-  const go = (key: string) => onNavigate?.(key);
-
-  if (!ctx?.workspace) {
+  if (!workflow) {
     return (
-      <div className="mx-auto max-w-[960px] space-y-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">总览</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              尚未创建工作区 — 下方数据均为空，不会保留演示状态
-            </p>
-          </div>
-          <BridgeBadge bridged={bridged} />
+      <div className="flex h-full items-center justify-center">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          正在读取工作流状态
         </div>
-        <Card className="border-dashed">
-          <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
-            <FolderTree className="h-12 w-12 text-muted-foreground/40" />
-            <div>
-              <div className="font-medium">从工作区开始</div>
-              <p className="mt-1 max-w-md text-sm text-muted-foreground">
-                创建或打开工作区 → 添加项目与区域 → 绑定 AOI → 在「数据下载」导入场景并下载
-              </p>
-            </div>
-            <Button onClick={() => go("workspace")}>
-              <Database className="h-4 w-4" />
-              打开工作区
-            </Button>
-          </CardContent>
-        </Card>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-[1280px] space-y-5">
+    <div className="mx-auto max-w-[1360px] space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">总览</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">InSAR 准备工作台</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {ctx.project?.name ?? "—"} · {region?.name ?? "未选择区域"}
+            按设置、项目、AOI、影像、下载、DEM 转换和报告组织整个数据准备流程。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <BridgeBadge bridged={bridged} />
-          <Button variant="outline" size="sm" onClick={() => go("workspace")}>
-            <Database className="h-4 w-4" />
-            工作区
-          </Button>
-          <Button size="sm" onClick={() => go("download")} disabled={!region}>
-            <Download className="h-4 w-4" />
-            数据下载
+          <Button onClick={() => onNavigate?.(asNav(workflow.next_action.nav))}>
+            {workflow.next_action.label}
+            <ArrowRight className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {stats.map((s) => {
-          const Icon = s.icon;
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {stats.map((item) => {
+          const Icon = item.icon;
           return (
-            <Card key={s.label}>
-              <CardContent className="flex items-center justify-between p-4">
+            <div key={item.label} className="rounded-lg border bg-card p-4">
+              <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="text-xs text-muted-foreground">{s.label}</div>
-                  <div className="mt-0.5 text-2xl font-semibold">{s.value}</div>
-                  <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{s.sub}</div>
+                  <div className="text-xs text-muted-foreground">{item.label}</div>
+                  <div className="mt-1 truncate text-2xl font-semibold">{item.value}</div>
+                  <div className="mt-1 truncate text-xs text-muted-foreground">{item.sub}</div>
                 </div>
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-primary">
                   <Icon className="h-4 w-4" />
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           );
         })}
       </div>
 
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
-          <div>
-            <CardTitle className="text-base">准备流程</CardTitle>
-            <CardDescription>反映当前会话真实进度（非演示数据）</CardDescription>
-          </div>
-          <Badge variant={dlActive ? "warning" : "neutral"}>
-            {dlActive ? "下载进行中" : `当前：${STEPS.find((s) => s.key === activeStep)?.label}`}
-          </Badge>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap items-center gap-y-4">
-            {STEPS.map((step, i) => {
-              const done = stepDone[step.key as keyof typeof stepDone];
-              const active = step.key === activeStep;
-              return (
-                <div key={step.key} className="flex items-center">
-                  <button
-                    type="button"
-                    onClick={() => go(step.key)}
-                    className="flex flex-col items-center gap-1.5"
-                  >
-                    <div
-                      className={
-                        "flex h-8 w-8 items-center justify-center rounded-full border-2 transition-colors " +
-                        (done
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : active
-                            ? "border-primary text-primary"
-                            : "border-border text-muted-foreground")
-                      }
-                    >
-                      {done ? (
-                        <CheckCircle2 className="h-4 w-4" />
-                      ) : active ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Circle className="h-3.5 w-3.5" />
-                      )}
-                    </div>
-                    <span className="text-[11px] font-medium">{step.label}</span>
-                  </button>
-                  {i < STEPS.length - 1 && (
-                    <div
-                      className={"mx-2 h-0.5 w-8 rounded sm:w-12 " + (done ? "bg-primary" : "bg-border")}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+      <StageRail stages={workflow.stages} onNavigate={onNavigate} />
+      <SourceStrip sources={workflow.sources} />
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-5">
-        <Card className="xl:col-span-2">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">ASF 下载</CardTitle>
-            <CardDescription>仅显示本会话真实下载任务</CardDescription>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[420px_1fr]">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Download className="h-4 w-4 text-primary" />
+              任务状态
+            </CardTitle>
+            <CardDescription>真实下载任务的进度、摘要和最近日志。</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {!dlStatus || dlStatus.state === "idle" ? (
-              <div className="rounded-md border border-dashed py-8 text-center text-sm text-muted-foreground">
-                尚无下载记录。前往「数据下载」导入场景并开始下载。
+          <CardContent className="space-y-4">
+            {!download || download.state === "idle" ? (
+              <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+                暂无任务。导入 ASF 场景后可在“数据下载”中生成计划并开始下载。
               </div>
             ) : (
               <>
                 <div className="flex items-center justify-between text-sm">
-                  <span>
-                    {dlStatus.done}/{dlStatus.total} 景
-                  </span>
-                  <Badge variant={dlActive ? "warning" : "success"}>{dlStatus.state}</Badge>
+                  <span className="font-medium">{statusLabel(download.state)}</span>
+                  <Badge variant={downloadActive ? "warning" : "success"}>
+                    {download.done}/{download.total}
+                  </Badge>
                 </div>
-                <Progress value={dlPct} />
-                {dlStatus.summary_line && (
-                  <p className="text-xs text-muted-foreground">{dlStatus.summary_line}</p>
+                <Progress value={downloadPct} />
+                {download.summary_line && (
+                  <p className="text-xs text-muted-foreground">{download.summary_line}</p>
                 )}
-                <div className="max-h-36 space-y-1 overflow-y-auto font-mono text-[11px]">
-                  {dlStatus.log.slice(-8).map((line, i) => (
-                    <div key={i} className="truncate text-muted-foreground">
+                {download.error && (
+                  <div
+                    className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+                  >
+                    <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{download.error}</span>
+                  </div>
+                )}
+                <div className="max-h-40 space-y-1 overflow-y-auto rounded-md bg-muted/40 p-2 font-mono text-[11px]">
+                  {download.log.slice(-8).map((line, index) => (
+                    <div key={`${line.scene_id}-${index}`} className="truncate">
                       {line.detail}
                     </div>
                   ))}
@@ -293,21 +360,36 @@ export function Overview({ onNavigate }: { onNavigate?: NavFn }) {
           </CardContent>
         </Card>
 
-        <Card className="flex flex-col xl:col-span-3">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">区域地图</CardTitle>
+        <Card className="flex min-h-[420px] flex-col">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <MapPinned className="h-4 w-4 text-primary" />
+              当前区域
+            </CardTitle>
             <CardDescription>
               {region?.has_aoi && region.bbox
-                ? `AOI · W${region.bbox.west.toFixed(2)} E${region.bbox.east.toFixed(2)}`
-                : "绑定 AOI 后在此显示处理范围"}
+                ? `AOI: W${region.bbox.west.toFixed(3)} E${region.bbox.east.toFixed(
+                    3,
+                  )} S${region.bbox.south.toFixed(3)} N${region.bbox.north.toFixed(3)}`
+                : sceneCoverage.bbox
+                  ? `ASF 场景覆盖：${sceneCoverage.count} 景`
+                : "设置 AOI 后会显示处理范围。"}
             </CardDescription>
           </CardHeader>
-          <CardContent className="min-h-[380px] flex-1 pt-0">
-            {region?.has_aoi && region.bbox ? (
-              <MapCard bbox={region.bbox} label={`AOI · ${region.name}`} minHeight={380} />
+          <CardContent className="flex-1 pt-0">
+            {(region?.has_aoi && region.bbox) || sceneCoverage.bbox ? (
+              <MapCard
+                bbox={region?.bbox ?? sceneCoverage.bbox!}
+                overlayBbox={region?.has_aoi ? null : sceneCoverage.bbox}
+                label={region?.has_aoi ? `AOI / ${region.name}` : `ASF 覆盖 / ${region?.name ?? "未命名"}`}
+                overlayLabel={`ASF 场景覆盖 / ${sceneCoverage.count} 景`}
+                minHeight={350}
+              />
             ) : (
-              <div className="flex h-[380px] items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-                暂无 AOI — 请先在「区域 AOI」绘制或导入
+              <div
+                className="flex h-[350px] items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground"
+              >
+                尚未绑定 AOI
               </div>
             )}
           </CardContent>
@@ -315,28 +397,33 @@ export function Overview({ onNavigate }: { onNavigate?: NavFn }) {
       </div>
 
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">近期活动</CardTitle>
-          <CardDescription>本会话内真实操作记录（重启 exe 后清空）</CardDescription>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Activity className="h-4 w-4 text-primary" />
+            最近活动
+          </CardTitle>
+          <CardDescription>本次桌面会话内的真实操作记录。</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent>
           {activities.length === 0 ? (
-            <div className="py-6 text-center text-sm text-muted-foreground">
-              暂无活动。创建工作区、绑定 AOI、导入场景或开始下载后会显示在这里。
+            <div
+              className="flex items-center gap-2 rounded-lg border border-dashed px-4 py-6 text-sm text-muted-foreground"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              还没有活动。创建工作区、绑定 AOI、导入影像或开始任务后会出现在这里。
             </div>
           ) : (
-            activities.map((a, i) => (
-              <div
-                key={`${a.ts}-${i}`}
-                className="flex items-start gap-3 border-b border-border/40 pb-2 last:border-0 last:pb-0"
-              >
-                <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" />
-                <div className="flex-1 text-sm">{a.text}</div>
-                <div className="shrink-0 text-xs text-muted-foreground">
-                  {formatRelativeTime(a.ts)}
+            <div className="divide-y divide-border/60">
+              {activities.map((entry, index) => (
+                <div key={`${entry.ts}-${index}`} className="flex items-start gap-3 py-3">
+                  <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" />
+                  <div className="min-w-0 flex-1 text-sm">{entry.text}</div>
+                  <div className="shrink-0 text-xs text-muted-foreground">
+                    {formatRelativeTime(entry.ts)}
+                  </div>
                 </div>
-              </div>
-            ))
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>

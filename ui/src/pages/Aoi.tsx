@@ -26,6 +26,8 @@ import {
   RegionBanner,
 } from "@/components/common";
 import {
+  addRegion,
+  formatBridgeError,
   hasBridge,
   pickOpenFile,
   setRegionAoiBbox,
@@ -46,7 +48,7 @@ const DEFAULT_BBOX: Bbox = {
 const MODES: { key: DrawMode; label: string; icon: typeof SquareDashedMousePointer }[] = [
   { key: "rect", label: "框选", icon: SquareDashedMousePointer },
   { key: "point", label: "打点", icon: CircleDot },
-  { key: "polygon", label: "画笔", icon: Pencil },
+  { key: "polygon", label: "多边形", icon: Pencil },
 ];
 
 export function Aoi() {
@@ -61,6 +63,9 @@ export function Aoi() {
   const [north, setNorth] = useState(String(DEFAULT_BBOX.north));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [quickRegion, setQuickRegion] = useState("region");
+  const [quickBusy, setQuickBusy] = useState(false);
 
   const [path, setPath] = useState("");
   const [fBusy, setFBusy] = useState(false);
@@ -90,12 +95,15 @@ export function Aoi() {
     setNorth(String(bbox.north));
     setBusy(true);
     setError(null);
+    setNote(null);
     try {
       const res = await setRegionAoiBbox(bbox.west, bbox.east, bbox.south, bbox.north);
-      if (res.ok) await refresh();
-      else setError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+      if (res.ok) {
+        setNote(`AOI 已绑定到 ${res.region_name}`);
+        await refresh();
+      } else setError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
-      setError(String(e));
+      setError(formatBridgeError(e));
     } finally {
       setBusy(false);
     }
@@ -108,16 +116,18 @@ export function Aoi() {
   async function onPolygonDraw(ring: [number, number][]) {
     setBusy(true);
     setError(null);
+    setNote(null);
     try {
       const res = await setRegionAoiGeojson({
         type: "Feature",
         geometry: { type: "Polygon", coordinates: [ring] },
       });
       if (res.ok) {
+        setNote(`AOI 已绑定到 ${res.region_name}`);
         await refresh();
       } else setError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
-      setError(String(e));
+      setError(formatBridgeError(e));
     } finally {
       setBusy(false);
     }
@@ -151,9 +161,24 @@ export function Aoi() {
       if (res.ok) await refresh();
       else setFError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
-      setFError(String(e));
+      setFError(formatBridgeError(e));
     } finally {
       setFBusy(false);
+    }
+  }
+
+  async function onQuickCreateRegion() {
+    if (!quickRegion.trim()) return;
+    setQuickBusy(true);
+    setError(null);
+    try {
+      const res = await addRegion(quickRegion.trim());
+      if (res.ok) await refresh();
+      else setError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+    } catch (e) {
+      setError(formatBridgeError(e));
+    } finally {
+      setQuickBusy(false);
     }
   }
 
@@ -161,17 +186,37 @@ export function Aoi() {
     <div className="mx-auto max-w-[1400px] space-y-6">
       <PageHeader
         title="区域 AOI"
-        desc="左：参数与导入 · 右：地图常驻 · 支持框选 / 打点 / 画笔绘制"
+        desc="绘制或导入当前研究区的处理范围，完成后自动绑定到项目。"
         right={<BridgeBadge bridged={bridged} />}
       />
       <RegionBanner ctx={ctx} />
+
+      {!region && ctx?.project && (
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4 md:flex-row md:items-end">
+            <div className="flex-1">
+              <FieldLabel>新建当前研究区</FieldLabel>
+              <Input
+                value={quickRegion}
+                onChange={(e) => setQuickRegion(e.target.value)}
+                placeholder="region"
+                spellCheck={false}
+              />
+            </div>
+            <Button onClick={onQuickCreateRegion} disabled={quickBusy || !quickRegion.trim()}>
+              {quickBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MapPinned className="h-4 w-4" />}
+              创建并开始绘制
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px_1fr]">
         <div className="space-y-4">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base">绘制工具</CardTitle>
-              <CardDescription>在右侧地图上操作，完成后自动绑定</CardDescription>
+              <CardDescription>矩形、点选或多边形均会写入当前研究区</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2">
               {MODES.map(({ key, label, icon: Icon }) => (
@@ -214,9 +259,14 @@ export function Aoi() {
                 </div>
               </div>
               {error && <ErrorNote text={error} />}
+              {note && (
+                <div className="rounded-md border border-success/30 bg-success/10 px-3 py-2 text-sm text-success">
+                  {note}
+                </div>
+              )}
               <Button onClick={onBindBbox} disabled={!region || busy} className="w-full">
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MapPinned className="h-4 w-4" />}
-                绑定为处理 AOI
+                {region?.has_aoi ? "更新处理 AOI" : "绑定为处理 AOI"}
               </Button>
             </CardContent>
           </Card>
@@ -261,7 +311,7 @@ export function Aoi() {
                 ? region.has_aoi
                   ? `已绑定 · ${region.name}`
                   : `当前区域 · ${region.name}（尚未绑定 AOI）`
-                : "请先在工作区选择区域"}
+                : "先创建或选择研究区；底图未加载时也可以先填写 bbox"}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-1 flex-col pt-0">

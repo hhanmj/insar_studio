@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insar_prep import i18n
 from insar_prep.core.exceptions import CredentialError
 from insar_prep.providers.gacos.credentials import (
     GACOS_PORTAL_URL,
@@ -31,41 +32,34 @@ from insar_prep.providers.gacos.credentials import (
     stored_gacos_email_status,
 )
 
-_INTRO_TEXT = (
-    "Enter the email address GACOS should deliver result links to. GACOS has no "
-    "API key: a request is a web-form submission, and the products are emailed to "
-    "this address. It is stored only in your operating system's secret store "
-    "(never in a project file)."
-)
-
 
 class GacosEmailDialog(QDialog):
     """Collect and store the GACOS delivery email in the OS keyring."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("GACOS Email")
+        self.setWindowTitle(i18n.tr("dlg.gacos.title"))
 
         self._email_edit = QLineEdit()
         self._email_edit.setObjectName("gacos_email_edit")
         self._email_edit.setPlaceholderText("you@example.com")
 
         form = QFormLayout()
-        form.addRow("Email:", self._email_edit)
+        form.addRow(i18n.tr("dlg.gacos.email_label"), self._email_edit)
 
-        intro_label = QLabel(_INTRO_TEXT)
+        intro_label = QLabel(i18n.tr("dlg.gacos.intro"))
         intro_label.setWordWrap(True)
 
-        self._portal_button = QPushButton("Open GACOS website")
+        self._portal_button = QPushButton(i18n.tr("dlg.gacos.open_portal"))
         self._portal_button.setObjectName("gacos_portal_button")
         self._portal_button.clicked.connect(self._open_portal)
-        self._save_button = QPushButton("Save")
+        self._save_button = QPushButton(i18n.tr("common.save"))
         self._save_button.setObjectName("gacos_email_save_button")
         self._save_button.clicked.connect(self.save_email)
-        self._clear_button = QPushButton("Clear stored")
+        self._clear_button = QPushButton(i18n.tr("common.clear_stored"))
         self._clear_button.setObjectName("gacos_email_clear_button")
         self._clear_button.clicked.connect(self.clear_email)
-        self._close_button = QPushButton("Close")
+        self._close_button = QPushButton(i18n.tr("common.close"))
         self._close_button.setObjectName("gacos_email_close_button")
         self._close_button.clicked.connect(self.accept)
 
@@ -103,20 +97,20 @@ class GacosEmailDialog(QDialog):
         except CredentialError as exc:
             self._set_status(str(exc))
             return
-        self._set_status(f"Stored GACOS email: {status}")
+        self._set_status(i18n.tr("dlg.gacos.status", status=status))
 
     def save_email(self) -> bool:
         """Persist the entered email to the OS keyring."""
         email = self._email_edit.text().strip()
         if not email:
-            self._set_status("Enter your GACOS email first.")
+            self._set_status(i18n.tr("dlg.gacos.need_email"))
             return False
         try:
             store_gacos_email(email)
         except CredentialError as exc:
             self._set_status(str(exc))
             return False
-        self._set_status("Saved GACOS email to the OS keyring.")
+        self._set_status(i18n.tr("dlg.gacos.saved"))
         return True
 
     def clear_email(self) -> bool:
@@ -127,7 +121,7 @@ class GacosEmailDialog(QDialog):
             self._set_status(str(exc))
             return False
         self._set_status(
-            "Cleared the stored GACOS email." if removed else "No stored GACOS email to clear."
+            i18n.tr("dlg.gacos.cleared") if removed else i18n.tr("dlg.gacos.none_to_clear")
         )
         return removed
 

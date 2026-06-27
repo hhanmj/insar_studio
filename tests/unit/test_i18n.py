@@ -29,7 +29,7 @@ def test_default_language_is_english() -> None:
 def test_switch_to_chinese_changes_translation() -> None:
     i18n.set_language("zh")
     assert i18n.get_language() == "zh"
-    assert i18n.tr("aoi.title") == "感兴趣区 (AOI)"
+    assert i18n.tr("aoi.title") == "研究范围（AOI）"
     assert i18n.tr("common.run") == "运行"
 
 

@@ -116,7 +116,7 @@
 - **copy_code_allowed**: 否（且语言栈不同）。
 - **integration_plan**: 仅作为「下载管理器 UX + 任务队列/续传 + 桌面打包」的产品/交互参考；我们用 PySide6 自研。
 - **risk**: 低（仅参考）。
-- **notes**: 可借鉴点=下载队列、断点续传、并发控制、TIFF 压缩选项、跨平台打包。不应实现=照搬 Tauri 架构。后续 Task=Task 008（下载管理器）、Task 014（GUI）。
+- **notes**: 可借鉴点=下载队列、断点续传、并发控制、任务历史/恢复、任务日志、TIFF 压缩选项、跨平台打包。2026-06-26 复查 README：近期版本已迁移 React 19 + shadcn/ui，并强化任务日志、断点续传、DEM/Wayback 等多源下载能力；本项目按“任务中心 + 数据源卡片 + 开始前确认目录”的产品逻辑参考，不复制源码。不应实现=照搬 Tauri 架构。后续 Task=Task 008（下载管理器）、Task 014（GUI）、Sentinel-2 多源扩展。
 
 ### 8. DEMdownloader（本地 参考项目）
 
@@ -209,6 +209,32 @@
 - **risk**: 中。提交→邮件→下载半自动（邮件链接需人工粘贴）；须标注引用；`.ztd`/`.rsc` 与表单字段以官方 ReadMe/网页为准。
 - **notes**: 可借鉴点=`.ztd`/`.rsc` 文件约定、10×10°/20 期提交上限、表单字段名（N/S/W/E/H/M/date/type=2 geotiff /1 binary/email）。不应实现=抓取邮箱/绕过限额/驱动浏览器自动点提交。已落地=Task 054（仅按公开网页表单结构自研，未复制任何第三方源码）。
 
+### 15. Leaflet
+
+- **name**: Leaflet (Leaflet/Leaflet)
+- **url**: https://leafletjs.com/ （leaflet@1.9.4）
+- **license**: BSD-2-Clause（与 MIT 兼容）。
+- **last_checked_date**: 2026-06-24
+- **purpose**: 轻量级交互式地图 JS 库；用于 GUI 中「在地图上拉框选取 AOI」。
+- **use_as_dependency**: 是（**内置 dist 文件**：`src/insar_prep/gui/web/leaflet.{js,css}`，随包分发）。
+- **copy_code_allowed**: 是（BSD-2 允许再分发其 dist，保留版权声明）。
+- **integration_plan**: **已落地（Task 057）**。`gui/map_picker.py` 把内置 leaflet.css/js 内联进一段 HTML，用 QtWebEngine 渲染 OSM 底图，自写鼠标拉框逻辑画矩形，经 `QWebChannel` 把 W/S/E/N 回传给 AOI 面板。仅**地图瓦片**联网（OSM），库本身离线内置；QtWebEngine（PySide6-Addons）懒加载，缺失时降级为提示。
+- **risk**: 低。BSD-2 兼容；地图瓦片来自 OSM（需联网且遵守其使用条款）。
+- **notes**: 可借鉴点=L.map/L.tileLayer/L.rectangle/latLngBounds API。未引入 leaflet-draw（矩形拉框自写，省去额外依赖与图标）。仅内置官方 dist，未改其源码。
+
+### 16. shadcn/ui Blocks
+
+- **name**: shadcn/ui Blocks
+- **url**: https://ui.shadcn.com/blocks
+- **license**: MIT（shadcn/ui 项目）；Blocks 按官方 copy-and-own 方式使用时仍需遵守其授权说明。
+- **last_checked_date**: 2026-06-26
+- **purpose**: React + Tailwind dashboard/sidebar 模板块，用于现代化桌面 WebView 外壳的产品和布局参考。
+- **use_as_dependency**: 否。当前项目已有 React/Tailwind/lucide 与自研基础组件，不额外引入模板包。
+- **copy_code_allowed**: 否（本项目本轮只参考布局语言，不复制 Blocks 源码）。
+- **integration_plan**: 已按“dashboard shell + sidebar + top context bar”的思路重构 `ui/src/App.tsx`、`ui/src/components/Sidebar.tsx`、`ui/src/components/TopBar.tsx` 与主题变量；静态构建仍由 Vite 打入桌面 exe。
+- **risk**: 低。仅概念参考；未引入第三方模板源码或外链资源。
+- **notes**: 可借鉴点=现代侧栏、上下文顶栏、低噪声 dashboard 卡片风格。不应实现=将外部模板远程加载进 exe 或整套替换项目组件体系。
+
 ---
 
 ## 分析汇总表
@@ -229,3 +255,5 @@
 | 12 | GeographicLib geoid(egm96-15) | MIT/public-domain | 否(仅数据) | N/A | 内置 npz, `providers/dem/geoid` | 053(已落地) |
 | 13 | rasterio | BSD-3-Clause | 是(convert extra) | 否(封装) | `providers/dem/converter` 懒加载 | 053(已落地) |
 | 14 | GACOS | 条款/无API | N/A | N/A | `gacos-import` 整理产物 + 真实表单提交/抓取(可选 download extra) | 012/013/053/054(已落地) |
+| 15 | Leaflet | BSD-2-Clause | 是(内置dist) | 是(保留版权) | `gui/map_picker.py` QtWebEngine 地图选区 | 057(已落地) |
+| 16 | shadcn/ui Blocks | MIT | 否 | 否(仅概念) | React/Tailwind dashboard shell 参考 | UI shell(已落地) |

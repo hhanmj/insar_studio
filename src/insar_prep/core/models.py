@@ -196,6 +196,8 @@ class Scene(InsarBaseModel):
     file_size_remote: int | None = None
     file_size_local: int | None = None
     checksum: str | None = None
+    footprint_geojson: dict[str, Any] | None = None
+    footprint_bbox: BBox | None = None
     download_status: TaskStatus = TaskStatus.PENDING
     zip_valid: bool | None = None
     processing_aoi_id: str | None = None
