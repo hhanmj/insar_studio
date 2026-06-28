@@ -424,6 +424,7 @@ function MapToolbar({
   layersOpen,
   onDrawModeChange,
   onDrawActiveChange,
+  onClearLayers,
   onToggleLayers,
 }: {
   map: LeafletMap | null;
@@ -432,6 +433,7 @@ function MapToolbar({
   layersOpen: boolean;
   onDrawModeChange: (mode: WorkbenchDrawMode) => void;
   onDrawActiveChange: (active: boolean) => void;
+  onClearLayers: () => void;
   onToggleLayers: () => void;
 }) {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
@@ -491,7 +493,7 @@ function MapToolbar({
         </MapToolButton>
       </div>
       <div className="overflow-hidden rounded-2xl border border-white/55 bg-white/42 shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/38">
-        <MapToolButton title="停止绘制" onClick={() => onDrawActiveChange(false)}>
+        <MapToolButton title="清空地图图层" onClick={onClearLayers}>
           <Trash2 className="h-4 w-4" />
         </MapToolButton>
       </div>
@@ -721,6 +723,7 @@ export function WorkbenchMap({
   onLayerChange,
   onDrawModeChange,
   onDrawActiveChange,
+  onClearLayers,
   onRectDraw,
   onPolygonDraw,
   onPointDraw,
@@ -738,6 +741,7 @@ export function WorkbenchMap({
   onLayerChange: (key: MapLayerKey) => void;
   onDrawModeChange: (mode: WorkbenchDrawMode) => void;
   onDrawActiveChange: (active: boolean) => void;
+  onClearLayers: () => void;
   onRectDraw: (bbox: Bbox) => void;
   onPolygonDraw: (ring: [number, number][]) => void;
   onPointDraw: (lat: number, lng: number) => void;
@@ -908,6 +912,7 @@ export function WorkbenchMap({
         layersOpen={layersOpen}
         onDrawModeChange={onDrawModeChange}
         onDrawActiveChange={onDrawActiveChange}
+        onClearLayers={onClearLayers}
         onToggleLayers={() => setLayersOpen((value) => !value)}
       />
 

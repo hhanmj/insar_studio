@@ -144,6 +144,16 @@ def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
             ts = 0
         raw_logs = item.get("logs")
         logs = [str(line)[:2000] for line in raw_logs[:120]] if isinstance(raw_logs, list) else []
+        kind = str(item.get("kind") or "").strip()
+        output_dir = str(item.get("output_dir") or "").strip()
+        try:
+            total = int(float(item.get("total") or 0))
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            concurrency = int(float(item.get("concurrency") or 0))
+        except (TypeError, ValueError):
+            concurrency = 0
         out.append(
             {
                 "id": task_id[:240],
@@ -151,10 +161,51 @@ def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
                 "status": status[:40],
                 "detail": detail[:2000],
                 "ts": ts,
+                "kind": kind[:40],
+                "output_dir": output_dir[:500],
+                "total": total,
+                "concurrency": concurrency,
                 "logs": logs,
             }
         )
     return out
+
+
+def _download_archive_identity(item: dict[str, Any]) -> str:
+    """Return the stable identity for a persisted task record."""
+    kind = str(item.get("kind") or "").strip()
+    task_id = str(item.get("id") or "").strip()
+    name = str(item.get("name") or "").strip()
+    if not kind:
+        if task_id.startswith("asf:") or "ASF" in name.upper():
+            kind = "asf"
+        elif task_id.startswith("orbit:") or "ORBIT" in name.upper() or "POEORB" in name.upper():
+            kind = "orbit"
+        elif task_id.startswith("dem:") or "DEM" in name.upper():
+            kind = "dem"
+    output_dir = str(item.get("output_dir") or "").strip().rstrip("\\/")
+    if not output_dir and kind and task_id.startswith(f"{kind}:"):
+        body = task_id[len(kind) + 1 :]
+        if ":" in body:
+            output_dir = body.rsplit(":", 1)[0].strip().rstrip("\\/")
+        else:
+            output_dir = body.strip().rstrip("\\/")
+    if kind and output_dir:
+        return f"{kind}:{output_dir.lower()}"
+    return task_id
+
+
+def _dedupe_download_archive(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse duplicate records for the same task, keeping the newest one."""
+    by_key: dict[str, dict[str, Any]] = {}
+    for item in items:
+        key = _download_archive_identity(item)
+        if not key:
+            continue
+        prev = by_key.get(key)
+        if prev is None or int(item.get("ts") or 0) >= int(prev.get("ts") or 0):
+            by_key[key] = item
+    return sorted(by_key.values(), key=lambda row: int(row.get("ts") or 0), reverse=True)[:40]
 
 
 def _normalise_download_archive_for_startup(value: Any) -> list[dict[str, Any]]:
@@ -172,7 +223,7 @@ def _normalise_download_archive_for_startup(value: Any) -> list[dict[str, Any]]:
                 "logs": logs[-120:],
             }
         out.append(item)
-    return out
+    return _dedupe_download_archive(out)
 
 
 def _merge_download_archive(
@@ -180,15 +231,7 @@ def _merge_download_archive(
     existing: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Merge UI-submitted task history with backend history without dropping rows."""
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in [*incoming, *existing]:
-        task_id = str(item.get("id") or "")
-        if not task_id or task_id in seen:
-            continue
-        merged.append(item)
-        seen.add(task_id)
-    return merged[:40]
+    return _dedupe_download_archive([*incoming, *existing])
 
 
 def _normalise_downloadable_dem_dataset(value: Any, *, fallback: str = "COP30") -> str:
@@ -273,6 +316,7 @@ class Api:
         self._metadata_status: dict[str, Any] = self._idle_metadata_status()
         self._network_settings = self._default_network_settings()
         self._applied_proxy_url: str | None = None
+        self._window_maximized = False
         self._state_path = self._desktop_state_path()
         self._load_state()
         self._apply_network_settings()
@@ -467,14 +511,18 @@ class Api:
 
     def get_download_archive(self) -> dict:
         """Return persisted download/task history across app restarts."""
-        return {"ok": True, "items": _clean_download_archive(self._download_archive)}
+        return {"ok": True, "items": _dedupe_download_archive(_clean_download_archive(self._download_archive))}
 
     def _upsert_download_archive_item(self, item: dict[str, Any]) -> None:
         cleaned = _clean_download_archive([item])
         if not cleaned:
             return
         next_item = cleaned[0]
-        previous = next((old for old in self._download_archive if old.get("id") == next_item["id"]), None)
+        next_key = _download_archive_identity(next_item)
+        previous = next(
+            (old for old in self._download_archive if _download_archive_identity(old) == next_key),
+            None,
+        )
         if previous is not None:
             same = all(
                 previous.get(key) == next_item.get(key)
@@ -484,10 +532,10 @@ class Api:
                 return
             if previous.get("status") == "paused" and next_item.get("status") == "paused":
                 next_item["ts"] = previous.get("ts") or next_item["ts"]
-        self._download_archive = [
+        self._download_archive = _dedupe_download_archive([
             next_item,
-            *(old for old in self._download_archive if old.get("id") != next_item["id"]),
-        ][:40]
+            *(old for old in self._download_archive if _download_archive_identity(old) != next_key),
+        ])
         self._save_state()
 
     def _archive_asf_status(self, status: dict[str, Any]) -> None:
@@ -521,6 +569,10 @@ class Api:
                 "status": state,
                 "detail": detail,
                 "ts": int(time.time() * 1000),
+                "kind": "asf",
+                "output_dir": str(status.get("output_dir") or ""),
+                "total": int(status.get("total") or 0),
+                "concurrency": int(status.get("concurrency") or 0),
                 "logs": logs,
             }
         )
@@ -552,6 +604,9 @@ class Api:
                 "status": state,
                 "detail": detail,
                 "ts": int(time.time() * 1000),
+                "kind": "orbit",
+                "output_dir": str(status.get("orbit_dir") or ""),
+                "total": int(status.get("total") or 0),
                 "logs": logs,
             }
         )
@@ -573,7 +628,7 @@ class Api:
         """Return basic app identity (proves the JS<->Python bridge is live)."""
         return {
             "ok": True,
-            "name": "InSAR Assistant",
+            "name": "InSAR Studio",
             "version": __version__,
             "offline": True,
         }
@@ -883,6 +938,50 @@ class Api:
         }
 
     # ----------------------------------------------------- native dialogs
+    def window_minimize(self) -> dict:
+        """Minimize the frameless desktop window."""
+        try:
+            import webview  # noqa: PLC0415
+
+            window = webview.active_window()
+            if window is None:
+                return _error_msg("无可用窗口", "GUI000")
+            window.minimize()
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("窗口最小化", exc)
+        return {"ok": True}
+
+    def window_toggle_maximize(self) -> dict:
+        """Toggle maximize/restore for the frameless desktop window."""
+        try:
+            import webview  # noqa: PLC0415
+
+            window = webview.active_window()
+            if window is None:
+                return _error_msg("无可用窗口", "GUI000")
+            if self._window_maximized:
+                window.restore()
+                self._window_maximized = False
+            else:
+                window.maximize()
+                self._window_maximized = True
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("窗口最大化", exc)
+        return {"ok": True, "maximized": self._window_maximized}
+
+    def window_close(self) -> dict:
+        """Close the desktop window."""
+        try:
+            import webview  # noqa: PLC0415
+
+            window = webview.active_window()
+            if window is None:
+                return _error_msg("无可用窗口", "GUI000")
+            window.destroy()
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("关闭窗口", exc)
+        return {"ok": True}
+
     def pick_open_file(self, title: str = "", filters: list | None = None) -> dict:
         """Open a native file picker; return {ok, path} ('' if cancelled)."""
         try:
@@ -1486,6 +1585,36 @@ class Api:
         self._last_orbit_report = None
         self._act(f"已清除 {label} 的 {cleared} 景影像结果", kind="scenes")
         return {"ok": True, "cleared": cleared}
+
+    def clear_map_layers(self) -> dict:
+        """Clear visible map overlays: AOI, scene footprints and transient reports."""
+        region = self._state.current_region()
+        if region is None:
+            cleared_scenes = len(self._standalone_scenes)
+            self._standalone_scenes = []
+            label = "独立下载任务"
+            cleared_aoi = False
+        else:
+            from insar_prep.core.enums import AoiRole, AoiSource
+            from insar_prep.core.models import Aoi
+
+            cleared_scenes = len(region.scenes)
+            cleared_aoi = bool(region.aoi is not None and region.aoi.bbox is not None)
+            region.scenes = []
+            region.aoi = Aoi(
+                source=AoiSource.MANUAL_BBOX,
+                role=AoiRole.PROCESSING_AOI,
+                bbox=None,
+            )
+            label = region.region_name
+            self._save_state()
+        self._last_orbit_report = None
+        self._metadata_status = self._idle_metadata_status()
+        self._act(
+            f"已清空 {label} 的地图图层：AOI {1 if cleared_aoi else 0} 个，影像 {cleared_scenes} 景",
+            kind="aoi",
+        )
+        return {"ok": True, "cleared_scenes": cleared_scenes, "cleared_aoi": cleared_aoi}
 
     def search_asf_scenes(self, params: dict | None = None) -> dict:
         """Search ASF metadata by AOI/date/product and import the results."""

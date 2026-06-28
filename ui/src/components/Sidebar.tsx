@@ -121,7 +121,7 @@ export function Sidebar({
             本地桌面模式
           </div>
           <div className="mt-1 text-[11px] leading-5 text-muted-foreground">
-            v0.16.0 · 离线优先 · 任务状态保留
+            V2.0 · 离线优先 · 任务状态保留
           </div>
         </div>
       </div>

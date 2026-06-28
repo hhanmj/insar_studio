@@ -49,12 +49,14 @@ def run() -> int:
 
     api = Api()
     webview.create_window(
-        "InSAR Assistant",
+        "InSAR Studio",
         url=resolve_url(),
         js_api=api,
         width=1320,
         height=880,
         min_size=(1024, 680),
+        frameless=True,
+        easy_drag=False,
     )
     webview.start()
     return 0

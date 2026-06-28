@@ -133,6 +133,10 @@ export type DownloadArchiveItem = {
   status: string;
   detail: string;
   ts: number;
+  kind?: "asf" | "orbit" | "dem" | "gacos" | string;
+  output_dir?: string;
+  total?: number;
+  concurrency?: number;
   logs?: string[];
 };
 export type DownloadArchiveResult = { ok: true; items: DownloadArchiveItem[] };
@@ -399,6 +403,9 @@ type PyApi = {
   ensure_directory: (path: string) => Promise<SimpleOk>;
   open_external_url: (url: string) => Promise<SimpleOk>;
   open_path: (path: string) => Promise<SimpleOk>;
+  window_minimize?: () => Promise<SimpleOk>;
+  window_toggle_maximize?: () => Promise<SimpleOk>;
+  window_close?: () => Promise<SimpleOk>;
   create_workspace: (root: string, name?: string | null) => Promise<WorkspaceResult>;
   add_project: (name: string) => Promise<ProjectResult>;
   select_project: (projectId: string) => Promise<ProjectResult>;
@@ -426,6 +433,7 @@ type PyApi = {
   search_asf_scenes: (params: AsfSearchParams) => Promise<ScenesResult>;
   list_scenes: () => Promise<ScenesOk | ApiError>;
   clear_scenes: () => Promise<SimpleOk>;
+  clear_map_layers?: () => Promise<SimpleOk>;
   get_metadata_status: () => Promise<MetadataStatus>;
   check_scenes: () => Promise<CheckResult>;
   match_orbits_directory: (orbitDir: string) => Promise<OrbitMatchResult>;
@@ -817,7 +825,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Assistant", version: "0.16.0", offline: true };
+  return { name: "InSAR Studio", version: "2.0.0", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -829,8 +837,8 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "0.16.0",
-    latest_version: "0.16.0",
+    current_version: "2.0.0",
+    latest_version: "2.0.0",
     html_url: "https://github.com/hhanmj/insar_assistant/releases/latest",
     message: "Update checks run only in the packaged desktop app.",
   };
@@ -1098,6 +1106,28 @@ export async function openExternalUrl(url: string): Promise<SimpleOk> {
 export async function openPath(path: string): Promise<SimpleOk> {
   if (hasBridge()) return api().open_path(path);
   return { ok: true, path };
+}
+
+export async function minimizeNativeWindow(): Promise<SimpleOk> {
+  if (hasBridge() && typeof api().window_minimize === "function") {
+    return api().window_minimize!();
+  }
+  return { ok: true };
+}
+
+export async function toggleNativeWindowMaximize(): Promise<SimpleOk> {
+  if (hasBridge() && typeof api().window_toggle_maximize === "function") {
+    return api().window_toggle_maximize!();
+  }
+  return { ok: true };
+}
+
+export async function closeNativeWindow(): Promise<SimpleOk> {
+  if (hasBridge() && typeof api().window_close === "function") {
+    return api().window_close!();
+  }
+  if (typeof window !== "undefined") window.close();
+  return { ok: true };
 }
 
 // ------------------------------------------------------------ workspace tree
@@ -1487,6 +1517,21 @@ export async function clearScenes(): Promise<SimpleOk> {
   mock.standaloneSceneCount = 0;
   notifyContextChanged();
   return { ok: true, cleared };
+}
+
+export async function clearMapLayers(): Promise<SimpleOk> {
+  if (hasBridge()) {
+    const clearAll = api().clear_map_layers;
+    if (typeof clearAll === "function") return clearAll();
+    return api().clear_scenes();
+  }
+  const cleared = mockActiveSceneCount();
+  mock.standaloneScenes = [];
+  if (mock.region) {
+    mock.region = { ...mock.region, has_aoi: false, bbox: null, aoi_geojson: null, scene_count: 0 };
+  }
+  notifyContextChanged();
+  return { ok: true, cleared_scenes: cleared, cleared_aoi: true };
 }
 
 export async function getMetadataStatus(): Promise<MetadataStatus> {

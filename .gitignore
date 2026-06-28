@@ -16,6 +16,7 @@ __pycache__/
 build/
 dist/
 wheels/
+release/
 
 # ---- uv / virtualenv ----
 .venv/
@@ -48,6 +49,7 @@ _shots/
 Thumbs.db
 .idea/
 .vscode/
+.codex/
 
 # ---- InSAR data (must never be committed) ----
 *.SAFE
@@ -85,3 +87,6 @@ Thumbs.db
 # from ruff.
 insarassistantreal_test/
 insar_realtest_package/
+
+# ---- Local/private documentation drafts ----
+docs/soft_copyright/

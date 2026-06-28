@@ -159,6 +159,7 @@ $pyArgs = @(
     "--onefile",
     "--windowed",
     "--name", "insar-prep-desktop",
+    "--icon", "packaging/app_icon.ico",
     "--paths", "src",
     # Bundle the built web frontend so the WebView loads it from file:// offline.
     "--add-data", "ui/dist;insar_prep/desktop/web",
@@ -183,6 +184,15 @@ $pyArgs = @(
     "--collect-data", "insar_prep",
     "--copy-metadata", "keyring",
     "--copy-metadata", "asf-search",
+    # Keep the release app lean: these are pulled in by package hooks/tests but
+    # are not used by the desktop runtime.
+    "--exclude-module", "pytest",
+    "--exclude-module", "py",
+    "--exclude-module", "pygments",
+    "--exclude-module", "IPython",
+    "--exclude-module", "matplotlib",
+    "--exclude-module", "shapely.tests",
+    "--exclude-module", "rasterio.rio",
     "packaging/insar_prep_desktop_entry.py"
 )
 
