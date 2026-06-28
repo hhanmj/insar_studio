@@ -27,7 +27,7 @@ def _plan(tmp_path: Path, name: str) -> DemConversionPlan:
         target_vertical_datum=VerticalDatum.WGS84_ELLIPSOID,
         raw_dem_path=region / "raw.tif",
         ellipsoid_dem_path=region / "ellipsoid.tif",
-        sarscape_ready_dem_path=region / f"{name}_dem.tif",
+        sarscape_ready_dem_path=region / f"{name}_dem",
         requires_conversion=True,
         requires_geoid=True,
     )

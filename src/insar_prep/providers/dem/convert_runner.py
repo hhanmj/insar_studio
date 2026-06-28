@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 logger = get_logger("providers.dem.convert_runner")
 
-DEM_CONVERT_SUBDIR = "dem_convert"
+DEM_CONVERT_SUBDIR = "DEM"
 
 DEM_CONVERT_RESULT_COLUMNS = [
     "region_safe_name",

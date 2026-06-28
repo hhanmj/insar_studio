@@ -249,7 +249,7 @@ def test_build_earthdata_session_attaches_and_confines_token() -> None:
     from insar_prep.providers.asf.downloader import build_earthdata_session
 
     resolved = ResolvedCredential(source=CredentialSource.ENV_TOKEN, token="FAKE_TOKEN_XYZ")
-    session = build_earthdata_session(resolved)
+    session = build_earthdata_session(resolved, prefer_asf_search=False)
     assert isinstance(session, requests.Session)
     assert session.headers["Authorization"] == "Bearer FAKE_TOKEN_XYZ"
 
@@ -268,6 +268,77 @@ def test_build_earthdata_session_attaches_and_confines_token() -> None:
     )
     session.rebuild_auth(drop, None)
     assert "Authorization" not in drop.headers
+
+
+def test_build_earthdata_session_applies_proxy_and_tls_mode() -> None:
+    requests = pytest.importorskip("requests")
+
+    from insar_prep.providers.asf.credentials import ResolvedCredential
+    from insar_prep.providers.asf.downloader import build_earthdata_session
+
+    resolved = ResolvedCredential(source=CredentialSource.ENV_TOKEN, token="FAKE_TOKEN_XYZ")
+    session = build_earthdata_session(
+        resolved,
+        proxy_url="http://127.0.0.1:7897",
+        ssl_verify=False,
+        trust_env=False,
+        prefer_asf_search=False,
+    )
+    assert isinstance(session, requests.Session)
+    assert session.proxies["http"] == "http://127.0.0.1:7897"
+    assert session.proxies["https"] == "http://127.0.0.1:7897"
+    assert session.verify is False
+    assert session.trust_env is False
+
+
+def test_build_earthdata_session_prefers_official_asf_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    from insar_prep.providers.asf.credentials import ResolvedCredential
+    from insar_prep.providers.asf.downloader import build_earthdata_session
+
+    calls: list[tuple[str, str]] = []
+
+    class FakeASFSession:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            self.proxies: dict[str, str] = {}
+            self.verify = True
+            self.trust_env = True
+
+        def auth_with_creds(self, username: str, password: str) -> "FakeASFSession":
+            calls.append((username, password))
+            self.headers["Authorization"] = "Bearer official-token"
+            return self
+
+    fake_module = type("M", (), {"ASFSession": FakeASFSession})
+    fake_exceptions = type("E", (), {"ASFAuthenticationError": RuntimeError})
+    real_import = __import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "asf_search":
+            return fake_module
+        if name == "asf_search.exceptions":
+            return fake_exceptions
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    resolved = ResolvedCredential(
+        source=CredentialSource.KEYRING,
+        username="edl-user",
+        password="edl-pass",
+    )
+
+    session = build_earthdata_session(
+        resolved,
+        proxy_url="http://127.0.0.1:7897",
+        ssl_verify=False,
+        trust_env=False,
+    )
+
+    assert isinstance(session, FakeASFSession)
+    assert calls == [("edl-user", "edl-pass")]
+    assert session.proxies["https"] == "http://127.0.0.1:7897"
+    assert session.verify is False
+    assert session.trust_env is False
 
 
 def test_verify_success_reports_remote_size(

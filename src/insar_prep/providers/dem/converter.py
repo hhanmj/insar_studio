@@ -1,11 +1,12 @@
 """Real DEM vertical-datum conversion (Task 053).
 
 Executes the steps that :mod:`insar_prep.providers.dem.conversion_planner` only
-*plans*: turn an orthometric (EGM96/EGM2008) DEM into a WGS84 *ellipsoidal*,
-SARscape-ready DEM by adding the geoid undulation ``N`` to every pixel
-(``h_ellipsoid = H_orthometric + N``), then write it under the SARscape-ready
-name. Datasets that are already ellipsoidal (e.g. ``SRTMGL1_E``/``AW3D30_E``) are
-copied through unchanged.
+*plans*: turn an orthometric (EGM96/EGM2008) DEM into a WGS84 *ellipsoidal*
+GeoTIFF by adding the geoid undulation ``N`` to every pixel
+(``h_ellipsoid = H_orthometric + N``), then export an ENVI-format SARscape DEM
+whose main raster filename ends with ``_dem``. Datasets that are already
+ellipsoidal (e.g. ``SRTMGL1_E``/``AW3D30_E``) are copied to the ellipsoid GeoTIFF
+and exported the same way.
 
 This is opt-in and behind the ``convert`` extra: :mod:`rasterio` (the GeoTIFF
 reader/writer) is imported lazily so the offline core never depends on it. The
@@ -103,9 +104,9 @@ class DemConverter(Protocol):
 class FakeDemConverter:
     """An offline, deterministic fake converter for tests (no rasterio).
 
-    With ``outcome=FAILED`` it simulates a failure; otherwise it produces the
-    SARscape-ready DEM by copying the raw bytes (so runner/CLI orchestration can
-    be exercised without rasterio, a geoid, or a real GeoTIFF).
+    With ``outcome=FAILED`` it simulates a failure; otherwise it produces a
+    placeholder SARscape-ready ``_dem`` file (so runner/CLI orchestration can be
+    exercised without rasterio, a geoid, or a real GeoTIFF).
     """
 
     def __init__(self, *, outcome: DemConversionOutcome = DemConversionOutcome.SUCCESS) -> None:
@@ -130,6 +131,7 @@ class FakeDemConverter:
             shutil.copyfile(plan.raw_dem_path, dest)
         else:
             dest.write_bytes(b"fake-dem")
+        dest.with_name(dest.name + ".hdr").write_text("ENVI\n", encoding="utf-8")
         return DemConversionResult(
             region_safe_name=plan.region_safe_name,
             dataset=plan.dataset,
@@ -222,13 +224,16 @@ class RealDemConverter:
                 "run 'download-dem --download-mode real' first"
             )
 
-        # No conversion needed: copy the raw DEM straight to the SARscape-ready name.
+        # No vertical conversion needed: keep a checkable ellipsoid GeoTIFF, then
+        # export the SARscape-facing ENVI _dem raster.
         if source == target:
             try:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(plan.raw_dem_path, dest)
-            except OSError as exc:
-                return failed(f"could not copy raw DEM: {exc}")
+                plan.ellipsoid_dem_path.parent.mkdir(parents=True, exist_ok=True)
+                if plan.raw_dem_path != plan.ellipsoid_dem_path:
+                    shutil.copyfile(plan.raw_dem_path, plan.ellipsoid_dem_path)
+                self._write_sarscape_ready(plan.ellipsoid_dem_path, dest)
+            except (OSError, DemProcessingError) as exc:
+                return failed(f"could not export SARscape DEM: {exc}")
             return DemConversionResult(
                 region_safe_name=plan.region_safe_name,
                 dataset=plan.dataset,
@@ -236,7 +241,7 @@ class RealDemConverter:
                 source_vertical_datum=source,
                 target_vertical_datum=target,
                 path=dest,
-                message="dataset already ellipsoidal; copied unchanged",
+                message="dataset already ellipsoidal; exported SARscape ENVI _dem",
             )
 
         if target is not VerticalDatum.WGS84_ELLIPSOID or source not in _GEOID_SOURCES:
@@ -300,8 +305,38 @@ class RealDemConverter:
 
         os.replace(part, ellipsoid_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ellipsoid_path, dest)
+        self._write_sarscape_ready(ellipsoid_path, dest)
         logger.info("converted DEM %s -> %s", plan.region_safe_name, dest)
+
+    def _write_sarscape_ready(self, source_path: Path, dest: Path) -> None:
+        """Export an ellipsoid GeoTIFF to SARscape's ENVI ``*_dem`` raster."""
+        rasterio = _import_rasterio()
+        part = dest.with_name(dest.name + ".part")
+        part_hdr = part.with_name(part.name + ".hdr")
+        final_hdr = dest.with_name(dest.name + ".hdr")
+        for stale in (part, part_hdr):
+            try:
+                stale.unlink()
+            except FileNotFoundError:
+                pass
+        with rasterio.open(source_path) as src:  # type: ignore[attr-defined]
+            profile = src.profile.copy()
+            for key in ("compress", "tiled", "blockxsize", "blockysize", "photometric"):
+                profile.pop(key, None)
+            profile.update(driver="ENVI", dtype="float32", count=src.count, interleave="bsq")
+            with rasterio.open(part, "w", **profile) as dst:  # type: ignore[attr-defined]
+                if src.count == 1:
+                    for _, window in src.block_windows(1):
+                        data = src.read(1, window=window).astype(np.float32)  # type: ignore[attr-defined]
+                        dst.write(data, 1, window=window)
+                else:
+                    for band in range(1, src.count + 1):
+                        for _, window in src.block_windows(band):
+                            data = src.read(band, window=window).astype(np.float32)  # type: ignore[attr-defined]
+                            dst.write(data, band, window=window)
+        os.replace(part, dest)
+        if part_hdr.exists():
+            os.replace(part_hdr, final_hdr)
 
     def _apply_block_offsets(
         self,

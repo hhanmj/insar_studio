@@ -33,7 +33,7 @@ def build_workspace() -> Workspace:
         region_id="r1",
         source=Provider.OPENTOPOGRAPHY,
         dataset="COP30",
-        sarscape_ready_path="06_sarscape_ready/DEM/guangdong_dem.tif",
+        sarscape_ready_path="06_sarscape_ready/DEM/guangdong_dem",
     )
     atmo = AtmosphericProduct(
         region_id="r1",

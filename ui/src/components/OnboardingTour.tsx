@@ -150,15 +150,15 @@ export function OnboardingTour({
 
   return (
     <div className="fixed inset-0 z-[1200]">
-      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[2px]" />
+      <div className="absolute inset-0 bg-slate-950/10" />
       {highlightStyle && (
         <div
-          className="pointer-events-none absolute rounded-[24px] border border-white/90 bg-white/12 shadow-[0_0_0_9999px_rgba(2,6,23,0.20),0_24px_80px_rgba(15,23,42,0.28)] ring-4 ring-primary/35"
+          className="pointer-events-none absolute rounded-[24px] border border-white/90 bg-white/10 shadow-[0_0_0_9999px_rgba(2,6,23,0.08),0_24px_80px_rgba(15,23,42,0.18)] ring-4 ring-primary/35"
           style={highlightStyle}
         />
       )}
       <div
-        className="absolute rounded-[28px] border border-white/65 bg-white/78 p-4 text-foreground shadow-[0_24px_80px_rgba(15,23,42,0.22)] backdrop-blur-3xl dark:border-white/12 dark:bg-slate-950/78"
+        className="absolute rounded-[28px] border border-white/72 bg-white/88 p-4 text-foreground shadow-[0_24px_80px_rgba(15,23,42,0.20)] backdrop-blur-xl dark:border-white/12 dark:bg-slate-950/84"
         style={cardStyle}
       >
         <div className="mb-3 flex items-start justify-between gap-3">

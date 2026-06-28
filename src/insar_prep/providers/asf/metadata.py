@@ -24,6 +24,9 @@ _READ_TIMEOUT_SECONDS = 12
 _CMR_CONNECT_TIMEOUT_SECONDS = 4
 _CMR_READ_TIMEOUT_SECONDS = 8
 _REQUEST_HEADERS = {"User-Agent": "InSAR-Assistant/0.1 ASF metadata search"}
+_MAX_REMOTE_SEARCH_RESULTS = 500
+_AOI_QUERY_WKT_MAX_CHARS = 12000
+_AOI_SIMPLIFY_TOLERANCES = (0.0, 0.001, 0.005, 0.01, 0.02, 0.05)
 ProgressCallback = Callable[[int, int, str], None]
 _CMR_COLLECTIONS: dict[str, tuple[str, ...]] = {
     "SLC": (
@@ -303,6 +306,134 @@ def _bbox_to_wkt(bbox: BBox) -> str:
     )
 
 
+def _shape_from_geojson(data: Any) -> Any | None:
+    """Return a shapely geometry from a GeoJSON geometry/feature/collection."""
+    if not isinstance(data, Mapping):
+        return None
+    try:
+        from shapely.geometry import shape  # noqa: PLC0415 - shapely is a project dependency
+        from shapely.ops import unary_union  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not import shapely for ASF AOI filtering: %s", exc)
+        return None
+
+    obj_type = str(data.get("type") or "")
+    try:
+        if obj_type == "Feature":
+            geometry = data.get("geometry")
+            geom = shape(geometry) if isinstance(geometry, Mapping) else None
+        elif obj_type == "FeatureCollection":
+            geoms = []
+            for feature in data.get("features") or []:
+                if not isinstance(feature, Mapping):
+                    continue
+                geometry = feature.get("geometry")
+                if isinstance(geometry, Mapping):
+                    candidate = shape(geometry)
+                    if not candidate.is_empty:
+                        geoms.append(candidate)
+            geom = unary_union(geoms) if geoms else None
+        else:
+            geom = shape(data)
+    except Exception as exc:  # noqa: BLE001 - invalid AOI/remote footprint should not crash search
+        logger.debug("could not parse GeoJSON geometry for ASF search: %s", exc)
+        return None
+
+    if geom is None or geom.is_empty:
+        return None
+    if not geom.is_valid:
+        try:
+            geom = geom.buffer(0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("could not repair GeoJSON geometry for ASF search: %s", exc)
+            return None
+    return geom if not geom.is_empty else None
+
+
+def _geojson_to_wkt(data: Any) -> str | None:
+    """Return WKT for ASF SearchAPI ``intersectsWith`` from a real AOI geometry."""
+    geom = _shape_from_geojson(data)
+    if geom is None:
+        return None
+    if geom.geom_type not in {"Polygon", "MultiPolygon"}:
+        return None
+    return geom.wkt
+
+
+def _search_wkt_for_aoi(data: Any, bbox: BBox | None) -> str | None:
+    """Return an ASF-friendly WKT for the remote query.
+
+    Administrative boundaries can contain thousands of vertices. Sending those
+    raw polygons to ASF often fails or times out, so the remote query uses a
+    simplified AOI when possible and falls back to bbox. The original geometry is
+    still used for local footprint filtering after ASF/CMR returns candidates.
+    """
+    geom = _shape_from_geojson(data)
+    if geom is not None and geom.geom_type in {"Polygon", "MultiPolygon"}:
+        for tolerance in _AOI_SIMPLIFY_TOLERANCES:
+            try:
+                candidate = geom if tolerance <= 0 else geom.simplify(tolerance, preserve_topology=True)
+                if candidate.is_empty or candidate.geom_type not in {"Polygon", "MultiPolygon"}:
+                    continue
+                wkt = candidate.wkt
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("could not simplify ASF AOI geometry: %s", exc)
+                continue
+            if len(wkt) <= _AOI_QUERY_WKT_MAX_CHARS:
+                return wkt
+        logger.info("ASF AOI WKT too complex; using bbox for remote query and exact local filtering")
+    if bbox is not None:
+        return _bbox_to_wkt(bbox)
+    return None
+
+
+def _bbox_from_geojson_like(data: Any) -> BBox | None:
+    geom = _shape_from_geojson(data)
+    if geom is None:
+        return None
+    try:
+        west, south, east, north = geom.bounds
+        return BBox(west=west, east=east, south=south, north=north, crs="EPSG:4326")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not derive bbox from ASF AOI geometry: %s", exc)
+        return None
+
+
+def _scene_intersects_geometry(scene: Scene, aoi_geometry: Any) -> bool:
+    footprint = _shape_from_geojson(getattr(scene, "footprint_geojson", None))
+    if footprint is None:
+        bbox = getattr(scene, "footprint_bbox", None)
+        if bbox is not None:
+            try:
+                footprint = bbox.to_polygon()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("could not convert ASF footprint bbox to polygon: %s", exc)
+                footprint = None
+    if footprint is None:
+        return True
+    try:
+        return bool(footprint.intersects(aoi_geometry))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not test ASF footprint/AOI intersection: %s", exc)
+        return True
+
+
+def _filter_scenes_by_aoi_geometry(scenes: list[Scene], aoi_geojson: Mapping[str, Any] | None) -> list[Scene]:
+    if not isinstance(aoi_geojson, Mapping):
+        return scenes
+    aoi_geometry = _shape_from_geojson(aoi_geojson)
+    if aoi_geometry is None:
+        return scenes
+    filtered = [scene for scene in scenes if _scene_intersects_geometry(scene, aoi_geometry)]
+    if len(filtered) != len(scenes):
+        logger.info(
+            "ASF AOI geometry filter kept %d/%d scenes after footprint intersection",
+            len(filtered),
+            len(scenes),
+        )
+    return filtered
+
+
 def _asf_datetime(value: str | None, *, end: bool = False) -> str | None:
     text = (value or "").strip()
     if not text:
@@ -393,6 +524,8 @@ def _get_asf_geojson(params: Mapping[str, str]) -> dict[str, Any]:
                 if http_status in {429, 502, 503, 504}:
                     time.sleep(1.2 * (attempt + 1))
                     continue
+                if method == "GET":
+                    break
                 raise InputValidationError(
                     f"ASF 元数据检索失败：服务器返回 HTTP {status or '错误'}。请检查查询条件。",
                     code=ErrorCode.ASF002,
@@ -431,6 +564,63 @@ def _get_asf_geojson(params: Mapping[str, str]) -> dict[str, Any]:
             code=ErrorCode.ASF002,
         ) from value_error
     raise InputValidationError("ASF 元数据检索失败：服务器返回格式异常。", code=ErrorCode.ASF002)
+
+
+def _parse_count_text(value: object) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    try:
+        import json  # noqa: PLC0415 - defensive parsing only
+
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001
+        data = None
+    if isinstance(data, int):
+        return data
+    if isinstance(data, Mapping):
+        for key in ("count", "total", "totalResults", "hits"):
+            raw = data.get(key)
+            try:
+                return int(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _get_asf_count(params: Mapping[str, str]) -> int | None:
+    try:
+        import requests  # noqa: PLC0415 - optional download extra
+    except ImportError:
+        return None
+    count_params = dict(params)
+    count_params["output"] = "count"
+    count_params.pop("maxResults", None)
+    for method in ("GET", "POST"):
+        try:
+            if method == "POST":
+                response = requests.post(
+                    ASF_SEARCH_URL,
+                    files={key: (None, value) for key, value in count_params.items()},
+                    headers=_REQUEST_HEADERS,
+                    timeout=(_CONNECT_TIMEOUT_SECONDS, _READ_TIMEOUT_SECONDS),
+                )
+            else:
+                response = requests.get(
+                    ASF_SEARCH_URL,
+                    params=count_params,
+                    headers=_REQUEST_HEADERS,
+                    timeout=(_CONNECT_TIMEOUT_SECONDS, _READ_TIMEOUT_SECONDS),
+                )
+            response.raise_for_status()
+            count = _parse_count_text(getattr(response, "text", ""))
+            if count is not None:
+                return count
+        except Exception as exc:  # noqa: BLE001 - count is helpful, not required
+            logger.debug("ASF count request failed via %s: %s", method, exc)
+    return None
 
 
 def _cmr_datetime_range(start: str | None, end: str | None) -> str | None:
@@ -644,6 +834,7 @@ def _plain_error_message(exc: BaseException) -> str:
 def search_scenes_from_asf(
     *,
     bbox: BBox | None = None,
+    aoi_geojson: Mapping[str, Any] | None = None,
     start: str | None = None,
     end: str | None = None,
     product_type: str = "SLC",
@@ -654,6 +845,7 @@ def search_scenes_from_asf(
     frame: int | None = None,
     max_results: int = 50,
     progress: ProgressCallback | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> list[Scene]:
     """Query ASF SearchAPI and return Sentinel-1 scenes with metadata.
 
@@ -664,12 +856,20 @@ def search_scenes_from_asf(
     if level not in {"SLC", "GRD", "RAW", "OCN"}:
         raise InputValidationError(f"不支持的 Sentinel-1 产品类型：{product_type}", code=ErrorCode.ASF002)
 
-    limit = max(1, min(int(max_results or 50), 500))
+    requested_limit = max(1, min(int(max_results or 50), _MAX_REMOTE_SEARCH_RESULTS))
+    query_limit = requested_limit
+    if isinstance(aoi_geojson, Mapping):
+        query_limit = min(
+            _MAX_REMOTE_SEARCH_RESULTS,
+            max(requested_limit * 4, requested_limit + 50),
+        )
+    if bbox is None and isinstance(aoi_geojson, Mapping):
+        bbox = _bbox_from_geojson_like(aoi_geojson)
     params: dict[str, str] = {
         "platform": "Sentinel-1",
         "processingLevel": level,
         "output": "geojson",
-        "maxResults": str(limit),
+        "maxResults": str(query_limit),
     }
     beam = (beam_mode or "").strip().upper()
     if beam:
@@ -683,8 +883,9 @@ def search_scenes_from_asf(
         params["start"] = start_value
     if end_value:
         params["end"] = end_value
-    if bbox is not None:
-        params["intersectsWith"] = _bbox_to_wkt(bbox)
+    aoi_wkt = _search_wkt_for_aoi(aoi_geojson, bbox)
+    if aoi_wkt:
+        params["intersectsWith"] = aoi_wkt
     direction = (orbit_direction or "").strip().upper()
     if direction in {"ASCENDING", "DESCENDING"}:
         params["flightDirection"] = direction
@@ -693,23 +894,49 @@ def search_scenes_from_asf(
     if frame is not None:
         params["frame"] = str(int(frame))
 
+    total_count = _get_asf_count(params) if (progress is not None or stats is not None) else None
+    if stats is not None:
+        stats.update(
+            {
+                "requested_limit": requested_limit,
+                "query_limit": query_limit,
+                "total_count": total_count,
+                "returned_count": 0,
+                "source": "ASF",
+            }
+        )
     if progress is not None:
-        progress(0, 1, "正在请求 ASF 检索接口")
+        total_label = (
+            f"匹配总量 {total_count} 景"
+            if total_count is not None
+            else f"候选请求 {query_limit} 景"
+        )
+        progress(0, 1, f"正在请求 ASF 检索接口（目标 {requested_limit} 景，{total_label}）")
     try:
         data = _get_asf_geojson(params)
     except InputValidationError as primary_error:
         if progress is not None:
             progress(0, 1, "ASF 检索失败，正在切换 CMR 备用检索")
         try:
-            return _search_scenes_from_cmr(
+            fallback_scenes = _search_scenes_from_cmr(
                 bbox=bbox,
                 start=start,
                 end=end,
                 product_type=level,
                 beam_mode=beam,
                 polarization=polarization,
-                max_results=limit,
+                max_results=query_limit,
             )
+            fallback = _filter_scenes_by_aoi_geometry(fallback_scenes, aoi_geojson)[:requested_limit]
+            if stats is not None:
+                stats.update(
+                    {
+                        "returned_count": len(fallback),
+                        "source": "CMR",
+                        "total_count": total_count,
+                    }
+                )
+            return fallback
         except InputValidationError as fallback_error:
             raise InputValidationError(
                 f"{_plain_error_message(primary_error)}；CMR 备用检索也失败：{_plain_error_message(fallback_error)}",
@@ -735,6 +962,10 @@ def search_scenes_from_asf(
         if _scene_matches_filters(scene, beam_mode=beam, polarization=polarization):
             scenes.append(scene)
     unique, _ = deduplicate_scenes(scenes)
+    unique = _filter_scenes_by_aoi_geometry(unique, aoi_geojson)
+    unique = unique[:requested_limit]
+    if stats is not None:
+        stats["returned_count"] = len(unique)
     logger.info("ASF search returned %d scenes (%s)", len(unique), level)
     return unique
 

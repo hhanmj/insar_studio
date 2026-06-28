@@ -37,7 +37,8 @@ logger = get_logger("providers.asf.download_plan")
 
 # Output layout (design only; no directory other than the plan dir is created).
 ASF_PLAN_SUBDIR = "asf_download_plan"
-SLC_SUBDIR = "02_slc"
+SAR_DATA_SUBDIR = "SAR_Data"
+SLC_SUBDIR = f"{SAR_DATA_SUBDIR}/SLC"
 PLAN_JSON_NAME = "asf_download_plan.json"
 PLAN_CSV_NAME = "asf_download_plan.csv"
 
@@ -136,7 +137,7 @@ def _product_subdir(scene: Scene) -> str:
     product = str(getattr(scene.product_type, "value", scene.product_type)).lower()
     if product == "slc":
         return SLC_SUBDIR
-    return f"02_{product}"
+    return f"{SAR_DATA_SUBDIR}/{product.upper()}"
 
 
 def _planned_path(output_dir: Path, scene: Scene, expected_filename: str) -> Path:

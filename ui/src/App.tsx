@@ -33,7 +33,6 @@ const NAV_KEYS: NavKey[] = [
   "scenes",
   "download",
   "convert",
-  "report",
   "settings",
 ];
 
@@ -42,6 +41,7 @@ function navFromHash(): NavKey {
   const raw = window.location.hash.replace(/^#/, "");
   if (raw === "workbench") return "overview";
   if (raw === "scenes") return "download";
+  if (raw === "report") return "overview";
   return NAV_KEYS.includes(raw as NavKey) ? (raw as NavKey) : "overview";
 }
 
@@ -85,7 +85,6 @@ export default function App() {
       <Workbench
         dark={dark}
         onToggleDark={() => setDark((v) => !v)}
-        onOpenPage={(key) => changeNav(key)}
       />
     );
   }

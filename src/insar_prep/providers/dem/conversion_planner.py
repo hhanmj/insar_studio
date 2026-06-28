@@ -89,7 +89,7 @@ def _build_steps(
             ),
             DemConversionStep(
                 step_type=DemConversionStepType.COPY_TO_SARSCAPE_READY,
-                description="copy raw DEM to the SARscape-ready name",
+                description="export raw ellipsoid DEM to the SARscape-ready ENVI _dem raster",
                 input_path=request_plan.raw_dem_path,
                 output_path=request_plan.sarscape_ready_dem_path,
                 **common,
@@ -108,7 +108,7 @@ def _build_steps(
             ),
             DemConversionStep(
                 step_type=DemConversionStepType.COPY_TO_SARSCAPE_READY,
-                description="copy ellipsoid DEM to the SARscape-ready name",
+                description="export ellipsoid DEM to the SARscape-ready ENVI _dem raster",
                 input_path=request_plan.ellipsoid_dem_path,
                 output_path=request_plan.sarscape_ready_dem_path,
                 **common,
@@ -204,7 +204,7 @@ def validate_dem_conversion_plan(plan: DemConversionPlan) -> DemConversionReport
             )
 
     name = plan.sarscape_ready_dem_path.name
-    name_invalid = not name.endswith("_dem.tif") or name.endswith("_ellipsoid.tif")
+    name_invalid = not name.endswith("_dem") or name.endswith("_ellipsoid_dem")
     try:
         validate_sarscape_ready_path(plan.sarscape_ready_dem_path)
     except ValueError:

@@ -42,7 +42,7 @@ def _plan(
         target_vertical_datum=target,
         raw_dem_path=region / "04_dem" / "raw" / "demo_raw.tif",
         ellipsoid_dem_path=region / "04_dem" / "ellipsoid" / "demo_ellipsoid.tif",
-        sarscape_ready_dem_path=region / "04_dem" / "demo_dem.tif",
+        sarscape_ready_dem_path=region / "04_dem" / "demo_dem",
         requires_conversion=source != target,
         requires_geoid=source != target,
     )
@@ -93,6 +93,7 @@ def test_fake_converter_success_and_failure(tmp_path: Path) -> None:
     ok = FakeDemConverter().convert(plan)
     assert ok.outcome is DemConversionOutcome.SUCCESS
     assert plan.sarscape_ready_dem_path.read_bytes() == b"raw-bytes"
+    assert plan.sarscape_ready_dem_path.with_name("demo_dem.hdr").exists()
 
     bad = FakeDemConverter(outcome=DemConversionOutcome.FAILED).convert(plan)
     assert bad.outcome is DemConversionOutcome.FAILED
@@ -122,16 +123,23 @@ def test_real_converter_missing_raw_fails(tmp_path: Path) -> None:
 
 
 def test_real_converter_copies_already_ellipsoidal(tmp_path: Path) -> None:
+    pytest.importorskip("rasterio")
+    from rasterio.crs import CRS
+
     plan = _plan(
         tmp_path,
         source=VerticalDatum.WGS84_ELLIPSOID,
         dataset=DemDataset.SRTM_GL1_ELLIPSOIDAL.value,
     )
-    plan.raw_dem_path.parent.mkdir(parents=True, exist_ok=True)
-    plan.raw_dem_path.write_bytes(b"ellipsoidal-dem")
+    heights = np.full((4, 4), 123.0, dtype=np.float32)
+    _write_geotiff(
+        plan.raw_dem_path, heights, west=10.0, north=46.0, res=0.25, crs=CRS.from_epsg(4326)
+    )
     result = RealDemConverter().convert(plan)
     assert result.outcome is DemConversionOutcome.COPIED
-    assert plan.sarscape_ready_dem_path.read_bytes() == b"ellipsoidal-dem"
+    assert plan.ellipsoid_dem_path.exists()
+    assert plan.sarscape_ready_dem_path.exists()
+    assert plan.sarscape_ready_dem_path.with_name("demo_dem.hdr").exists()
 
 
 def test_real_converter_applies_geoid_offset(tmp_path: Path) -> None:
@@ -154,6 +162,8 @@ def test_real_converter_applies_geoid_offset(tmp_path: Path) -> None:
 
     with rasterio.open(plan.sarscape_ready_dem_path) as src:
         out = src.read(1)
+        assert src.driver == "ENVI"
+    assert plan.sarscape_ready_dem_path.with_name("demo_dem.hdr").exists()
     geoid = load_bundled_geoid("EGM96")
     rows = np.arange(4) + 0.5
     cols = np.arange(4) + 0.5

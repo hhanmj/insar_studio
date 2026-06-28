@@ -214,6 +214,15 @@ select {
   background-clip: content-box;
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 /* Keep Leaflet tiles under the app chrome and rounded inside their card. */
 .leaflet-container {
   font: inherit;

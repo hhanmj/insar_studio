@@ -29,6 +29,7 @@ from insar_prep.core.logging import get_logger, mask_text
 from insar_prep.core.models import InsarBaseModel
 from insar_prep.providers.asf.credentials import (
     CredentialSource,
+    EDL_HOST,
     ResolvedCredential,
     resolve_credentials,
 )
@@ -202,6 +203,27 @@ def _host_allows_auth(host: str) -> bool:
     return False
 
 
+def _netrc_login() -> tuple[str, str]:
+    """Read the Earthdata login from the user's netrc without enabling env proxies."""
+    import netrc  # noqa: PLC0415 - only needed by the netrc credential path
+
+    for path in (Path.home() / ".netrc", Path.home() / "_netrc"):
+        if not path.exists():
+            continue
+        try:
+            auth = netrc.netrc(str(path)).authenticators(EDL_HOST)
+        except (netrc.NetrcParseError, OSError) as exc:
+            raise CredentialError(f"could not read netrc at {path}: {exc}", code=ErrorCode.DL004) from exc
+        if auth is not None:
+            login, _, password = auth
+            if login and password:
+                return login, password
+    raise CredentialError(
+        f"no 'machine {EDL_HOST}' entry found in netrc; add one to enable real download",
+        code=ErrorCode.DL004,
+    )
+
+
 def _content_length(response: object) -> int | None:
     headers = getattr(response, "headers", {}) or {}
     raw = headers.get("Content-Length") or headers.get("content-length")
@@ -231,13 +253,118 @@ def _safe_unlink(path: Path) -> None:
         logger.debug("could not remove partial file %s", path)
 
 
-def build_earthdata_session(resolved: ResolvedCredential) -> object:
-    """Build a redirect-aware authenticated ``requests`` session (lazy import).
+def _friendly_transport_message(exc: Exception) -> str:
+    raw = mask_text(f"{type(exc).__name__}: {exc}")
+    lowered = raw.lower()
+    if "certificate has expired" in lowered:
+        return (
+            "ASF HTTPS 证书校验失败：远端或当前代理返回的证书已过期。"
+            "请检查系统日期、代理/TUN 证书，或在设置中临时启用“忽略 ASF 证书异常”后重试。"
+            f" 原始错误：{raw}"
+        )
+    if "certificate verify failed" in lowered or "sslcertverificationerror" in lowered:
+        return (
+            "ASF HTTPS 证书校验失败：当前网络链路无法信任 ASF/代理证书。"
+            "如果正在使用代理，请在设置中填写代理地址；如果代理使用自签证书，"
+            "可仅在内部测试时临时启用“忽略 ASF 证书异常”。"
+            f" 原始错误：{raw}"
+        )
+    if "proxyerror" in lowered:
+        return f"ASF 下载代理连接失败：请检查代理地址是否可用。原始错误：{raw}"
+    return raw
 
-    The returned session keeps the bearer token only for Earthdata/ASF hosts and
-    drops it before a signed S3 redirect. ``.netrc`` Basic auth is delegated to
-    ``requests`` via ``trust_env``. Requires the optional ``download`` extra.
+
+def _is_non_retryable_tls_error(exc: Exception) -> bool:
+    lowered = f"{type(exc).__name__}: {exc}".lower()
+    return "certificate verify failed" in lowered or "sslcertverificationerror" in lowered
+
+
+def _apply_session_network_settings(
+    session: object,
+    *,
+    proxy_url: str | None,
+    ssl_verify: bool,
+    trust_env: bool,
+) -> None:
+    session.trust_env = bool(trust_env)  # type: ignore[attr-defined]
+    session.verify = bool(ssl_verify)  # type: ignore[attr-defined]
+    proxy = (proxy_url or "").strip()
+    if proxy:
+        session.proxies.update({"http": proxy, "https": proxy})  # type: ignore[attr-defined]
+    if not ssl_verify:
+        try:
+            import urllib3  # noqa: PLC0415 - requests optional dependency
+
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:  # noqa: BLE001 - warning suppression is best-effort
+            pass
+
+
+def _build_official_asf_session(
+    resolved: ResolvedCredential,
+    *,
+    proxy_url: str | None,
+    ssl_verify: bool,
+    trust_env: bool,
+) -> object | None:
+    """Build an official ``asf_search.ASFSession`` when the dependency exists."""
+    try:
+        from asf_search import ASFSession  # noqa: PLC0415 - optional dependency
+        from asf_search.exceptions import ASFAuthenticationError  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    session = ASFSession()
+    _apply_session_network_settings(
+        session,
+        proxy_url=proxy_url,
+        ssl_verify=ssl_verify,
+        trust_env=trust_env,
+    )
+    try:
+        if resolved.token:
+            session.auth_with_token(resolved.token)
+        elif (resolved.username and resolved.password) or resolved.use_netrc:
+            username, password = (
+                _netrc_login()
+                if resolved.use_netrc
+                else (resolved.username or "", resolved.password or "")
+            )
+            session.auth_with_creds(username, password)
+    except ASFAuthenticationError as exc:
+        raise CredentialError(
+            f"ASF/Earthdata 凭据认证失败：{mask_text(str(exc))}",
+            code=ErrorCode.DL004,
+        ) from exc
+    return session
+
+
+def build_earthdata_session(
+    resolved: ResolvedCredential,
+    *,
+    proxy_url: str | None = None,
+    ssl_verify: bool = True,
+    trust_env: bool = True,
+    prefer_asf_search: bool = True,
+) -> object:
+    """Build a redirect-aware authenticated ASF/Earthdata session.
+
+    Prefer the official ``asf_search.ASFSession`` so username/password follows
+    ASF's own token + ``asf-urs`` cookie flow. If ``asf_search`` is not installed,
+    fall back to the local ``requests.Session`` implementation used by older
+    builds. ``trust_env`` only controls inherited proxy/environment behavior;
+    netrc credentials are read explicitly so proxy on/off remains predictable.
     """
+    if prefer_asf_search:
+        official = _build_official_asf_session(
+            resolved,
+            proxy_url=proxy_url,
+            ssl_verify=ssl_verify,
+            trust_env=trust_env,
+        )
+        if official is not None:
+            return official
+
     try:
         import requests  # noqa: PLC0415 - optional dependency, imported lazily
     except ImportError as exc:  # pragma: no cover - exercised via CLI guard
@@ -258,15 +385,21 @@ def build_earthdata_session(resolved: ResolvedCredential) -> object:
                     del headers["Authorization"]
 
     session = _EarthdataSession()
-    session.trust_env = True  # read ~/.netrc for Basic auth on EDL hosts
+    _apply_session_network_settings(
+        session,
+        proxy_url=proxy_url,
+        ssl_verify=ssl_verify,
+        trust_env=trust_env,
+    )
     if resolved.token:
         session.headers["Authorization"] = f"Bearer {resolved.token}"
-    elif resolved.username and resolved.password:
+    elif (resolved.username and resolved.password) or resolved.use_netrc:
         import base64  # noqa: PLC0415 - only needed for the basic-auth path
 
-        encoded = base64.b64encode(f"{resolved.username}:{resolved.password}".encode()).decode(
-            "ascii"
+        username, password = (
+            _netrc_login() if resolved.use_netrc else (resolved.username or "", resolved.password or "")
         )
+        encoded = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
         basic_header = f"Basic {encoded}"
 
         class _EdlBasicAuth(requests.auth.AuthBase):
@@ -303,6 +436,9 @@ class RealAsfDownloader:
         chunk_size: int = _DEFAULT_CHUNK_SIZE,
         timeout: float = _DEFAULT_TIMEOUT,
         verify_bytes: int = _DEFAULT_VERIFY_BYTES,
+        proxy_url: str | None = None,
+        ssl_verify: bool = True,
+        trust_env: bool = True,
         cancel_event: Event | None = None,
         pause_event: Event | None = None,
         progress_callback: Callable[[str, int, int | None], None] | None = None,
@@ -313,6 +449,9 @@ class RealAsfDownloader:
         self.chunk_size = max(1, chunk_size)
         self.timeout = timeout
         self.verify_bytes = max(1, verify_bytes)
+        self.proxy_url = (proxy_url or "").strip()
+        self.ssl_verify = bool(ssl_verify)
+        self.trust_env = bool(trust_env)
         self.cancel_event = cancel_event
         self.pause_event = pause_event
         self.progress_callback = progress_callback
@@ -323,7 +462,12 @@ class RealAsfDownloader:
         if self._session is None:
             if self._resolved is None:
                 self._resolved = resolve_credentials(self.credential_source)
-            self._session = build_earthdata_session(self._resolved)
+            self._session = build_earthdata_session(
+                self._resolved,
+                proxy_url=self.proxy_url,
+                ssl_verify=self.ssl_verify,
+                trust_env=self.trust_env,
+            )
         return self._session
 
     def _cancelled(self) -> bool:
@@ -386,6 +530,13 @@ class RealAsfDownloader:
                 message=mask_text(str(exc)),
                 error_code=ErrorCode.DL004.value,
             )
+        except Exception as exc:  # noqa: BLE001 - auth/session transport failure
+            return DownloadResult(
+                scene_id=request.scene_id,
+                outcome=DownloadOutcome.FAILED,
+                message=_friendly_transport_message(exc),
+                error_code=ErrorCode.DL005.value,
+            )
 
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
@@ -419,12 +570,20 @@ class RealAsfDownloader:
                 if attempt >= self.max_retries:
                     _safe_unlink(part)
             except Exception as exc:  # noqa: BLE001 - transport errors are masked + retried
+                if _is_non_retryable_tls_error(exc):
+                    _safe_unlink(part)
+                    return DownloadResult(
+                        scene_id=request.scene_id,
+                        outcome=DownloadOutcome.FAILED,
+                        message=_friendly_transport_message(exc),
+                        error_code=ErrorCode.DL005.value,
+                    )
                 last_error = exc
                 _safe_unlink(part)
             if attempt < self.max_retries and not self._cancelled():
                 time.sleep(self.backoff_seconds * attempt)
 
-        detail = mask_text(f"{type(last_error).__name__}: {last_error}") if last_error else ""
+        detail = _friendly_transport_message(last_error) if last_error else ""
         code = ErrorCode.DL002 if isinstance(last_error, _IntegrityMismatch) else ErrorCode.DL005
         logger.warning(
             "download failed for %s after %d attempts", request.scene_id, self.max_retries
@@ -531,6 +690,13 @@ class RealAsfDownloader:
                 message=mask_text(str(exc)),
                 error_code=ErrorCode.DL004.value,
             )
+        except Exception as exc:  # noqa: BLE001 - auth/session transport failure
+            return DownloadResult(
+                scene_id=request.scene_id,
+                outcome=DownloadOutcome.FAILED,
+                message=_friendly_transport_message(exc),
+                error_code=ErrorCode.DL005.value,
+            )
 
         headers = {"Range": f"bytes=0-{self.verify_bytes - 1}"}
         try:
@@ -571,7 +737,7 @@ class RealAsfDownloader:
             return DownloadResult(
                 scene_id=request.scene_id,
                 outcome=DownloadOutcome.FAILED,
-                message=mask_text(f"{type(exc).__name__}: {exc}"),
+                message=_friendly_transport_message(exc),
                 error_code=ErrorCode.DL005.value,
             )
 
@@ -598,6 +764,9 @@ def probe_earthdata_auth(
     session: object | None = None,
     url: str = _EDL_PROFILE_URL,
     timeout: float = 30.0,
+    proxy_url: str | None = None,
+    ssl_verify: bool = True,
+    trust_env: bool = True,
 ) -> tuple[bool, str]:
     """Best-effort authenticated reachability check. Returns ``(ok, masked_message)``.
 
@@ -605,7 +774,12 @@ def probe_earthdata_auth(
     by ``insar-prep auth status --test`` (opt-in, network).
     """
     try:
-        sess = session or build_earthdata_session(resolved)
+        sess = session or build_earthdata_session(
+            resolved,
+            proxy_url=proxy_url,
+            ssl_verify=ssl_verify,
+            trust_env=trust_env,
+        )
         with sess.get(url, timeout=timeout, allow_redirects=True) as response:  # type: ignore[attr-defined]
             status = int(getattr(response, "status_code", 0))
     except Exception as exc:  # noqa: BLE001 - any transport error is reported, masked
@@ -625,7 +799,8 @@ def download_requests_from_scenes(
     """Build :class:`DownloadRequest` objects for scenes that have a URL.
 
     The destination mirrors the dry-run planner's product-aware layout:
-    SLC -> ``02_slc``, GRD -> ``02_grd``, RAW -> ``02_raw`` and OCN -> ``02_ocn``.
+    SLC -> ``SAR_Data/SLC``, GRD -> ``SAR_Data/GRD``, RAW -> ``SAR_Data/RAW``
+    and OCN -> ``SAR_Data/OCN``.
     Scenes without a URL are skipped (they cannot be fetched).
     """
     requests_out: list[DownloadRequest] = []
@@ -638,7 +813,7 @@ def download_requests_from_scenes(
         product = str(getattr(getattr(scene, "product_type", ""), "value", "") or "").lower()
         destination_dir = slc_dir
         if product and product != "slc":
-            destination_dir = slc_dir.parent / f"02_{product}"
+            destination_dir = slc_dir.parent / product.upper()
         requests_out.append(
             DownloadRequest(
                 scene_id=scene_id,

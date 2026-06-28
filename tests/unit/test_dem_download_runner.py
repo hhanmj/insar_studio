@@ -59,7 +59,7 @@ def test_success_writes_masked_results_csv(tmp_path: Path) -> None:
     assert not summary.has_failures
     assert len(progress) == 1
 
-    results_csv = tmp_path / "dem_download" / "dem_download_results.csv"
+    results_csv = tmp_path / "DEM" / "dem_download_results.csv"
     assert summary.results_path == results_csv
     with results_csv.open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))

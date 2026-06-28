@@ -53,7 +53,7 @@ def test_expected_filename_and_planned_path(tmp_path: Path) -> None:
     plan = build_asf_download_plan(scenes=[parse_scene_name(_URL)], output_dir=tmp_path)
     item = plan.items[0]
     assert item.expected_filename == f"{_GRANULE}.zip"
-    assert item.planned_path == str(tmp_path / "02_slc" / f"{_GRANULE}.zip")
+    assert item.planned_path == str(tmp_path / "SAR_Data" / "SLC" / f"{_GRANULE}.zip")
 
 
 def test_url_token_and_query_never_reach_plan(tmp_path: Path) -> None:
@@ -120,6 +120,6 @@ def test_planner_does_not_touch_network(tmp_path: Path, monkeypatch) -> None:
 def test_planner_creates_no_slc_dir_or_large_files(tmp_path: Path) -> None:
     plan = build_asf_download_plan(scenes=[parse_scene_name(_URL)], output_dir=tmp_path)
     write_asf_download_plan(plan, tmp_path)
-    assert not (tmp_path / "02_slc").exists()
+    assert not (tmp_path / "SAR_Data").exists()
     assert not list(tmp_path.rglob("*.zip"))
     assert not list(tmp_path.rglob("*.SAFE"))

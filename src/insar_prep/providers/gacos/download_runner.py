@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 
 logger = get_logger("providers.gacos.download_runner")
 
-GACOS_REQUEST_SUBDIR = "gacos_request"
+GACOS_REQUEST_SUBDIR = "GACOS"
 GACOS_DOWNLOADS_SUBDIR = "downloads"
 
 GACOS_REQUEST_RESULT_COLUMNS = [
@@ -113,7 +113,7 @@ def write_gacos_fetch_results_csv(
     output_dir: Path | str, results: Sequence[GacosFetchResult]
 ) -> Path:
     """Write a credential-safe per-URL GACOS fetch results CSV; return its path."""
-    plan_dir = Path(output_dir) / GACOS_REQUEST_SUBDIR
+    plan_dir = Path(output_dir)
     plan_dir.mkdir(parents=True, exist_ok=True)
     results_path = plan_dir / "gacos_download_results.csv"
     with results_path.open("w", encoding="utf-8", newline="") as handle:
@@ -222,7 +222,7 @@ def run_gacos_request(
 
     Splits the dates into batches, submits each to the GACOS web form (unless an
     explicit ``client`` is injected), writes a credential-safe
-    ``gacos_request/gacos_request_results.csv`` under ``output_root``, and returns
+    ``GACOS/gacos_request_results.csv`` under ``output_root``, and returns
     a :class:`GacosRequestRunSummary`. Per-batch problems are captured as
     ``FAILED`` results (never raised); :class:`InputValidationError` is raised for
     invalid inputs (no dates, bad time-of-day, too many dates per batch).

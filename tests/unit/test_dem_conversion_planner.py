@@ -68,7 +68,7 @@ def test_same_datum_no_conversion(tmp_path: Path) -> None:
     assert not plan.requires_geoid
     report = validate_dem_conversion_plan(plan)
     assert DEM_CONVERSION_NOT_REQUIRED in _codes(report)
-    assert plan.sarscape_ready_dem_path.name.endswith("_dem.tif")
+    assert plan.sarscape_ready_dem_path.name.endswith("_dem")
 
 
 def test_orthometric_requires_manual_review(tmp_path: Path) -> None:
@@ -107,10 +107,10 @@ def test_plan_has_three_paths(tmp_path: Path) -> None:
     assert plan.sarscape_ready_dem_path == request_plan.sarscape_ready_dem_path
 
 
-def test_sarscape_ready_is_dem_tif(tmp_path: Path) -> None:
+def test_sarscape_ready_is_envi_dem(tmp_path: Path) -> None:
     plan = create_dem_conversion_plan(make_request_plan(tmp_path))
-    assert plan.sarscape_ready_dem_path.name.endswith("_dem.tif")
-    assert not plan.sarscape_ready_dem_path.name.endswith("_ellipsoid.tif")
+    assert plan.sarscape_ready_dem_path.name.endswith("_dem")
+    assert not plan.sarscape_ready_dem_path.name.endswith("_ellipsoid_dem")
     assert "_ellipsoid" in plan.ellipsoid_dem_path.name
 
 

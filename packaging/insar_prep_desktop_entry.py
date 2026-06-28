@@ -23,6 +23,7 @@ import sys
 
 
 def _selftest() -> int:
+    import os
     import tempfile
     import traceback
     from pathlib import Path
@@ -35,14 +36,22 @@ def _selftest() -> int:
         if not url.startswith("http") and not Path(url).exists():
             raise RuntimeError(f"bundled web index not found: {url}")
 
-        api = Api()
-        if not api.get_app_info().get("ok"):
-            raise RuntimeError("get_app_info failed")
-        admin_options = api.get_admin_options(province="湖北省", city="恩施土家族苗族自治州")
-        if not admin_options.get("ok") or "巴东县" not in admin_options.get("districts", []):
-            raise RuntimeError(f"bundled local boundaries unavailable: {admin_options}")
-
         with tempfile.TemporaryDirectory() as tmp:
+            previous_localappdata = os.environ.get("LOCALAPPDATA")
+            os.environ["LOCALAPPDATA"] = str(Path(tmp) / "localappdata")
+            try:
+                api = Api()
+            finally:
+                if previous_localappdata is None:
+                    os.environ.pop("LOCALAPPDATA", None)
+                else:
+                    os.environ["LOCALAPPDATA"] = previous_localappdata
+
+            if not api.get_app_info().get("ok"):
+                raise RuntimeError("get_app_info failed")
+            admin_options = api.get_admin_options(province="湖北省", city="恩施土家族苗族自治州")
+            if not admin_options.get("ok") or "巴东县" not in admin_options.get("districts", []):
+                raise RuntimeError(f"bundled local boundaries unavailable: {admin_options}")
 
             def check(label: str, result: dict) -> None:
                 if not result.get("ok"):

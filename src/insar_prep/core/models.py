@@ -235,8 +235,8 @@ class DemProduct(InsarBaseModel):
     @classmethod
     def _check_dem_suffix(cls, value: Path | None) -> Path | None:
         # Validation only; renaming/path generation belongs to Task 003 / DEM adapter.
-        if value is not None and not value.name.endswith("_dem.tif"):
-            raise ValueError("SARscape-ready DEM filename must end with '_dem.tif'")
+        if value is not None and not value.name.endswith("_dem"):
+            raise ValueError("SARscape-ready DEM filename must end with '_dem'")
         return value
 
 

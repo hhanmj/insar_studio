@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   LatLng,
   LatLngBoundsExpression,
   LatLngExpression,
   LeafletMouseEvent,
+  Map as LeafletMap,
 } from "leaflet";
 import { DomEvent } from "leaflet";
 import {
@@ -50,10 +51,10 @@ export type MapLayerKey =
   | "tiandituVector";
 
 const DEFAULT_BBOX: Bbox = {
-  west: 110.22,
-  east: 110.52,
-  south: 30.92,
-  north: 31.14,
+  west: 73.5,
+  east: 135.1,
+  south: 18.0,
+  north: 53.6,
   crs: "EPSG:4326",
 };
 
@@ -367,6 +368,17 @@ function FitToData({ bbox }: { bbox: Bbox }) {
   return null;
 }
 
+function MapApiBridge({ onReady }: { onReady: (map: LeafletMap | null) => void }) {
+  const map = useMap();
+
+  useEffect(() => {
+    onReady(map);
+    return () => onReady(null);
+  }, [map, onReady]);
+
+  return null;
+}
+
 function MapToolButton({
   active,
   children,
@@ -406,6 +418,7 @@ function MapToolButton({
 }
 
 function MapToolbar({
+  map,
   drawMode,
   drawActive,
   layersOpen,
@@ -413,6 +426,7 @@ function MapToolbar({
   onDrawActiveChange,
   onToggleLayers,
 }: {
+  map: LeafletMap | null;
   drawMode: WorkbenchDrawMode;
   drawActive: boolean;
   layersOpen: boolean;
@@ -420,7 +434,6 @@ function MapToolbar({
   onDrawActiveChange: (active: boolean) => void;
   onToggleLayers: () => void;
 }) {
-  const map = useMap();
   const toolbarRef = useRef<HTMLDivElement | null>(null);
 
   const activate = (mode: WorkbenchDrawMode) => {
@@ -441,7 +454,7 @@ function MapToolbar({
   return (
     <div
       ref={toolbarRef}
-      className="leaflet-control pointer-events-auto absolute left-4 top-4 z-[700] flex flex-col gap-3"
+      className="pointer-events-auto absolute left-4 top-4 z-[760] flex flex-col gap-3"
       onPointerDown={(event) => event.stopPropagation()}
       onPointerUp={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
@@ -454,10 +467,10 @@ function MapToolbar({
       }}
     >
       <div className="overflow-hidden rounded-2xl border border-white/55 bg-white/42 shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/38">
-        <MapToolButton title="放大" onClick={() => map.zoomIn()}>
+        <MapToolButton title="放大" onClick={() => map?.zoomIn()}>
           <Plus className="h-5 w-5" />
         </MapToolButton>
-        <MapToolButton title="缩小" onClick={() => map.zoomOut()}>
+        <MapToolButton title="缩小" onClick={() => map?.zoomOut()}>
           <Minus className="h-5 w-5" />
         </MapToolButton>
       </div>
@@ -747,12 +760,21 @@ export function WorkbenchMap({
   }, [aoiBbox, bbox, sceneBbox, sceneUnion, selectedSceneBbox]);
   const [tilesReady, setTilesReady] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [mapApi, setMapApi] = useState<LeafletMap | null>(null);
   const layerBackdropRef = useRef<HTMLDivElement | null>(null);
   const layerPanelRef = useRef<HTMLDivElement | null>(null);
   const visibleScenes = useMemo(
     () => scenes.filter((scene) => isValidBbox(scene.footprint_bbox)).slice(0, 300),
     [scenes],
   );
+  const orderedSceneEntries = useMemo(() => {
+    const entries = visibleScenes.map((scene, index) => ({ scene, index }));
+    if (!selectedSceneId) return entries;
+    return [
+      ...entries.filter((entry) => entry.scene.scene_id !== selectedSceneId),
+      ...entries.filter((entry) => entry.scene.scene_id === selectedSceneId),
+    ];
+  }, [selectedSceneId, visibleScenes]);
   const aoiPolygons = useMemo(() => geometryPolygons(aoiGeometry), [aoiGeometry]);
   const footprintCount = visibleScenes.length;
   const token = tiandituToken.trim();
@@ -791,15 +813,8 @@ export function WorkbenchMap({
           detectRetina={false}
           eventHandlers={{ load: () => setTilesReady(true) }}
         />
+        <MapApiBridge onReady={setMapApi} />
         <FitToData bbox={fitBbox} />
-        <MapToolbar
-          drawMode={drawMode}
-          drawActive={drawActive}
-          layersOpen={layersOpen}
-          onDrawModeChange={onDrawModeChange}
-          onDrawActiveChange={onDrawActiveChange}
-          onToggleLayers={() => setLayersOpen((value) => !value)}
-        />
         {isValidBbox(sceneBbox) && (
           <Rectangle
             bounds={boundsFromBbox(sceneBbox)}
@@ -807,42 +822,6 @@ export function WorkbenchMap({
             interactive={false}
           />
         )}
-        {visibleScenes.map((scene, index) => {
-          const polygons = scenePolygons(scene);
-          const selected = scene.scene_id === selectedSceneId;
-          const options = {
-            color: selected ? "#dc2626" : index % 2 ? "#2563eb" : "#f97316",
-            weight: selected ? 3.4 : 1.8,
-            fillColor: selected ? "#dc2626" : index % 2 ? "#2563eb" : "#f97316",
-            fillOpacity: selected ? 0.18 : 0.12,
-          };
-          if (polygons.length) {
-            return polygons.map((positions, part) => (
-              <Polygon
-                key={`${scene.scene_id}:poly:${part}`}
-                positions={positions}
-                pathOptions={options}
-                interactive={!drawActive}
-              >
-                <Popup>
-                  <ScenePopup scene={scene} index={index} />
-                </Popup>
-              </Polygon>
-            ));
-          }
-          return (
-            <Rectangle
-              key={`${scene.scene_id}:bbox`}
-              bounds={boundsFromBbox(scene.footprint_bbox!)}
-              pathOptions={options}
-              interactive={!drawActive}
-            >
-              <Popup>
-                <ScenePopup scene={scene} index={index} />
-              </Popup>
-            </Rectangle>
-          );
-        })}
         {aoiPolygons.length > 0
           ? aoiPolygons.map((positions, index) => (
               <Polygon
@@ -853,12 +832,65 @@ export function WorkbenchMap({
               />
             ))
           : isValidBbox(aoiBbox) && (
-          <Rectangle
-            bounds={boundsFromBbox(aoiBbox)}
-            pathOptions={{ color: "#0f766e", weight: 2.5, fillOpacity: 0.16 }}
-            interactive={false}
-          />
-        )}
+              <Rectangle
+                bounds={boundsFromBbox(aoiBbox)}
+                pathOptions={{ color: "#0f766e", weight: 2.5, fillOpacity: 0.16 }}
+                interactive={false}
+              />
+            )}
+        {orderedSceneEntries.map(({ scene, index }) => {
+          const polygons = scenePolygons(scene);
+          const selected = scene.scene_id === selectedSceneId;
+          const options = {
+            color: selected ? "#ff2d55" : index % 2 ? "#2563eb" : "#f97316",
+            weight: selected ? 4.8 : 1.8,
+            opacity: selected ? 1 : 0.78,
+            fillColor: selected ? "#ff2d55" : index % 2 ? "#2563eb" : "#f97316",
+            fillOpacity: selected ? 0.24 : 0.12,
+          };
+          const haloOptions = {
+            color: "#ffffff",
+            weight: 9,
+            opacity: 0.92,
+            fillOpacity: 0,
+          };
+          if (polygons.length) {
+            return polygons.map((positions, part) => (
+              <Fragment key={`${scene.scene_id}:poly:${part}`}>
+                {selected && <Polygon positions={positions} pathOptions={haloOptions} interactive={false} />}
+                <Polygon
+                  positions={positions}
+                  pathOptions={options}
+                  interactive={!drawActive}
+                >
+                  <Popup>
+                    <ScenePopup scene={scene} index={index} />
+                  </Popup>
+                </Polygon>
+              </Fragment>
+            ));
+          }
+          return (
+            <Fragment key={`${scene.scene_id}:bbox`}>
+              {selected && (
+                <Rectangle
+                  bounds={boundsFromBbox(scene.footprint_bbox!)}
+                  pathOptions={haloOptions}
+                  interactive={false}
+                />
+              )}
+              <Rectangle
+                bounds={boundsFromBbox(scene.footprint_bbox!)}
+                pathOptions={options}
+                interactive={!drawActive}
+              >
+                <Popup>
+                  <ScenePopup scene={scene} index={index} />
+                </Popup>
+              </Rectangle>
+            </Fragment>
+          );
+        })}
         <DrawLayer
           mode={drawMode}
           active={drawActive}
@@ -868,6 +900,16 @@ export function WorkbenchMap({
         />
         <MapStatusOverlay />
       </MapContainer>
+
+      <MapToolbar
+        map={mapApi}
+        drawMode={drawMode}
+        drawActive={drawActive}
+        layersOpen={layersOpen}
+        onDrawModeChange={onDrawModeChange}
+        onDrawActiveChange={onDrawActiveChange}
+        onToggleLayers={() => setLayersOpen((value) => !value)}
+      />
 
       <div className="pointer-events-none absolute bottom-14 left-4 z-[500] max-w-[460px] rounded-2xl border border-white/55 bg-white/62 px-3 py-2 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62">
         <div className="flex items-center gap-2 font-medium">
@@ -887,8 +929,8 @@ export function WorkbenchMap({
       {layersOpen && (
         <div
           ref={layerBackdropRef}
-          className="pointer-events-auto absolute inset-0 z-[680]"
-          style={{ zIndex: 680 }}
+          className="pointer-events-auto absolute inset-0 z-[640]"
+          style={{ zIndex: 640 }}
           onPointerDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -908,8 +950,8 @@ export function WorkbenchMap({
       {layersOpen && (
         <div
           ref={layerPanelRef}
-          className="pointer-events-auto absolute left-16 top-4 z-[690] max-h-[calc(100%-2rem)] w-[290px] overflow-y-auto rounded-[24px] border border-white/60 bg-white/74 p-2 shadow-2xl backdrop-blur-3xl dark:border-white/10 dark:bg-slate-950/78"
-          style={{ zIndex: 690 }}
+          className="pointer-events-auto absolute left-16 top-4 z-[790] max-h-[calc(100%-2rem)] w-[290px] overflow-y-auto rounded-[24px] border border-white/60 bg-white/74 p-2 shadow-2xl backdrop-blur-3xl dark:border-white/10 dark:bg-slate-950/78"
+          style={{ zIndex: 790 }}
           onPointerDown={(event) => event.stopPropagation()}
           onPointerUp={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}

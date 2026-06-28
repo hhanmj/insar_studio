@@ -64,6 +64,8 @@ def validate_sarscape_ready_path(path: str | Path) -> None:
         parts = parts[1:]
     if SARSCAPE_READY_DIR in parts:
         parts = parts[parts.index(SARSCAPE_READY_DIR) :]
+    else:
+        parts = parts[-1:]
     for part in parts:
         if any(ch.isspace() for ch in part):
             msg = f"SARscape-ready path component {part!r} must not contain whitespace"

@@ -11,14 +11,18 @@ from insar_prep.sar_apps.sarscape import (
 
 
 def test_ensure_dem_name_basic() -> None:
-    assert ensure_sarscape_dem_name("shiliushubao") == "shiliushubao_dem.tif"
-    assert ensure_sarscape_dem_name("guangdong_2024") == "guangdong_2024_dem.tif"
+    assert ensure_sarscape_dem_name("shiliushubao") == "shiliushubao_dem"
+    assert ensure_sarscape_dem_name("guangdong_2024") == "guangdong_2024_dem"
 
 
-def test_ensure_dem_name_ends_with_dem_tif() -> None:
+def test_ensure_dem_name_ends_with_dem() -> None:
     name = ensure_sarscape_dem_name("guangdong")
-    assert name.endswith("_dem.tif")
+    assert name.endswith("_dem")
     assert "-" not in name
+
+
+def test_ensure_dem_name_allows_legacy_dotted_suffix() -> None:
+    assert ensure_sarscape_dem_name("guangdong", ".tif") == "guangdong_dem.tif"
 
 
 def test_ensure_dem_name_rejects_unsafe_input() -> None:
@@ -30,7 +34,7 @@ def test_ensure_dem_name_rejects_unsafe_input() -> None:
 
 def test_sarscape_ready_dem_path_structure() -> None:
     path = sarscape_ready_dem_path("shiliushubao")
-    assert path.parts[-1] == "shiliushubao_dem.tif"
+    assert path.parts[-1] == "shiliushubao_dem"
     assert path.parts[-2] == "DEM"
     assert path.parts[-3] == "06_sarscape_ready"
 

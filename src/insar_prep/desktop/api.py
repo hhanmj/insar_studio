@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,70 @@ def _error_msg(message: str, code: str | None = None) -> dict:
     return {"ok": False, "error": message, "code": code}
 
 
+def _normalise_proxy_url(value: object) -> str:
+    proxy_url = str(value or "").strip()
+    if proxy_url and "://" not in proxy_url:
+        proxy_url = f"http://{proxy_url}"
+    return proxy_url
+
+
+def _detect_system_proxy() -> str:
+    """Return the OS/browser proxy, if one is configured."""
+    try:
+        import urllib.request  # noqa: PLC0415 - small stdlib import, only needed here
+
+        proxies = urllib.request.getproxies()
+    except Exception:  # noqa: BLE001 - proxy probing must not block settings
+        return ""
+    for key in ("https", "http", "all"):
+        proxy_url = _normalise_proxy_url(proxies.get(key))
+        if proxy_url:
+            return proxy_url
+    return ""
+
+
+def _asf_network_candidates(settings: dict) -> list[dict[str, Any]]:
+    """Build ordered ASF download network modes for preflight fallback."""
+    proxy_enabled = bool(settings.get("proxy_enabled"))
+    saved_proxy = _normalise_proxy_url(settings.get("proxy_url"))
+    system_proxy = _detect_system_proxy()
+    ssl_verify = bool(settings.get("asf_ssl_verify", True))
+    current_proxy = saved_proxy if proxy_enabled else ""
+    if proxy_enabled and not current_proxy:
+        current_proxy = system_proxy
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, bool, bool]] = set()
+
+    def add(label: str, proxy_url: str, verify: bool, trust_env: bool) -> None:
+        normalised = _normalise_proxy_url(proxy_url)
+        key = (normalised, bool(verify), bool(trust_env))
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(
+            {
+                "label": label,
+                "proxy_url": normalised,
+                "ssl_verify": bool(verify),
+                "trust_env": bool(trust_env),
+            }
+        )
+
+    def add_with_tls_fallback(label: str, proxy_url: str, trust_env: bool) -> None:
+        add(label, proxy_url, ssl_verify, trust_env)
+        if ssl_verify:
+            add(f"{label}（忽略 ASF 证书异常）", proxy_url, False, trust_env)
+
+    add_with_tls_fallback("当前网络设置", current_proxy, proxy_enabled)
+    add_with_tls_fallback("直连", "", False)
+    if system_proxy:
+        add_with_tls_fallback("系统代理", system_proxy, True)
+    if saved_proxy:
+        add_with_tls_fallback("保存的代理", saved_proxy, True)
+    return candidates
+
+
 def _missing_dep(feature: str, exc: Exception) -> dict:
     """Friendly envelope when an optional dependency is not installed."""
     return {
@@ -59,6 +124,138 @@ def _dump_optional(model: Any | None) -> Any | None:
     return _dump(model) if model is not None else None
 
 
+def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
+    """Return safe, compact download history records for persistence/UI."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value[:80]:
+        if not isinstance(item, dict):
+            continue
+        task_id = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        status = str(item.get("status") or "").strip()
+        detail = str(item.get("detail") or "").strip()
+        if not task_id or not name or not status:
+            continue
+        try:
+            ts = int(float(item.get("ts") or 0))
+        except (TypeError, ValueError):
+            ts = 0
+        raw_logs = item.get("logs")
+        logs = [str(line)[:2000] for line in raw_logs[:120]] if isinstance(raw_logs, list) else []
+        out.append(
+            {
+                "id": task_id[:240],
+                "name": name[:120],
+                "status": status[:40],
+                "detail": detail[:2000],
+                "ts": ts,
+                "logs": logs,
+            }
+        )
+    return out
+
+
+def _normalise_download_archive_for_startup(value: Any) -> list[dict[str, Any]]:
+    """Convert stale running records from a previous process into interrupted records."""
+    items = _clean_download_archive(value)
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("status") == "running":
+            logs = list(item.get("logs") or [])
+            logs.append("应用上次关闭时任务仍在运行；可重新开始同一输出目录以断点续传。")
+            item = {
+                **item,
+                "status": "interrupted",
+                "detail": f"上次关闭时仍在运行：{item.get('detail') or ''}".strip(),
+                "logs": logs[-120:],
+            }
+        out.append(item)
+    return out
+
+
+def _merge_download_archive(
+    incoming: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge UI-submitted task history with backend history without dropping rows."""
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [*incoming, *existing]:
+        task_id = str(item.get("id") or "")
+        if not task_id or task_id in seen:
+            continue
+        merged.append(item)
+        seen.add(task_id)
+    return merged[:40]
+
+
+def _normalise_downloadable_dem_dataset(value: Any, *, fallback: str = "COP30") -> str:
+    """Keep the session DEM dataset on an OpenTopography-downloadable source."""
+    name = str(value or "").strip().upper()
+    try:
+        from insar_prep.providers.dem.downloader import opentopo_demtype
+    except Exception:  # noqa: BLE001 - fallback is safer than persisting USER_LOCAL
+        return name or fallback
+    if name and opentopo_demtype(name) is not None:
+        return name
+    return fallback
+
+
+def _is_desktop_selftest_snapshot(data: Any) -> bool:
+    """Detect old smoke-test state accidentally written to the real app profile."""
+    if not isinstance(data, dict):
+        return False
+    workspace = data.get("workspace")
+    if not isinstance(workspace, dict):
+        return False
+    settings = workspace.get("global_settings")
+    if not isinstance(settings, dict) or settings.get("display_name") != "selftest":
+        return False
+    projects = workspace.get("projects")
+    if not isinstance(projects, list) or len(projects) != 1:
+        return False
+    project = projects[0]
+    if not isinstance(project, dict) or project.get("project_name") != "p":
+        return False
+    regions = project.get("regions")
+    if not isinstance(regions, list) or len(regions) != 1:
+        return False
+    region = regions[0]
+    if not isinstance(region, dict) or region.get("region_name") != "r":
+        return False
+    scenes = region.get("scenes")
+    if not isinstance(scenes, list) or len(scenes) != 1:
+        return False
+    scene = scenes[0]
+    return (
+        isinstance(scene, dict)
+        and scene.get("scene_id")
+        == "S1A_IW_SLC__1SDV_20240312T223805_20240312T223832_052914_0667A5_8F5C"
+    )
+
+
+def _is_empty_legacy_default_snapshot(data: Any) -> bool:
+    """Detect old blank snapshots that only contain prefilled default settings."""
+    if not isinstance(data, dict):
+        return False
+    if data.get("workspace") is not None:
+        return False
+    if data.get("current_project_id") or data.get("current_region_id"):
+        return False
+    settings = data.get("network_settings")
+    if not isinstance(settings, dict):
+        return False
+    cache_dir = str(settings.get("cache_dir") or "").replace("/", "\\")
+    return (
+        str(settings.get("proxy_url") or "") == "http://127.0.0.1:10808"
+        and bool(settings.get("cache_enabled")) is True
+        and int(settings.get("cache_limit_mb") or 0) == 5120
+        and cache_dir.endswith("\\InSAR Assistant\\cache")
+    )
+
+
 class Api:
     """The object exposed to the web UI as ``window.pywebview.api``."""
 
@@ -70,10 +267,12 @@ class Api:
         self._asf_download = AsfDownloadJob()
         self._orbit_download = OrbitDownloadJob()
         self._activity = ActivityLog()
+        self._download_archive: list[dict[str, Any]] = []
         self._standalone_scenes: list[Any] = []
         self._last_orbit_report: Any | None = None
         self._metadata_status: dict[str, Any] = self._idle_metadata_status()
         self._network_settings = self._default_network_settings()
+        self._applied_proxy_url: str | None = None
         self._state_path = self._desktop_state_path()
         self._load_state()
         self._apply_network_settings()
@@ -92,6 +291,13 @@ class Api:
             from insar_prep.core.models import Workspace
 
             data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            if _is_desktop_selftest_snapshot(data) or _is_empty_legacy_default_snapshot(data):
+                try:
+                    self._state_path.unlink()
+                except OSError:
+                    pass
+                self._activity.add("已清理旧版空白默认状态，启动为空白工作台。", kind="warning")
+                return
             workspace = data.get("workspace")
             if workspace:
                 self._state.workspace = Workspace.model_validate(workspace)
@@ -99,13 +305,16 @@ class Api:
                 self._state.current_region_id = data.get("current_region_id")
             dataset = data.get("dem_dataset")
             if isinstance(dataset, str) and dataset.strip():
-                self._dem_dataset = dataset.strip().upper()
+                self._dem_dataset = _normalise_downloadable_dem_dataset(dataset)
             settings = data.get("network_settings")
             if isinstance(settings, dict):
                 self._network_settings = {
                     **self._default_network_settings(),
                     **settings,
                 }
+            self._download_archive = _normalise_download_archive_for_startup(
+                data.get("download_archive")
+            )
         except Exception as exc:  # noqa: BLE001 - corrupt snapshots should not break startup
             self._activity.add(f"本地项目状态恢复失败：{exc}", kind="warning")
 
@@ -121,6 +330,7 @@ class Api:
                 "current_region_id": self._state.current_region_id,
                 "dem_dataset": self._dem_dataset,
                 "network_settings": self._network_settings,
+                "download_archive": _clean_download_archive(self._download_archive),
             }
             self._state_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
@@ -134,23 +344,45 @@ class Api:
 
     @staticmethod
     def _default_network_settings() -> dict:
-        base = os.environ.get("LOCALAPPDATA")
-        root = Path(base) if base else Path.home() / "AppData" / "Local"
+        default_cache = Path("C:/InSAR/insar_assistant_cache")
+        if os.name != "nt":
+            base = os.environ.get("LOCALAPPDATA")
+            root = Path(base) if base else Path.home() / "AppData" / "Local"
+            default_cache = root / "InSAR Assistant" / "cache"
         return {
             "proxy_enabled": False,
-            "proxy_url": "http://127.0.0.1:10808",
+            "proxy_url": "",
             "cache_enabled": True,
-            "cache_dir": str(root / "InSAR Assistant" / "cache"),
-            "cache_limit_mb": 5120,
+            "cache_dir": str(default_cache),
+            "cache_limit_mb": 10240,
             "tianditu_token": "",
+            "asf_ssl_verify": True,
         }
 
     def _apply_network_settings(self) -> None:
         settings = self._network_settings
         proxy = str(settings.get("proxy_url") or "").strip()
+        proxy_keys = (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        )
+        for key in proxy_keys:
+            os.environ.pop(key, None)
+        self._applied_proxy_url = None
         if bool(settings.get("proxy_enabled")) and proxy:
-            for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            for key in proxy_keys:
                 os.environ[key] = proxy
+            self._applied_proxy_url = proxy
+        cache_dir = str(settings.get("cache_dir") or "").strip()
+        if bool(settings.get("cache_enabled")) and cache_dir:
+            try:
+                Path(cache_dir).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._activity.add(f"缓存目录创建失败：{exc}", kind="warning")
 
     def _default_workspace_root(self) -> Path:
         """Return the low-friction workspace root used for direct AOI/SAR actions."""
@@ -166,7 +398,6 @@ class Api:
         """
         if self._state.workspace is None:
             root = self._default_workspace_root()
-            root.mkdir(parents=True, exist_ok=True)
             self._state.create_workspace(root, "默认工作区")
 
         project = self._state.current_project()
@@ -175,7 +406,6 @@ class Api:
                 project = self._state.select_project(self._state.workspace.projects[0].project_id)
             else:
                 project = self._state.add_project("default_task")
-                project.project_root.mkdir(parents=True, exist_ok=True)
 
         region = self._state.current_region()
         if region is None:
@@ -183,7 +413,6 @@ class Api:
                 region = self._state.select_region(project.regions[0].region_id)
             else:
                 region = self._state.add_region("default_area")
-                region.region_root.mkdir(parents=True, exist_ok=True)
         return region
 
     def get_network_settings(self) -> dict:
@@ -195,7 +424,12 @@ class Api:
         incoming = settings or {}
         current = {**self._default_network_settings(), **self._network_settings}
 
-        proxy_url = str(incoming.get("proxy_url", current["proxy_url"]) or "").strip()
+        proxy_enabled = bool(incoming.get("proxy_enabled", current["proxy_enabled"]))
+        proxy_url = _normalise_proxy_url(incoming.get("proxy_url", current["proxy_url"]))
+        proxy_auto_detected = False
+        if proxy_enabled and not proxy_url:
+            proxy_url = _detect_system_proxy()
+            proxy_auto_detected = bool(proxy_url)
         cache_dir = str(incoming.get("cache_dir", current["cache_dir"]) or "").strip()
         tianditu_token = str(incoming.get("tianditu_token", current["tianditu_token"]) or "").strip()
         try:
@@ -204,12 +438,13 @@ class Api:
             return _error_msg("缓存容量必须是数字", "GUI003")
 
         self._network_settings = {
-            "proxy_enabled": bool(incoming.get("proxy_enabled", current["proxy_enabled"])),
+            "proxy_enabled": proxy_enabled,
             "proxy_url": proxy_url,
             "cache_enabled": bool(incoming.get("cache_enabled", current["cache_enabled"])),
             "cache_dir": cache_dir,
             "cache_limit_mb": max(0, cache_limit),
             "tianditu_token": tianditu_token,
+            "asf_ssl_verify": bool(incoming.get("asf_ssl_verify", current["asf_ssl_verify"])),
         }
         if cache_dir:
             try:
@@ -218,12 +453,120 @@ class Api:
                 return _error_msg(f"无法创建缓存目录：{exc}", "GUI003")
         self._apply_network_settings()
         self._save_state()
-        self._act("已保存网络代理与缓存设置", kind="settings")
+        if proxy_enabled and proxy_auto_detected:
+            self._act(f"已自动使用系统代理：{proxy_url}", kind="settings")
+        elif proxy_enabled and not proxy_url:
+            self._act("已启用代理，但未填写代理地址，也未检测到系统代理", kind="warning")
+        else:
+            self._act("已保存网络代理与缓存设置", kind="settings")
         return self.get_network_settings()
 
     def get_activity(self, limit: int = 12) -> dict:
         """Return recent in-session actions for the overview feed."""
         return self._activity.list(limit=limit)
+
+    def get_download_archive(self) -> dict:
+        """Return persisted download/task history across app restarts."""
+        return {"ok": True, "items": _clean_download_archive(self._download_archive)}
+
+    def _upsert_download_archive_item(self, item: dict[str, Any]) -> None:
+        cleaned = _clean_download_archive([item])
+        if not cleaned:
+            return
+        next_item = cleaned[0]
+        previous = next((old for old in self._download_archive if old.get("id") == next_item["id"]), None)
+        if previous is not None:
+            same = all(
+                previous.get(key) == next_item.get(key)
+                for key in ("name", "status", "detail", "logs")
+            )
+            if same:
+                return
+            if previous.get("status") == "paused" and next_item.get("status") == "paused":
+                next_item["ts"] = previous.get("ts") or next_item["ts"]
+        self._download_archive = [
+            next_item,
+            *(old for old in self._download_archive if old.get("id") != next_item["id"]),
+        ][:40]
+        self._save_state()
+
+    def _archive_asf_status(self, status: dict[str, Any]) -> None:
+        state = str(status.get("state") or "")
+        if state not in {"running", "paused", "finished", "failed", "cancelled", "interrupted"}:
+            return
+        active = status.get("active_downloads")
+        active_names = ""
+        if isinstance(active, list):
+            active_names = "；".join(
+                str(item.get("scene_id") or "")
+                for item in active[: int(status.get("concurrency") or 1)]
+                if isinstance(item, dict) and item.get("scene_id")
+            )
+        detail = (
+            str(status.get("error") or "")
+            or str(status.get("summary_line") or "")
+            or (f"正在下载：{active_names}" if active_names else "")
+            or f"{int(status.get('done') or 0)}/{int(status.get('total') or 0)}"
+        )
+        logs = [
+            str(entry.get("detail") or "")
+            for entry in (status.get("log") or [])
+            if isinstance(entry, dict) and entry.get("detail")
+        ]
+        archive_key = status.get("results_path") or status.get("output_dir") or "active"
+        self._upsert_download_archive_item(
+            {
+                "id": f"asf:{archive_key}:{int(status.get('total') or 0)}",
+                "name": "ASF Sentinel-1 数据下载",
+                "status": state,
+                "detail": detail,
+                "ts": int(time.time() * 1000),
+                "logs": logs,
+            }
+        )
+
+    def _archive_orbit_status(self, status: dict[str, Any]) -> None:
+        state = str(status.get("state") or "")
+        if state not in {"running", "paused", "finished", "failed", "cancelled", "interrupted"}:
+            return
+        detail = (
+            str(status.get("error") or "")
+            or str(status.get("summary_line") or "")
+            or (
+                f"正在处理：{status.get('current_scene')}"
+                if status.get("current_scene")
+                else ""
+            )
+            or f"{int(status.get('done') or 0)}/{int(status.get('total') or 0)}"
+        )
+        logs = [
+            str(entry.get("detail") or "")
+            for entry in (status.get("log") or [])
+            if isinstance(entry, dict) and entry.get("detail")
+        ]
+        archive_key = status.get("orbit_dir") or "active"
+        self._upsert_download_archive_item(
+            {
+                "id": f"orbit:{archive_key}:{int(status.get('total') or 0)}",
+                "name": "Sentinel-1 精密轨道下载",
+                "status": state,
+                "detail": detail,
+                "ts": int(time.time() * 1000),
+                "logs": logs,
+            }
+        )
+
+    def save_download_archive(self, items: list[dict[str, Any]] | None = None) -> dict:
+        """Persist the UI download/task history."""
+        incoming = _clean_download_archive(items or [])[:40]
+        if not incoming and self._download_archive:
+            return self.get_download_archive()
+        self._download_archive = _merge_download_archive(
+            incoming,
+            _clean_download_archive(self._download_archive),
+        )
+        self._save_state()
+        return self.get_download_archive()
 
     # ------------------------------------------------------------------ app
     def get_app_info(self) -> dict:
@@ -233,6 +576,43 @@ class Api:
             "name": "InSAR Assistant",
             "version": __version__,
             "offline": True,
+        }
+
+    def check_for_update(self, force: bool = False) -> dict:
+        """Best-effort desktop update check against the public GitHub release."""
+        try:
+            from insar_prep.core.update_check import maybe_check_for_update, releases_page_url
+
+            info = maybe_check_for_update(force=bool(force))
+            fallback_url = releases_page_url()
+        except Exception as exc:  # noqa: BLE001 - update checks must never disturb startup
+            return {
+                "ok": True,
+                "checked": False,
+                "update_available": False,
+                "current_version": __version__,
+                "latest_version": __version__,
+                "html_url": "https://github.com/hhanmj/insar_assistant/releases/latest",
+                "message": f"暂时无法检查更新：{exc}",
+            }
+        if info is None:
+            return {
+                "ok": True,
+                "checked": True,
+                "update_available": False,
+                "current_version": __version__,
+                "latest_version": __version__,
+                "html_url": fallback_url,
+                "message": "当前没有发现新版本，或暂时无法连接更新服务。",
+            }
+        return {
+            "ok": True,
+            "checked": True,
+            "update_available": bool(info.update_available),
+            "current_version": info.current_version,
+            "latest_version": info.latest_version,
+            "html_url": info.html_url,
+            "message": "发现新版，可打开 GitHub Releases 下载。",
         }
 
     def get_workflow_status(self) -> dict:
@@ -564,17 +944,42 @@ class Api:
             return _error_msg(f"无法打开浏览器：{exc}", "GUI000")
         return {"ok": bool(opened), "url": target}
 
+    def open_path(self, path: str) -> dict:
+        """Open a local file or folder in Windows Explorer."""
+        raw = (path or "").strip().strip('"')
+        if not raw:
+            return _error_msg("路径不能为空", "GUI003")
+        target = Path(raw)
+        if target.is_file():
+            target = target.parent
+        elif not target.exists() and target.parent.exists():
+            target = target.parent
+        if not target.exists():
+            return _error_msg(f"路径不存在：{raw}", "GUI003")
+        try:
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(f"无法打开目录：{exc}", "GUI000")
+        return {"ok": True, "path": str(target)}
+
     def set_dem_dataset(self, dataset: str) -> dict:
         """Set the DEM dataset for the session (conversion is auto-derived)."""
         name = (dataset or "").strip().upper()
         try:
             from insar_prep.core.enums import DemDataset
+            from insar_prep.providers.dem.downloader import opentopo_demtype
 
             valid = {d.value for d in DemDataset}
         except Exception as exc:  # noqa: BLE001
             return _missing_dep("DEM 数据集", exc)
         if name not in valid:
             return _error_msg(f"未知 DEM 数据集：{dataset}", "DEM004")
+        if opentopo_demtype(name) is None:
+            return _error_msg(
+                "USER_LOCAL 是本地 DEM 转换来源，不能通过 OpenTopography 在线下载；"
+                "请选择 COP30、SRTM、AW3D30 等在线 DEM，或使用“本地 DEM 转换”。",
+                "DEM001",
+            )
         self._dem_dataset = name
         self._save_state()
         return {"ok": True, "dataset": name}
@@ -776,6 +1181,7 @@ class Api:
         return {
             "ok": True,
             "aoi": _dump(aoi),
+            "aoi_geojson": _extract_geojson_geometry(geojson),
             "region_id": region.region_id,
             "region_name": region.region_name,
         }
@@ -1091,6 +1497,7 @@ class Api:
             return _missing_dep("ASF 检索", exc)
 
         bbox = None
+        aoi_geojson = payload.get("aoi_geojson") if isinstance(payload.get("aoi_geojson"), dict) else None
         raw_bbox = payload.get("bbox")
         if isinstance(raw_bbox, dict):
             try:
@@ -1107,6 +1514,12 @@ class Api:
             region = self._state.current_region()
             if region is not None and region.aoi is not None and region.aoi.bbox is not None:
                 bbox = region.aoi.bbox
+            if aoi_geojson is None and region is not None:
+                aoi_geojson = _aoi_geojson(region)
+        if aoi_geojson is None and bool(payload.get("use_current_aoi", True)):
+            region = self._state.current_region()
+            if region is not None:
+                aoi_geojson = _aoi_geojson(region)
 
         def _optional_int(name: str) -> int | None:
             value = payload.get(name)
@@ -1116,8 +1529,10 @@ class Api:
 
         try:
             self._set_metadata_status("running", 0, 1, "正在准备 ASF 检索")
+            search_stats: dict[str, Any] = {}
             scenes = search_scenes_from_asf(
                 bbox=bbox,
+                aoi_geojson=aoi_geojson,
                 start=str(payload.get("start") or "").strip() or None,
                 end=str(payload.get("end") or "").strip() or None,
                 product_type=str(payload.get("product_type") or "SLC"),
@@ -1128,6 +1543,7 @@ class Api:
                 frame=_optional_int("frame"),
                 max_results=_optional_int("max_results") or 50,
                 progress=lambda done, total, msg: self._set_metadata_status("running", done, total, msg),
+                stats=search_stats,
             )
             stored, label = self._store_imported_scenes(scenes)
             self._set_metadata_status("finished", 1, 1, "ASF 检索与元数据解析完成")
@@ -1145,6 +1561,13 @@ class Api:
             "duplicates": [],
             "errors": [],
             "queried": len(scenes),
+            "search": {
+                "requested_limit": search_stats.get("requested_limit"),
+                "query_limit": search_stats.get("query_limit"),
+                "total_count": search_stats.get("total_count"),
+                "returned_count": len(stored),
+                "source": search_stats.get("source") or "ASF",
+            },
         }
 
     def check_scenes(self) -> dict:
@@ -1254,23 +1677,33 @@ class Api:
         if not out:
             return _error_msg("请指定输出根目录，轨道将保存到 Sentinel_Orbit\\AUX_POEORB", "GUI003")
         self._act(f"开始精密轨道下载：{label}（{len(scenes)} 景）", kind="download")
-        return self._orbit_download.start(scenes, out, activity=self._activity)
+        result = self._orbit_download.start(scenes, out, activity=self._activity)
+        self._archive_orbit_status(self._orbit_download.get_status())
+        return result
 
     def pause_orbit_download(self) -> dict:
         """Pause orbit downloads between scenes."""
-        return self._orbit_download.pause()
+        result = self._orbit_download.pause()
+        self._archive_orbit_status(self._orbit_download.get_status())
+        return result
 
     def resume_orbit_download(self) -> dict:
         """Resume a paused orbit download."""
-        return self._orbit_download.resume()
+        result = self._orbit_download.resume()
+        self._archive_orbit_status(self._orbit_download.get_status())
+        return result
 
     def stop_orbit_download(self) -> dict:
         """Cancel the in-progress orbit download."""
-        return self._orbit_download.stop()
+        result = self._orbit_download.stop()
+        self._archive_orbit_status(self._orbit_download.get_status())
+        return result
 
     def get_orbit_download_status(self) -> dict:
         """Poll orbit download progress."""
-        return self._orbit_download.get_status()
+        status = self._orbit_download.get_status()
+        self._archive_orbit_status(status)
+        return status
 
     # ----------------------------------------------------------- 3. DOWNLOAD
     def plan_asf_download(self, output_dir: str = "") -> dict:
@@ -1315,39 +1748,123 @@ class Api:
         if not out:
             return _error_msg("请指定输出根目录", "GUI003")
         try:
-            from insar_prep.providers.asf.credentials import CredentialSource
+            from insar_prep.providers.asf.credentials import CredentialSource, resolve_credentials
 
             src = CredentialSource((credential_source or "auto").strip().lower())
         except Exception:  # noqa: BLE001
             return _error_msg(f"未知凭据来源：{credential_source}", "GUI003")
+        try:
+            resolved = resolve_credentials(src)
+        except InsarPrepError:
+            return _error_msg(
+                "开始 Sentinel-1 下载前，请先在设置中保存 Earthdata Token 或账号密码。",
+                "DL004",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(
+                f"Earthdata 凭据检查失败：{exc}",
+                "DL004",
+            )
         workers = max(1, min(int(max_concurrent or 1), 8))
+        proxy_url = ""
+        trust_env = False
+        asf_ssl_verify = bool(self._network_settings.get("asf_ssl_verify", True))
+        try:
+            from insar_prep.providers.asf.download_plan import SLC_SUBDIR
+            from insar_prep.providers.asf.downloader import (
+                RealAsfDownloader,
+                download_requests_from_scenes,
+            )
+
+            requests = download_requests_from_scenes(scenes, slc_dir=Path(out) / SLC_SUBDIR)
+            if not requests:
+                return _error_msg("当前影像没有 ASF 下载 URL，请先重新检索或导入 ASF 官方文件。", "ASF003")
+            chosen_network: dict[str, Any] | None = None
+            preflight_notes: list[str] = []
+            code = "DL005"
+            for network_mode in _asf_network_candidates(self._network_settings):
+                preflight = RealAsfDownloader(
+                    resolved=resolved,
+                    proxy_url=network_mode["proxy_url"],
+                    ssl_verify=network_mode["ssl_verify"],
+                    trust_env=network_mode["trust_env"],
+                    verify_bytes=64 * 1024,
+                    timeout=45.0,
+                ).verify(requests[0])
+                if preflight.outcome.value == "verified":
+                    chosen_network = network_mode
+                    break
+                detail = preflight.message or "网络预检未通过"
+                code = preflight.error_code or code
+                preflight_notes.append(f"{network_mode['label']}：{detail}")
+                if code == "DL004":
+                    break
+            if chosen_network is None:
+                detail = "；".join(preflight_notes[:6]) or "网络预检未通过"
+                self._act(f"ASF 下载预检失败：{detail}", kind="warning")
+                return _error_msg(f"ASF 下载预检失败：{detail}", code)
+            proxy_url = str(chosen_network["proxy_url"])
+            asf_ssl_verify = bool(chosen_network["ssl_verify"])
+            trust_env = bool(chosen_network["trust_env"])
+            if chosen_network["label"] != "当前网络设置":
+                self._act(
+                    f"已自动改用 ASF 可用网络方案：{chosen_network['label']}",
+                    kind="settings",
+                )
+            if getattr(resolved, "username", None) or getattr(resolved, "use_netrc", False):
+                self._act("已使用保存的 Earthdata 账号自动刷新下载 token", kind="settings")
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001 - preflight should be explicit
+            return _error_msg(f"ASF 下载预检失败：{exc}", "DL005")
         self._act(
             f"开始 ASF Sentinel-1 下载：{label}（{len(scenes)} 景，并发 {workers}）",
             kind="download",
         )
-        return self._asf_download.start(
+        result = self._asf_download.start(
             scenes,
             out,
             credential_source=src,
             max_concurrent=workers,
+            proxy_url=proxy_url,
+            ssl_verify=asf_ssl_verify,
+            trust_env=trust_env,
             activity=self._activity,
         )
+        get_status = getattr(self._asf_download, "get_status", None)
+        if callable(get_status):
+            self._archive_asf_status(get_status())
+        return result
 
     def pause_asf_download(self) -> dict:
         """Pause between scenes (current scene finishes first)."""
-        return self._asf_download.pause()
+        result = self._asf_download.pause()
+        self._archive_asf_status(self._asf_download.get_status())
+        return result
 
     def resume_asf_download(self) -> dict:
         """Resume a paused download."""
-        return self._asf_download.resume()
+        result = self._asf_download.resume()
+        self._archive_asf_status(self._asf_download.get_status())
+        return result
 
     def stop_asf_download(self) -> dict:
         """Cancel the in-progress download."""
-        return self._asf_download.stop()
+        result = self._asf_download.stop()
+        self._archive_asf_status(self._asf_download.get_status())
+        return result
+
+    def retry_asf_download(self) -> dict:
+        """Retry only failed/interrupted scenes from the previous ASF download."""
+        result = self._asf_download.retry_failed(activity=self._activity)
+        self._archive_asf_status(self._asf_download.get_status())
+        return result
 
     def get_download_status(self) -> dict:
         """Poll ASF download progress (state, counts, recent log lines)."""
-        return self._asf_download.get_status()
+        status = self._asf_download.get_status()
+        self._archive_asf_status(status)
+        return status
 
     def plan_dem_download(self, output_dir: str = "", dataset: str = "COP30") -> dict:
         """Build + validate (dry-run) the DEM request plan for the region AOI."""
@@ -1461,6 +1978,13 @@ class Api:
             return _error_msg("请先创建或选择区域，或使用独立 bbox 下载 DEM", "GUI002")
         if region.aoi is None or region.aoi.bbox is None:
             return _error_msg("请先在『区域 AOI』设置处理范围（bbox）", "AOI001")
+        dataset = _normalise_downloadable_dem_dataset(dataset, fallback="")
+        if not dataset:
+            return _error_msg(
+                "当前选择的是本地 DEM 来源，不能执行在线下载；请选择一个 OpenTopography 数据集，"
+                "或在“本地 DEM 转换”中选择已有 DEM 文件。",
+                "DEM001",
+            )
         try:
             plan, _ = self._create_dem_request_plan(
                 region_id=region.region_id,
@@ -1486,6 +2010,13 @@ class Api:
         key_source: str = "auto",
     ) -> dict:
         """Download a standalone DEM from a bbox via OpenTopography."""
+        dataset = _normalise_downloadable_dem_dataset(dataset, fallback="")
+        if not dataset:
+            return _error_msg(
+                "当前选择的是本地 DEM 来源，不能执行在线下载；请选择一个 OpenTopography 数据集，"
+                "或在“本地 DEM 转换”中选择已有 DEM 文件。",
+                "DEM001",
+            )
         try:
             from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 
@@ -1659,9 +2190,29 @@ class Api:
                 return "unavailable"
 
         def _asf():
-            from insar_prep.providers.asf.credentials import stored_credential_status
+            from insar_prep.providers.asf.credentials import (
+                CredentialSource,
+                EARTHDATA_TOKEN_ENV,
+                resolve_credentials,
+                stored_credential_status,
+            )
 
-            return stored_credential_status
+            def status() -> str:
+                try:
+                    stored = stored_credential_status()
+                except Exception:  # noqa: BLE001
+                    stored = "unavailable"
+                if stored not in {"none", "unavailable"}:
+                    return stored
+                if os.environ.get(EARTHDATA_TOKEN_ENV):
+                    return "env-token"
+                try:
+                    resolved = resolve_credentials(CredentialSource.NETRC)
+                except Exception:  # noqa: BLE001
+                    return "unavailable" if stored == "unavailable" else "none"
+                return "netrc" if resolved.use_netrc else resolved.source.value
+
+            return status
 
         def _dem():
             from insar_prep.providers.dem.credentials import stored_api_key_status
@@ -1678,6 +2229,74 @@ class Api:
             "earthdata": _safe(_asf),
             "opentopography": _safe(_dem),
             "gacos": _safe(_gacos),
+        }
+
+    def check_earthdata_auth(self) -> dict:
+        """Probe saved Earthdata credentials and report only user-actionable states."""
+        try:
+            from insar_prep.providers.asf.credentials import (
+                CredentialSource,
+                resolve_credentials,
+                stored_credential_status,
+            )
+            from insar_prep.providers.asf.downloader import probe_earthdata_auth
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": True,
+                "configured": False,
+                "status": "unavailable",
+                "message": f"Earthdata 凭据检查不可用：{exc}",
+            }
+
+        try:
+            stored = stored_credential_status()
+        except Exception:  # noqa: BLE001
+            stored = "unavailable"
+        try:
+            resolved = resolve_credentials(CredentialSource.AUTO)
+        except Exception as exc:  # noqa: BLE001
+            if stored in {"none", "unavailable"}:
+                return {
+                    "ok": True,
+                    "configured": False,
+                    "status": "missing",
+                    "message": "未保存 Earthdata/ASF 凭据。",
+                }
+            return {
+                "ok": True,
+                "configured": True,
+                "status": "invalid",
+                "message": f"Earthdata 凭据无法读取：{exc}",
+            }
+
+        proxy_enabled = bool(self._network_settings.get("proxy_enabled"))
+        proxy_url = (
+            _normalise_proxy_url(self._network_settings.get("proxy_url"))
+            if proxy_enabled
+            else ""
+        )
+        if proxy_enabled and not proxy_url:
+            proxy_url = _detect_system_proxy()
+        ok, message = probe_earthdata_auth(
+            resolved,
+            proxy_url=proxy_url,
+            ssl_verify=bool(self._network_settings.get("asf_ssl_verify", True)),
+            trust_env=proxy_enabled,
+            timeout=20.0,
+        )
+        if ok:
+            return {
+                "ok": True,
+                "configured": True,
+                "status": "valid",
+                "message": "Earthdata/ASF 凭据正常。",
+            }
+        status = "expired" if "401" in message or "403" in message or "rejected" in message else "unknown"
+        return {
+            "ok": True,
+            "configured": True,
+            "status": status,
+            "message": message,
         }
 
     def save_earthdata_token(self, token: str) -> dict:
@@ -1971,7 +2590,7 @@ class Api:
         )
 
         if dataset.strip():
-            self._dem_dataset = dataset.strip().upper()
+            self._dem_dataset = _normalise_downloadable_dem_dataset(dataset)
         out = output_dir.strip() or self._default_output()
         if not out:
             raise ValueError("请指定输出根目录")
@@ -2195,8 +2814,9 @@ class Api:
                 safe = "local_dem"
 
         out = Path((output_dir or "").strip() or self._default_output() or raw_path.parent)
-        ellipsoid_path = out / "04_dem" / "ellipsoid" / f"{safe}_ellipsoid.tif"
-        sarscape_path = out / "06_sarscape_ready" / f"{safe}_dem.tif"
+        dem_root = out / "DEM"
+        ellipsoid_path = dem_root / f"{safe}_ellipsoid.tif"
+        sarscape_path = dem_root / f"{safe}_dem"
         request_plan = DemRequestPlan(
             region_id=region_id,
             region_safe_name=safe,
@@ -2390,7 +3010,7 @@ def _conversion_summary(conv_plan: Any) -> dict:
             break
     if not requires:
         message = (
-            f"该 DEM 高程基准已为 {source}（椭球高），无需转换，直接复制为 SARscape 就绪 DEM。"
+            f"该 DEM 高程基准已为 {source}（椭球高），无需垂直基准转换，将导出 SARscape ENVI _dem + .hdr。"
         )
     elif requires_geoid and geoid:
         message = (

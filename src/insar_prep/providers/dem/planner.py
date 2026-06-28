@@ -22,7 +22,6 @@ from insar_prep.core.exceptions import DemProcessingError, InputValidationError
 from insar_prep.core.logging import get_logger
 from insar_prep.core.models import Aoi, DownloadTask
 from insar_prep.core.naming import (
-    SARSCAPE_READY_DIR,
     is_sarscape_safe_name,
     sarscape_safe_name,
     validate_sarscape_ready_path,
@@ -34,7 +33,6 @@ from insar_prep.providers.dem.types import (
     DemRequestPlan,
 )
 from insar_prep.quality.types import CheckSeverity
-from insar_prep.sar_apps.sarscape import ensure_sarscape_dem_name
 
 logger = get_logger("providers.dem.planner")
 
@@ -45,6 +43,23 @@ DEM_PROVIDER_UNSUPPORTED = "DEM_PROVIDER_UNSUPPORTED"
 DEM_SARSCAPE_NAME_INVALID = "DEM_SARSCAPE_NAME_INVALID"
 DEM_VERTICAL_DATUM_UNKNOWN = "DEM_VERTICAL_DATUM_UNKNOWN"
 DEM_PLAN_READY = "DEM_PLAN_READY"
+
+_DEM_SOURCE_STEMS = {
+    "SRTM_GL3": "SRTM90m",
+    "SRTM_GL1": "SRTM30m",
+    "SRTM_GL1_ELLIPSOIDAL": "SRTM30m",
+    "AW3D30": "AW3D30m",
+    "AW3D30_ELLIPSOIDAL": "AW3D30m",
+    "COP90": "COP90m",
+    "COP30": "COP30m",
+    "NASADEM": "NASADEM",
+}
+
+
+def dem_source_stem(dataset: DemDataset | str) -> str:
+    """Return the short output filename stem for a DEM source."""
+    value = dataset.value if isinstance(dataset, DemDataset) else str(dataset)
+    return _DEM_SOURCE_STEMS.get(value.upper(), sarscape_safe_name(value).upper())
 
 _PROVIDER_TO_TASK_PROVIDER = {
     DemProvider.OPENTOPOGRAPHY.value: Provider.OPENTOPOGRAPHY,
@@ -99,14 +114,11 @@ def create_dem_request_plan(
     processing_bbox = processing_aoi.bbox
     request_bbox = processing_bbox.buffer(buffer_degrees)
 
-    region_root = Path(output_root) / region_safe_name
-    raw_stem = sarscape_safe_name(f"{region_safe_name}_{dataset_value}_raw")
-    ellipsoid_stem = sarscape_safe_name(f"{region_safe_name}_{dataset_value}_ellipsoid")
-    raw_dem_path = region_root / "04_dem" / "raw" / f"{raw_stem}.tif"
-    ellipsoid_dem_path = region_root / "04_dem" / "ellipsoid" / f"{ellipsoid_stem}.tif"
-    sarscape_ready_dem_path = (
-        region_root / SARSCAPE_READY_DIR / ensure_sarscape_dem_name(region_safe_name)
-    )
+    dem_root = Path(output_root) / "DEM"
+    source_stem = dem_source_stem(dataset_value)
+    raw_dem_path = dem_root / f"{source_stem}.tif"
+    ellipsoid_dem_path = dem_root / f"{source_stem}_ellipsoid.tif"
+    sarscape_ready_dem_path = dem_root / f"{source_stem}_dem"
     validate_sarscape_ready_path(sarscape_ready_dem_path)
 
     plan = DemRequestPlan(
@@ -170,8 +182,8 @@ def validate_dem_request_plan(plan: DemRequestPlan) -> DemPlanningReport:
         )
     name = plan.sarscape_ready_dem_path.name
     name_invalid = (
-        not name.endswith("_dem.tif")
-        or name.endswith("_ellipsoid.tif")
+        not name.endswith("_dem")
+        or name.endswith("_ellipsoid_dem")
         or not is_sarscape_safe_name(plan.region_safe_name)
     )
     if name_invalid:

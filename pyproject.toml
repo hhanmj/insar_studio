@@ -25,12 +25,15 @@ gui = [
     "PySide6>=6.7",
 ]
 # Real ASF SLC download (NASA Earthdata). Optional: the offline core (prepare /
-# plan-asf-downloads / gui) never needs these. `requests` performs the download;
-# `keyring` stores Earthdata credentials in the OS secret store. Install with:
+# plan-asf-downloads / gui) never needs these. `asf-search` provides ASF's
+# official Earthdata session; `requests` performs the stream; `keyring` stores
+# Earthdata credentials in the OS secret store. Install with:
 # uv sync --extra download
 download = [
     "requests>=2.31",
+    "PySocks>=1.7",
     "keyring>=24",
+    "asf-search>=8.0",
 ]
 # Real DEM vertical-datum conversion (orthometric EGM96/EGM2008 -> WGS84
 # ellipsoid). Optional: the offline core only *plans* the conversion. `rasterio`

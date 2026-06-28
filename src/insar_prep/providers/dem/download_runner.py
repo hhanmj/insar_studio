@@ -42,8 +42,8 @@ if TYPE_CHECKING:
 
 logger = get_logger("providers.dem.download_runner")
 
-# Region-relative subdir for the DEM download results CSV.
-DEM_DOWNLOAD_SUBDIR = "dem_download"
+# Shared DEM output bucket for raw, ellipsoid, SARscape-ready files and CSV logs.
+DEM_DOWNLOAD_SUBDIR = "DEM"
 
 DEM_DOWNLOAD_RESULT_COLUMNS = [
     "region_safe_name",

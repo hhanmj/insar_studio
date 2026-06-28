@@ -98,7 +98,7 @@ def test_dem_plan_builds_paths_without_creating_tif(qt_app: object, tmp_path: Pa
     planning_report, conversion_report = reports
     assert planning_report.plan is not None
     # Planned only: the SARscape-ready path is computed but never created.
-    assert str(planning_report.plan.sarscape_ready_dem_path).endswith("_dem.tif")
+    assert str(planning_report.plan.sarscape_ready_dem_path).endswith("_dem")
     assert list(tmp_path.rglob("*.tif")) == []
     assert "PLANNED ONLY" in window.planning_panel.dem_result_label.text()
     assert "planned only" in window.status_bar_widget.status_text()

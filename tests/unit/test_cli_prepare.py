@@ -412,11 +412,10 @@ def test_prepare_with_dem_plan_adds_sections(
     assert planning is not None
     assert conversion is not None
     items = " ".join(planning["items"])
-    assert "04_dem" in items
-    assert "raw" in items
-    assert "ellipsoid" in items
-    assert "06_sarscape_ready" in items
-    assert "shiliushubao_dem.tif" in items
+    assert "DEM" in items
+    assert "COP30m.tif" in items
+    assert "COP30m_ellipsoid.tif" in items
+    assert "COP30m_dem" in items
     out = capsys.readouterr().out
     assert str(json_path) in out
     assert str(md_path) in out
@@ -554,7 +553,8 @@ def test_prepare_with_gacos_plan_adds_section(
     assert "Request batches" in items
     assert "Request bbox" in items
     assert "Output directory" in items
-    assert "05_atmosphere" in items
+    assert "GACOS" in items
+    assert "requests" in items
     assert "Expected file patterns" in items
     assert "*.ztd" in items
     assert "Manual submission required" in items
@@ -632,7 +632,7 @@ def test_prepare_gacos_plan_creates_no_ztd(tmp_path: Path) -> None:
     assert code == 0
     assert not list(tmp_path.rglob("*.ztd"))
     assert not list(tmp_path.rglob("*.ztd.rsc"))
-    assert not (tmp_path / "shiliushubao" / "05_atmosphere").exists()
+    assert not (tmp_path / "shiliushubao" / "GACOS" / "requests").exists()
 
 
 def test_prepare_dem_and_gacos_share_bbox(tmp_path: Path) -> None:
@@ -820,4 +820,4 @@ def test_prepare_gacos_import_is_read_only(tmp_path: Path) -> None:
     after = {entry.name: entry.stat().st_size for entry in import_dir.iterdir()}
     assert before == after
     # Import checking alone must not create the GACOS requests output tree.
-    assert not (tmp_path / "shiliushubao" / "05_atmosphere").exists()
+    assert not (tmp_path / "shiliushubao" / "GACOS" / "requests").exists()

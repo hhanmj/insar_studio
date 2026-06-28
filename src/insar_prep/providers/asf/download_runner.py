@@ -23,7 +23,7 @@ from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import get_logger, mask_text
 from insar_prep.providers.asf.credentials import CredentialSource, resolve_credentials
-from insar_prep.providers.asf.download_plan import SLC_SUBDIR
+from insar_prep.providers.asf.download_plan import ASF_PLAN_SUBDIR, SLC_SUBDIR
 from insar_prep.providers.asf.downloader import (
     AsfDownloader,
     DownloadOutcome,
@@ -57,7 +57,7 @@ DOWNLOAD_RESULT_COLUMNS = [
 
 def write_download_results_csv(output_dir: Path | str, results: Sequence[DownloadResult]) -> Path:
     """Write a credential-masked per-scene results CSV; return its path."""
-    plan_dir = Path(output_dir) / "asf_download_plan"
+    plan_dir = Path(output_dir) / ASF_PLAN_SUBDIR
     plan_dir.mkdir(parents=True, exist_ok=True)
     results_path = plan_dir / "asf_download_results.csv"
     with results_path.open("w", encoding="utf-8", newline="") as handle:
@@ -128,7 +128,7 @@ def run_asf_download(
     progress: ProgressCallback | None = None,
     cancel_event: Event | None = None,
 ) -> DownloadRunSummary:
-    """Download the SLCs implied by ``scenes`` into ``<output_dir>/02_slc``.
+    """Download the SAR products implied by ``scenes`` into ``<output_dir>/SAR_Data``.
 
     Resolves Earthdata credentials (unless an explicit ``downloader`` is given),
     downloads each unique scene that carries a URL, writes a credential-masked

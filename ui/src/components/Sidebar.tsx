@@ -2,7 +2,6 @@ import {
   Activity,
   CheckCircle2,
   Download,
-  FileText,
   FolderTree,
   LayoutDashboard,
   MapPinned,
@@ -44,7 +43,6 @@ const GROUPS: { label: string; items: Item[] }[] = [
       { key: "aoi", label: "区域 AOI", icon: MapPinned },
       { key: "download", label: "数据任务", icon: Download },
       { key: "convert", label: "DEM 转换", icon: Repeat2 },
-      { key: "report", label: "报告", icon: FileText },
     ],
   },
   {

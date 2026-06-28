@@ -127,10 +127,10 @@ def test_dem_sarscape_suffix_valid() -> None:
         region_id="r1",
         source=Provider.OPENTOPOGRAPHY,
         dataset="COP30",
-        sarscape_ready_path="06_sarscape_ready/DEM/guangdong_dem.tif",
+        sarscape_ready_path="06_sarscape_ready/DEM/guangdong_dem",
     )
     assert dem.sarscape_ready_path is not None
-    assert dem.sarscape_ready_path.name == "guangdong_dem.tif"
+    assert dem.sarscape_ready_path.name == "guangdong_dem"
 
 
 def test_dem_sarscape_suffix_invalid() -> None:
@@ -139,7 +139,7 @@ def test_dem_sarscape_suffix_invalid() -> None:
             region_id="r1",
             source=Provider.OPENTOPOGRAPHY,
             dataset="COP30",
-            sarscape_ready_path="06_sarscape_ready/DEM/guangdong_ellipsoid.tif",
+            sarscape_ready_path="06_sarscape_ready/DEM/guangdong_ellipsoid",
         )
 
 

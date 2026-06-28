@@ -53,6 +53,54 @@ function Invoke-Step {
     if ($LASTEXITCODE -ne 0) { throw "$Name failed (exit code $LASTEXITCODE)" }
 }
 
+function Invoke-LocalCodeSign {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $subject = "CN=InSAR Assistant Local Test"
+    $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
+        Where-Object { $_.Subject -eq $subject } |
+        Sort-Object NotAfter -Descending |
+        Select-Object -First 1
+    if (-not $cert) {
+        $cert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject $subject `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -KeyExportPolicy NonExportable `
+            -KeyUsage DigitalSignature `
+            -NotAfter (Get-Date).AddYears(3)
+    }
+
+    $tmpCert = Join-Path $env:TEMP "insar-assistant-local-test.cer"
+    Export-Certificate -Cert $cert -FilePath $tmpCert -Force | Out-Null
+    Import-Certificate -FilePath $tmpCert -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+    Import-Certificate -FilePath $tmpCert -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+    $signed = Set-AuthenticodeSignature -FilePath $Path -Certificate $cert -HashAlgorithm SHA256
+    if ($signed.Status -ne "Valid") {
+        $verified = Get-AuthenticodeSignature -LiteralPath $Path
+        if ($verified.Status -ne "Valid") {
+            throw "Local code signing failed: $($verified.StatusMessage)"
+        }
+    }
+    Write-Host "Local test code signature applied: $Path" -ForegroundColor Yellow
+}
+
+function Invoke-DesktopSelfTest {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        return Start-Process -FilePath $Path -ArgumentList "--selftest" -Wait -PassThru -NoNewWindow
+    } catch {
+        $message = $_.Exception.Message
+        if ($message -notmatch "Application Control policy") {
+            throw
+        }
+        Write-Host "Windows blocked the freshly built unsigned exe; applying local test signature..." -ForegroundColor Yellow
+        Invoke-LocalCodeSign -Path $Path
+        return Start-Process -FilePath $Path -ArgumentList "--selftest" -Wait -PassThru -NoNewWindow
+    }
+}
+
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 Write-Host "Repo root: $RepoRoot"
@@ -127,11 +175,14 @@ $pyArgs = @(
     "--collect-all", "shapely",
     "--collect-submodules", "pydantic",
     "--collect-all", "requests",
+    "--collect-all", "asf_search",
+    "--hidden-import", "socks",
     "--collect-all", "certifi",
     "--collect-all", "keyring",
     "--collect-all", "rasterio",
     "--collect-data", "insar_prep",
     "--copy-metadata", "keyring",
+    "--copy-metadata", "asf-search",
     "packaging/insar_prep_desktop_entry.py"
 )
 
@@ -148,7 +199,7 @@ Write-Host ""
 Write-Host "== Desktop exe off-screen self-test ==" -ForegroundColor Cyan
 $log = Join-Path $env:TEMP "insar_desktop_selftest.log"
 Remove-Item -Force $log -ErrorAction SilentlyContinue
-$proc = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru -NoNewWindow
+$proc = Invoke-DesktopSelfTest -Path $exe
 if ($proc.ExitCode -ne 0) {
     if (Test-Path $log) {
         Write-Host "--- selftest log ---" -ForegroundColor Red

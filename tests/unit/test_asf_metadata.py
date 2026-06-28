@@ -4,6 +4,7 @@ import pytest
 import requests
 
 from insar_prep.core.exceptions import InputValidationError
+from insar_prep.core.models import BBox
 from insar_prep.providers.asf import metadata
 
 
@@ -125,3 +126,114 @@ def test_grd_enrichment_query_ids_do_not_force_slc_suffix() -> None:
     assert scene.scene_id in query_ids
     assert f"{scene.scene_id}-GRD" in query_ids
     assert f"{scene.scene_id}-SLC" not in query_ids
+
+
+def test_asf_search_overfetches_for_aoi_and_filters_footprints(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+    aoi = {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+    }
+
+    def feature(scene_name: str, west: float, south: float, east: float, north: float) -> dict:
+        return {
+            "type": "Feature",
+            "properties": {"sceneName": scene_name},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[west, south], [east, south], [east, north], [west, north], [west, south]]
+                ],
+            },
+        }
+
+    def fake_get_asf_geojson(params):
+        captured.update(params)
+        return {
+            "features": [
+                feature(
+                    "S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234",
+                    0.2,
+                    0.2,
+                    0.8,
+                    0.8,
+                ),
+                feature(
+                    "S1A_IW_SLC__1SDV_20240113T100000_20240113T100027_052175_064DEF_5678",
+                    2.0,
+                    2.0,
+                    3.0,
+                    3.0,
+                ),
+            ]
+        }
+
+    monkeypatch.setattr(metadata, "_get_asf_geojson", fake_get_asf_geojson)
+
+    scenes = metadata.search_scenes_from_asf(
+        bbox=BBox(west=-10, east=10, south=-10, north=10),
+        aoi_geojson=aoi,
+        product_type="SLC",
+        beam_mode="IW",
+        max_results=10,
+    )
+
+    assert captured["intersectsWith"].startswith("POLYGON")
+    assert "-10" not in captured["intersectsWith"]
+    assert captured["maxResults"] == "60"
+    assert [scene.scene_id for scene in scenes] == [
+        "S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234"
+    ]
+
+
+def test_asf_search_without_aoi_uses_requested_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_get_asf_geojson(params):
+        captured.update(params)
+        return {"features": []}
+
+    monkeypatch.setattr(metadata, "_get_asf_geojson", fake_get_asf_geojson)
+
+    scenes = metadata.search_scenes_from_asf(product_type="SLC", beam_mode="IW", max_results=30)
+
+    assert scenes == []
+    assert captured["maxResults"] == "30"
+
+
+def test_asf_search_reports_total_count_when_stats_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = []
+
+    def fake_get_asf_count(params):
+        assert params["processingLevel"] == "SLC"
+        assert params["maxResults"] == "10"
+        return 123
+
+    def fake_get_asf_geojson(params):
+        return {
+            "features": [
+                {
+                    "properties": {
+                        "sceneName": "S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234",
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(metadata, "_get_asf_count", fake_get_asf_count)
+    monkeypatch.setattr(metadata, "_get_asf_geojson", fake_get_asf_geojson)
+
+    stats: dict[str, object] = {}
+    scenes = metadata.search_scenes_from_asf(
+        product_type="SLC",
+        beam_mode="IW",
+        max_results=10,
+        stats=stats,
+        progress=lambda _done, _total, msg: messages.append(msg),
+    )
+
+    assert len(scenes) == 1
+    assert stats["total_count"] == 123
+    assert stats["requested_limit"] == 10
+    assert stats["returned_count"] == 1
+    assert "匹配总量 123 景" in messages[0]

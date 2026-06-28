@@ -46,7 +46,7 @@ def test_request_splits_into_batches_and_writes_csv(tmp_path: Path) -> None:
     assert summary.total == 2
     assert summary.submitted == 2
     assert [len(req.dates) for req in fake.submitted] == [20, 5]
-    csv_path = tmp_path / "gacos_request" / "gacos_request_results.csv"
+    csv_path = tmp_path / "GACOS" / "gacos_request_results.csv"
     assert csv_path.exists()
     assert summary.results[0].batch_count == 2
 
@@ -117,7 +117,7 @@ class _ProductZipClient:
 
 
 def test_download_fetches_and_imports(tmp_path: Path) -> None:
-    output_dir = tmp_path / "demo" / "05_atmosphere" / "gacos" / "requests"
+    output_dir = tmp_path / "demo" / "GACOS" / "requests"
     summary = run_gacos_download(
         ["http://www.gacos.net/data/demo.zip"],
         output_dir,
@@ -133,8 +133,8 @@ def test_download_fetches_and_imports(tmp_path: Path) -> None:
     assert (output_dir / "20240101.ztd").exists()
     assert (output_dir / "20240101.ztd.rsc").exists()
     # A staging archive is kept alongside, and a fetch results CSV is written.
-    assert (tmp_path / "demo" / "05_atmosphere" / "gacos" / "downloads").exists()
-    assert (output_dir / "gacos_request" / "gacos_download_results.csv").exists()
+    assert (tmp_path / "demo" / "GACOS" / "downloads").exists()
+    assert (output_dir / "gacos_download_results.csv").exists()
 
 
 def test_download_requires_urls(tmp_path: Path) -> None:

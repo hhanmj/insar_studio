@@ -144,8 +144,7 @@ def test_output_directory_uses_safe_name_and_layout(tmp_path: Path) -> None:
     plan = build_plan(tmp_path, region_safe_name="guangdong_2024")
     parts = plan.output_directory.parts
     assert "guangdong_2024" in parts
-    assert "05_atmosphere" in parts
-    assert "gacos" in parts
+    assert "GACOS" in parts
     assert plan.output_directory.name == "requests"
 
 

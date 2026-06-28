@@ -45,7 +45,9 @@ def test_default_plan(tmp_path: Path) -> None:
     plan = build_plan(tmp_path)
     assert plan.dataset == "COP30"
     assert plan.provider == "OPENTOPOGRAPHY"
-    assert plan.sarscape_ready_dem_path.name == "shiliushubao_dem.tif"
+    assert plan.raw_dem_path.name == "COP30m.tif"
+    assert plan.ellipsoid_dem_path.name == "COP30m_ellipsoid.tif"
+    assert plan.sarscape_ready_dem_path.name == "COP30m_dem"
 
 
 def test_invalid_region_safe_name_raises(tmp_path: Path) -> None:
@@ -75,22 +77,24 @@ def test_bbox_is_clamped(tmp_path: Path) -> None:
 
 def test_sarscape_ready_dem_name(tmp_path: Path) -> None:
     plan = build_plan(tmp_path, region_safe_name="guangdong_2024")
-    assert plan.sarscape_ready_dem_path.name == "guangdong_2024_dem.tif"
+    assert plan.sarscape_ready_dem_path.name == "COP30m_dem"
 
 
 def test_three_paths_differ(tmp_path: Path) -> None:
     plan = build_plan(tmp_path)
     assert plan.raw_dem_path != plan.ellipsoid_dem_path
     assert plan.ellipsoid_dem_path != plan.sarscape_ready_dem_path
-    assert "raw" in plan.raw_dem_path.parts
-    assert "ellipsoid" in plan.ellipsoid_dem_path.parts
+    assert "DEM" in plan.raw_dem_path.parts
+    assert "DEM" in plan.ellipsoid_dem_path.parts
+    assert plan.raw_dem_path.name == "COP30m.tif"
+    assert plan.ellipsoid_dem_path.name.endswith("_ellipsoid.tif")
 
 
 def test_ellipsoid_is_not_sarscape_ready(tmp_path: Path) -> None:
     plan = build_plan(tmp_path)
     assert "_ellipsoid" in plan.ellipsoid_dem_path.name
-    assert not plan.sarscape_ready_dem_path.name.endswith("_ellipsoid.tif")
-    assert plan.sarscape_ready_dem_path.name.endswith("_dem.tif")
+    assert not plan.sarscape_ready_dem_path.name.endswith("_ellipsoid_dem")
+    assert plan.sarscape_ready_dem_path.name.endswith("_dem")
 
 
 def test_download_task_planned_not_executed(tmp_path: Path) -> None:
@@ -101,6 +105,13 @@ def test_download_task_planned_not_executed(tmp_path: Path) -> None:
     assert task.task_type is TaskType.DOWNLOAD_DEM
     assert task.input["dataset"] == plan.dataset
     assert task.local_path == plan.raw_dem_path
+
+
+def test_chinese_parent_output_directory_is_allowed(tmp_path: Path) -> None:
+    out = tmp_path / "中文输出目录"
+    plan = build_plan(out)
+    assert "中文输出目录" in str(plan.sarscape_ready_dem_path)
+    assert plan.sarscape_ready_dem_path.name == "COP30m_dem"
 
 
 def test_create_download_task_standalone(tmp_path: Path) -> None:

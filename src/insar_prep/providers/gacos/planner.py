@@ -37,7 +37,7 @@ GACOS_PLAN_READY = "GACOS_PLAN_READY"
 GACOS_MANUAL_SUBMISSION_REQUIRED = "GACOS_MANUAL_SUBMISSION_REQUIRED"
 
 # Region-relative output layout for products the user downloads manually.
-GACOS_REQUESTS_SUBDIR = ("05_atmosphere", "gacos", "requests")
+GACOS_REQUESTS_SUBDIR = ("GACOS", "requests")
 GACOS_EXPECTED_FILE_PATTERNS = ["*.ztd", "*.ztd.rsc", "YYYYMMDD.ztd", "YYYYMMDD.ztd.rsc"]
 
 

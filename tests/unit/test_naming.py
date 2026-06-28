@@ -53,6 +53,11 @@ def test_safe_name_idempotent() -> None:
 
 def test_validate_path_accepts_clean_path() -> None:
     validate_sarscape_ready_path("06_sarscape_ready/DEM/guangdong_dem.tif")
+    validate_sarscape_ready_path("06_sarscape_ready/DEM/guangdong_dem")
+
+
+def test_validate_path_allows_chinese_parent_directory_for_dem_filename() -> None:
+    validate_sarscape_ready_path("C:/用户输出/DEM/COP30m_dem")
 
 
 def test_validate_path_rejects_hyphen() -> None:

@@ -1104,7 +1104,7 @@ def add_convert_dem_subparser(subparsers) -> argparse.ArgumentParser:
             "Convert an already-downloaded raw DEM's vertical datum from "
             "orthometric (EGM96/EGM2008) to the WGS84 ellipsoid SARscape expects, "
             "by adding the geoid undulation from the bundled EGM96 grid, and write "
-            "it under the SARscape-ready '<region>_dem.tif' name. Datasets that are "
+            "it under the SARscape-ready '<region>_dem' ENVI name. Datasets that are "
             "already ellipsoidal (SRTMGL1_E/AW3D30_E) are copied through unchanged. "
             "Use --plan-only to print the planned steps without converting. Real "
             "conversion needs the optional 'convert' extra (rasterio); install it "

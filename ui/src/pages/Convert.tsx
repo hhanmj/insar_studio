@@ -205,7 +205,7 @@ export function Convert() {
     <div className="mx-auto max-w-[1200px] space-y-6">
       <PageHeader
         title="DEM 转换"
-        desc="正高（EGM96 / EGM2008）→ WGS84 椭球高，输出 SARscape 就绪 DEM"
+        desc="正高（EGM96 / EGM2008）→ WGS84 椭球高，输出 SARscape ENVI _dem + .hdr"
         right={<BridgeBadge bridged={bridged} />}
       />
       <RegionBanner ctx={ctx} />
