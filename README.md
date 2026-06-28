@@ -4,7 +4,7 @@ InSAR Studio 是一个面向 InSAR 与遥感数据准备流程的桌面工具，
 Sentinel-1 / SARscape 使用场景：区域 AOI 选择、ASF 元数据检索、SAR 影像下载、
 精密轨道匹配与下载、DEM 下载与椭球高转换、GACOS 辅助数据准备，以及下载任务管理。
 
-本项目不是 InSAR 解算软件，不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。
+本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。
 它的定位是“处理前的数据准备助手”，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。
 
 ## V2.0 主要特性
