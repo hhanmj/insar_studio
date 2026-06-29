@@ -459,11 +459,12 @@ type PyApi = {
   resume_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   stop_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   get_orbit_download_status: () => Promise<OrbitDownloadStatus>;
-  plan_asf_download: (outputDir?: string) => Promise<PlanResult>;
+  plan_asf_download: (outputDir?: string, sceneIds?: string[]) => Promise<PlanResult>;
   start_asf_download: (
     outputDir?: string,
     credentialSource?: string,
     maxConcurrent?: number,
+    sceneIds?: string[],
   ) => Promise<{ ok: boolean; error?: string; code?: string }>;
   pause_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   resume_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
@@ -1831,9 +1832,9 @@ function mockReport(hasErrors = false): Json {
   };
 }
 
-export async function planAsfDownload(outputDir = ""): Promise<PlanResult> {
-  if (hasBridge()) return api().plan_asf_download(outputDir);
-  if (!mockActiveSceneCount()) {
+export async function planAsfDownload(outputDir = "", sceneIds: string[] = []): Promise<PlanResult> {
+  if (hasBridge()) return api().plan_asf_download(outputDir, sceneIds);
+  if (!(sceneIds.length || mockActiveSceneCount())) {
     return { ok: false, error: "请先在『影像核查』导入场景", code: "ASF001" };
   }
   return { ok: true, plan: mockAsfPlan() };
@@ -1873,9 +1874,10 @@ export async function startAsfDownload(
   outputDir = "",
   credentialSource = "auto",
   maxConcurrent = 1,
+  sceneIds: string[] = [],
 ): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().start_asf_download(outputDir, credentialSource, maxConcurrent);
-  const n = mockActiveSceneCount();
+  if (hasBridge()) return api().start_asf_download(outputDir, credentialSource, maxConcurrent, sceneIds);
+  const n = sceneIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入场景", code: "ASF001" };
   if (mockCredentials.earthdata === "none" || mockCredentials.earthdata === "unavailable") {
     return {

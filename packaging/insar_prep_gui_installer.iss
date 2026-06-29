@@ -15,7 +15,7 @@
 ; no extra data files are installed here.
 
 #ifndef AppVersion
-  #define AppVersion "2.0.1"
+  #define AppVersion "2.0.2"
 #endif
 #define AppName "InSAR Prep Assistant"
 #define AppPublisher "hhanmj"

@@ -1925,9 +1925,12 @@ class Api:
         return status
 
     # ----------------------------------------------------------- 3. DOWNLOAD
-    def plan_asf_download(self, output_dir: str = "") -> dict:
+    def plan_asf_download(self, output_dir: str = "", scene_ids: list[str] | None = None) -> dict:
         """Build (dry-run) an ASF Sentinel-1 download plan."""
         scenes, region_safe_name, _ = self._active_scene_context()
+        selected_ids = {str(item).strip() for item in (scene_ids or []) if str(item).strip()}
+        if selected_ids:
+            scenes = [scene for scene in scenes if str(getattr(scene, "scene_id", "")) in selected_ids]
         if not scenes:
             return _error_msg("请先在『影像核查』导入场景", "ASF001")
         try:
@@ -1958,11 +1961,16 @@ class Api:
         output_dir: str = "",
         credential_source: str = "auto",
         max_concurrent: int = 1,
+        scene_ids: list[str] | None = None,
     ) -> dict:
         """Start a real ASF Sentinel-1 download on a background thread."""
         scenes, _, label = self._active_scene_context()
+        selected_ids = {str(item).strip() for item in (scene_ids or []) if str(item).strip()}
+        if selected_ids:
+            scenes = [scene for scene in scenes if str(getattr(scene, "scene_id", "")) in selected_ids]
+            label = f"{label}（选中 {len(scenes)} 景）"
         if not scenes:
-            return _error_msg("请先导入场景", "ASF001")
+            return _error_msg("请先选择要下载的 SAR 影像", "ASF001")
         out = output_dir.strip() or self._default_output()
         if not out:
             return _error_msg("请指定输出根目录", "GUI003")
@@ -2883,6 +2891,9 @@ class Api:
             "results_path": str(summary.results_path) if summary.results_path else "",
             "output_dir": out,
             "results": [_dump(result) for result in summary.results],
+            "raw_dem_path": str(getattr(conv_plan, "raw_dem_path", "")),
+            "ellipsoid_dem_path": str(getattr(conv_plan, "ellipsoid_dem_path", "")),
+            "sarscape_ready_dem_path": str(getattr(conv_plan, "sarscape_ready_dem_path", "")),
         }
 
     def _run_dem_download_and_conversion_plan(

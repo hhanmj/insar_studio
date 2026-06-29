@@ -728,6 +728,7 @@ export function WorkbenchMap({
   drawMode,
   drawActive,
   onLayerChange,
+  onSceneSelect,
   onDrawModeChange,
   onDrawActiveChange,
   onClearLayers,
@@ -746,6 +747,7 @@ export function WorkbenchMap({
   drawMode: WorkbenchDrawMode;
   drawActive: boolean;
   onLayerChange: (key: MapLayerKey) => void;
+  onSceneSelect?: (sceneId: string) => void;
   onDrawModeChange: (mode: WorkbenchDrawMode) => void;
   onDrawActiveChange: (active: boolean) => void;
   onClearLayers: () => void;
@@ -757,18 +759,13 @@ export function WorkbenchMap({
     () => unionBbox(scenes.map((scene) => scene.footprint_bbox)),
     [scenes],
   );
-  const selectedSceneBbox = useMemo(
-    () => scenes.find((scene) => scene.scene_id === selectedSceneId)?.footprint_bbox ?? null,
-    [scenes, selectedSceneId],
-  );
   const fitBbox = useMemo(() => {
     if (isValidBbox(bbox)) return bbox;
-    if (isValidBbox(selectedSceneBbox)) return selectedSceneBbox;
     if (isValidBbox(aoiBbox)) return aoiBbox;
     if (isValidBbox(sceneBbox)) return sceneBbox;
     if (isValidBbox(sceneUnion)) return sceneUnion;
     return DEFAULT_BBOX;
-  }, [aoiBbox, bbox, sceneBbox, sceneUnion, selectedSceneBbox]);
+  }, [aoiBbox, bbox, sceneBbox, sceneUnion]);
   const [tilesReady, setTilesReady] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [mapApi, setMapApi] = useState<LeafletMap | null>(null);
@@ -853,16 +850,21 @@ export function WorkbenchMap({
           const polygons = scenePolygons(scene);
           const selected = scene.scene_id === selectedSceneId;
           const orbitColor = orbitDirectionColor(scene.orbit_direction);
+          const handleSceneClick = (event: LeafletMouseEvent) => {
+            event.originalEvent.preventDefault();
+            event.originalEvent.stopPropagation();
+            onSceneSelect?.(scene.scene_id);
+          };
           const options = {
             color: selected ? "#ff2d55" : orbitColor,
-            weight: selected ? 4.8 : 1.8,
+            weight: selected ? 5.8 : 1.8,
             opacity: selected ? 1 : 0.78,
             fillColor: selected ? "#ff2d55" : orbitColor,
-            fillOpacity: selected ? 0.24 : 0.12,
+            fillOpacity: selected ? 0.3 : 0.12,
           };
           const haloOptions = {
             color: "#ffffff",
-            weight: 9,
+            weight: 11,
             opacity: 0.92,
             fillOpacity: 0,
           };
@@ -874,11 +876,20 @@ export function WorkbenchMap({
                   positions={positions}
                   pathOptions={options}
                   interactive={!drawActive}
+                  eventHandlers={{ click: handleSceneClick }}
                 >
                   <Popup>
                     <ScenePopup scene={scene} index={index} />
                   </Popup>
                 </Polygon>
+                {selected && scene.footprint_bbox && (
+                  <CircleMarker
+                    center={centerFromBbox(scene.footprint_bbox)}
+                    radius={7}
+                    pathOptions={{ color: "#ffffff", weight: 3, fillColor: "#ff2d55", fillOpacity: 1 }}
+                    interactive={false}
+                  />
+                )}
               </Fragment>
             ));
           }
@@ -895,11 +906,20 @@ export function WorkbenchMap({
                 bounds={boundsFromBbox(scene.footprint_bbox!)}
                 pathOptions={options}
                 interactive={!drawActive}
+                eventHandlers={{ click: handleSceneClick }}
               >
                 <Popup>
                   <ScenePopup scene={scene} index={index} />
                 </Popup>
               </Rectangle>
+              {selected && scene.footprint_bbox && (
+                <CircleMarker
+                  center={centerFromBbox(scene.footprint_bbox)}
+                  radius={7}
+                  pathOptions={{ color: "#ffffff", weight: 3, fillColor: "#ff2d55", fillOpacity: 1 }}
+                  interactive={false}
+                />
+              )}
             </Fragment>
           );
         })}
@@ -954,6 +974,12 @@ export function WorkbenchMap({
           </div>
         )}
       </div>
+
+      {selectedSceneId && (
+        <div className="pointer-events-none absolute bottom-4 left-4 z-[500] max-w-[460px] truncate rounded-2xl border border-white/55 bg-white/72 px-3 py-2 font-mono text-[11px] text-[#be123c] shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/72" title={selectedSceneId}>
+          高亮：{selectedSceneId}
+        </div>
+      )}
 
       {layersOpen && (
         <div

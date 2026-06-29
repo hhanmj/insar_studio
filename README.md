@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_exe.ps1
 构建安装包需要额外安装 Inno Setup 6：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer.ps1 -Version 2.0.1
+powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer.ps1 -Version 2.0.2
 ```
 
 ## 仓库边界

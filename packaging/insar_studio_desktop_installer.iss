@@ -4,7 +4,7 @@
 ; dist\insar-prep-desktop.exe has been generated.
 
 #ifndef AppVersion
-  #define AppVersion "2.0.1"
+  #define AppVersion "2.0.2"
 #endif
 #define AppName "InSAR Studio"
 #define AppPublisher "hhanmj"

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
 import {
   Activity,
   AlertCircle,
+  BookOpen,
   CalendarDays,
   ChevronDown,
   ChevronRight,
@@ -35,8 +36,8 @@ import {
   Search,
   Settings,
   ShieldCheck,
-  Sparkles,
   Square,
+  Star,
   Sun,
   Trash2,
   UserRound,
@@ -770,6 +771,28 @@ function demRunLogLines(run: RunSummaryOk) {
   return Array.from(new Set(lines.filter(Boolean))).slice(-160);
 }
 
+function demRunDisplayPaths(run: RunSummaryOk) {
+  const conversionResults = (run.conversion as { results?: Json[] } | null | undefined)?.results;
+  const candidates = [...(run.results ?? []), ...(Array.isArray(conversionResults) ? conversionResults : [])];
+  let raw = run.raw_dem_path || "";
+  let ellipsoid = run.ellipsoid_dem_path || "";
+  let sarscape = run.sarscape_ready_dem_path || "";
+
+  for (const item of candidates) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    const inputPath = String(record.input_path ?? record.raw_dem_path ?? "");
+    const outputPath = String(record.output_path ?? record.sarscape_ready_dem_path ?? record.path ?? "");
+    if (!raw && inputPath) raw = inputPath;
+    if (!ellipsoid && /_ellipsoid\.(tif|tiff)$/i.test(outputPath)) ellipsoid = outputPath;
+    if (!sarscape && /_dem($|\.hdr$)/i.test(outputPath)) sarscape = outputPath.replace(/\.hdr$/i, "");
+  }
+
+  if (!ellipsoid && sarscape) ellipsoid = sarscape.replace(/_dem$/i, "_ellipsoid.tif");
+  if (!sarscape && ellipsoid) sarscape = ellipsoid.replace(/_ellipsoid\.(tif|tiff)$/i, "_dem");
+  return { raw, ellipsoid, sarscape };
+}
+
 function loadDownloadArchive() {
   if (typeof window === "undefined") return [];
   try {
@@ -928,7 +951,9 @@ export function Workbench({
   const [aoiPreviewGeometry, setAoiPreviewGeometry] = useState<Json | null>(null);
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(null);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const [selectedDownloadSceneIds, setSelectedDownloadSceneIds] = useState<Set<string>>(() => new Set());
   const [hoveredSceneId, setHoveredSceneId] = useState<string | null>(null);
+  const [sceneWorkspaceOpen, setSceneWorkspaceOpen] = useState(false);
 
   const [asfPlan, setAsfPlan] = useState<Json | null>(null);
   const [asfBusy, setAsfBusy] = useState(false);
@@ -970,7 +995,8 @@ export function Workbench({
   const [demNorth, setDemNorth] = useState("");
   const [demRun, setDemRun] = useState<RunSummaryOk | null>(null);
   const [demRunSource, setDemRunSource] = useState<"download" | "local" | null>(null);
-  const [demBusy, setDemBusy] = useState(false);
+  const [demDownloadBusy, setDemDownloadBusy] = useState(false);
+  const [localDemBusy, setLocalDemBusy] = useState(false);
   const [demError, setDemError] = useState<string | null>(null);
   const [localDem, setLocalDem] = useState("");
   const [localDatum, setLocalDatum] = useState("auto");
@@ -1002,6 +1028,7 @@ export function Workbench({
   const archiveLoadedFromBridge = useRef(false);
   const [expandedQueueIds, setExpandedQueueIds] = useState<Set<string>>(() => new Set());
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(() => new Set());
+  const [restoringTaskKeys, setRestoringTaskKeys] = useState<Set<string>>(() => new Set());
 
   function onSourceTabsWheel(event: WheelEvent<HTMLElement>) {
     const target = event.currentTarget;
@@ -1044,6 +1071,15 @@ export function Workbench({
       setEarthdataAuthChecking(false);
     }
   }
+
+  useEffect(() => {
+    setSelectedDownloadSceneIds((previous) => {
+      const ids = scenes.map((scene) => scene.scene_id).filter(Boolean);
+      if (!ids.length) return new Set();
+      const kept = ids.filter((id) => previous.has(id));
+      return new Set(kept.length ? kept : ids);
+    });
+  }, [scenes]);
 
   async function refreshNetwork() {
     setNetwork(await getNetworkSettings());
@@ -1303,6 +1339,14 @@ export function Workbench({
     () => scenes.find((scene) => scene.scene_id === hoveredSceneId) ?? null,
     [hoveredSceneId, scenes],
   );
+  const selectedDownloadScenes = useMemo(
+    () => scenes.filter((scene) => selectedDownloadSceneIds.has(scene.scene_id)),
+    [scenes, selectedDownloadSceneIds],
+  );
+  const selectedDownloadSceneIdList = useMemo(
+    () => selectedDownloadScenes.map((scene) => scene.scene_id),
+    [selectedDownloadScenes],
+  );
   const sceneMetadataStats = useMemo(() => {
     const total = scenes.length;
     const withFootprint = scenes.filter((scene) => scene.footprint_bbox || scene.footprint_geojson).length;
@@ -1320,6 +1364,28 @@ export function Workbench({
       ready: total > 0 && withFootprint === total && withCore === total,
     };
   }, [scenes]);
+
+  function selectAllDownloadScenes() {
+    setSelectedDownloadSceneIds(new Set(scenes.map((scene) => scene.scene_id).filter(Boolean)));
+  }
+
+  function clearDownloadSceneSelection() {
+    setSelectedDownloadSceneIds(new Set());
+  }
+
+  function toggleDownloadScene(sceneId: string, checked?: boolean) {
+    setSelectedDownloadSceneIds((previous) => {
+      const next = new Set(previous);
+      const shouldSelect = checked ?? !next.has(sceneId);
+      if (shouldSelect) next.add(sceneId);
+      else next.delete(sceneId);
+      return next;
+    });
+  }
+
+  function highlightScene(sceneId: string | null) {
+    setSelectedSceneId(sceneId);
+  }
 
   function rememberTask(item: Omit<DownloadArchiveItem, "ts"> & { ts?: number }) {
     setDownloadArchive((prev) => {
@@ -1845,7 +1911,9 @@ export function Workbench({
       }
       setScenes([]);
       setSelectedSceneId(null);
+      setSelectedDownloadSceneIds(new Set());
       setHoveredSceneId(null);
+      setSceneWorkspaceOpen(false);
       setCheckReport(null);
       setAsfPlan(null);
       setAsfSearchSummary(null);
@@ -1871,7 +1939,9 @@ export function Workbench({
       }
       setScenes([]);
       setSelectedSceneId(null);
+      setSelectedDownloadSceneIds(new Set());
       setHoveredSceneId(null);
+      setSceneWorkspaceOpen(false);
       setCheckReport(null);
       setAsfPlan(null);
       setAsfSearchSummary(null);
@@ -1892,7 +1962,11 @@ export function Workbench({
     setAsfBusy(true);
     setAsfError(null);
     try {
-      const res = await planAsfDownload(resolvedOutputDir);
+      if (selectedDownloadSceneIdList.length === 0) {
+        setAsfError("请先在“所选 SAR 数据”中勾选要下载的影像。");
+        return;
+      }
+      const res = await planAsfDownload(resolvedOutputDir, selectedDownloadSceneIdList);
       if (res.ok) setAsfPlan(res.plan);
       else setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
@@ -1921,7 +1995,11 @@ export function Workbench({
         return;
       }
       setOutputDir(out);
-      const res = await startAsfDownload(out, "auto", Number(asfConcurrency) || 1);
+      if (selectedDownloadSceneIdList.length === 0) {
+        setAsfError("请先在“所选 SAR 数据”中勾选要下载的影像。");
+        return;
+      }
+      const res = await startAsfDownload(out, "auto", Number(asfConcurrency) || 1, selectedDownloadSceneIdList);
       if (res.ok) setDlStatus(await getDownloadStatus());
       else setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
@@ -1950,6 +2028,7 @@ export function Workbench({
     const kind = archiveTaskKind(task);
     const out = archiveTaskOutputDir(task);
     const taskKey = archiveTaskKey(task);
+    if (restoringTaskKeys.has(taskKey)) return;
     if (!out) {
       setDownloadArchive((prev) =>
         dedupeArchiveItems(prev.map((item) =>
@@ -1976,6 +2055,8 @@ export function Workbench({
       return;
     }
 
+    setRestoringTaskKeys((prev) => new Set(prev).add(taskKey));
+
     const mark = (status: string, detail: string) =>
       setDownloadArchive((prev) =>
         dedupeArchiveItems(prev.map((item) =>
@@ -1984,16 +2065,25 @@ export function Workbench({
             : item,
         )),
       );
+    const markDetail = (detail: string) =>
+      setDownloadArchive((prev) =>
+        dedupeArchiveItems(prev.map((item) =>
+          archiveTaskKey(item) === taskKey
+            ? { ...item, detail, logs: [...(item.logs ?? []), detail].slice(-120) }
+            : item,
+        )),
+      );
 
     setPanel("downloads");
     setOutputDir(out);
-    mark("running", "正在重新进入任务队列；已完成文件会跳过，.part 文件会继续续传。");
+    markDetail("正在恢复任务：先进行网络与凭据预检，成功后会回到任务队列。");
     try {
       if (kind === "asf") {
         const workers = Number(task.concurrency) || Number(asfConcurrency) || 1;
         setAsfConcurrency(String(workers));
         const res = await startAsfDownload(out, "auto", workers);
         if (res.ok) {
+          setDownloadArchive((prev) => prev.filter((item) => archiveTaskKey(item) !== taskKey));
           setDlStatus(await getDownloadStatus());
           return;
         }
@@ -2003,6 +2093,7 @@ export function Workbench({
       if (kind === "orbit") {
         const res = await startOrbitDownload(out);
         if (res.ok) {
+          setDownloadArchive((prev) => prev.filter((item) => archiveTaskKey(item) !== taskKey));
           setOrbitStatus(await getOrbitDownloadStatus());
           return;
         }
@@ -2010,6 +2101,12 @@ export function Workbench({
       }
     } catch (e) {
       mark("failed", formatBridgeError(e));
+    } finally {
+      setRestoringTaskKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(taskKey);
+        return next;
+      });
     }
   }
 
@@ -2052,7 +2149,7 @@ export function Workbench({
   }
 
   async function onRunDemDownload() {
-    setDemBusy(true);
+    setDemDownloadBusy(true);
     setDemError(null);
     setDemRun(null);
     setDemRunSource(null);
@@ -2089,7 +2186,7 @@ export function Workbench({
     } catch (e) {
       setDemError(formatBridgeError(e));
     } finally {
-      setDemBusy(false);
+      setDemDownloadBusy(false);
     }
   }
 
@@ -2105,7 +2202,7 @@ export function Workbench({
   }
 
   async function onRunLocalDem() {
-    setDemBusy(true);
+    setLocalDemBusy(true);
     setDemError(null);
     setDemRun(null);
     setDemRunSource(null);
@@ -2124,7 +2221,7 @@ export function Workbench({
     } catch (e) {
       setDemError(formatBridgeError(e));
     } finally {
-      setDemBusy(false);
+      setLocalDemBusy(false);
     }
   }
 
@@ -2799,28 +2896,48 @@ function renderOutputParameters(
           {scenes.length > 0 && (
             <div className="relative rounded-md border bg-muted/30" onMouseLeave={() => setHoveredSceneId(null)}>
               <div className="flex items-center justify-between border-b px-3 py-2 text-xs">
-                <span className="font-medium">{scenes.length} 景已选择 · 列表显示全部，点击场景定位并高亮边框</span>
-                <Button size="sm" variant="outline" onClick={onRunCheck} disabled={checkBusy}>
-                  {checkBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
-                  核查
-                </Button>
+                <span className="font-medium">
+                  {selectedDownloadSceneIdList.length} / {scenes.length} 景加入下载 · 点击场景只高亮边框
+                </span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button size="sm" variant="ghost" className="h-7 px-2" onClick={selectAllDownloadScenes}>
+                    全选
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-7 px-2" onClick={clearDownloadSceneSelection}>
+                    清空
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setSceneWorkspaceOpen(true)}>
+                    <Maximize2 className="h-3.5 w-3.5" />
+                    工作台
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={onRunCheck} disabled={checkBusy}>
+                    {checkBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                    核查
+                  </Button>
+                </div>
               </div>
               <div className="max-h-[34rem] overflow-y-auto">
                 {scenes.map((scene) => (
-                  <button
+                  <div
                     key={scene.scene_id}
-                    type="button"
                     onClick={() => {
-                      setSelectedSceneId(scene.scene_id);
-                      if (scene.footprint_bbox) setFocusBbox(scene.footprint_bbox);
+                      highlightScene(scene.scene_id);
                     }}
                     className={cn(
-                      "block w-full border-b border-l-4 border-l-transparent px-3 py-2 text-left text-xs transition-colors last:border-b-0 hover:bg-white/45 dark:hover:bg-white/10",
+                      "block w-full cursor-pointer border-b border-l-4 border-l-transparent px-3 py-2 text-left text-xs transition-colors last:border-b-0 hover:bg-white/45 dark:hover:bg-white/10",
                       selectedSceneId === scene.scene_id &&
                         "border-l-primary bg-primary/12 ring-1 ring-inset ring-primary/25",
                     )}
                   >
                     <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedDownloadSceneIds.has(scene.scene_id)}
+                        onChange={(event) => toggleDownloadScene(scene.scene_id, event.currentTarget.checked)}
+                        onClick={(event) => event.stopPropagation()}
+                        className="h-4 w-4 shrink-0 rounded border-border accent-primary"
+                        title="加入本次下载"
+                      />
                       <div className="min-w-0 flex-1 truncate font-mono" title={scene.scene_id}>
                         {scene.scene_id}
                       </div>
@@ -2835,6 +2952,7 @@ function renderOutputParameters(
                     </div>
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       {selectedSceneId === scene.scene_id && <Badge variant="success">地图高亮</Badge>}
+                      {selectedDownloadSceneIds.has(scene.scene_id) && <Badge variant="success">已勾选</Badge>}
                       <Badge variant="neutral">{scene.product_type}</Badge>
                       <Badge variant="neutral">{orbitLabel(scene.orbit_direction)}</Badge>
                       <Badge variant="neutral">{polarizationLabel(scene.polarization)}</Badge>
@@ -2863,7 +2981,7 @@ function renderOutputParameters(
                           : "部分元数据"}
                       </Badge>
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
               {hoveredScene && (
@@ -3026,7 +3144,7 @@ function renderOutputParameters(
               </Button>
               <Button
                 onClick={onStartAsf}
-                disabled={asfStartBusy || dlActive || scenes.length === 0 || !earthdataCanDownload}
+                disabled={asfStartBusy || dlActive || selectedDownloadSceneIdList.length === 0 || !earthdataCanDownload}
                 title={!earthdataCanDownload ? "请先确认 Earthdata/ASF 凭据正常" : undefined}
               >
                 {asfStartBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -3057,6 +3175,7 @@ function renderOutputParameters(
     const logs = demRunLogLines(demRun);
     const title = demRunSource === "local" ? "本地 DEM 转换结果" : "DEM 下载与转换结果";
     const skipped = Number(demRun.skipped ?? 0);
+    const demPaths = demRunDisplayPaths(demRun);
     return (
       <div className="rounded-2xl border border-white/45 bg-white/35 p-3 text-xs shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
         <div className="flex items-start justify-between gap-3">
@@ -3079,9 +3198,9 @@ function renderOutputParameters(
         </div>
         <div className="mt-3 space-y-2">
           {[
-            { label: "原始 DEM", path: demRun.raw_dem_path },
-            { label: "椭球高 DEM", path: demRun.ellipsoid_dem_path },
-            { label: "SARscape DEM", path: demRun.sarscape_ready_dem_path },
+            { label: "原始 DEM", path: demPaths.raw },
+            { label: "椭球高 DEM", path: demPaths.ellipsoid },
+            { label: "SARscape DEM", path: demPaths.sarscape },
           ].map(({ label, path }) => (
             <div key={label} className="rounded-md border bg-muted/20 p-2">
               <div className="flex items-center justify-between gap-2">
@@ -3199,11 +3318,11 @@ function renderOutputParameters(
             )}
             <Button
               onClick={onRunDemDownload}
-              disabled={demBusy || !opentopoConfigured}
+              disabled={demDownloadBusy || !opentopoConfigured}
               className="w-full"
               title={!opentopoConfigured ? "请先在设置里保存 OpenTopography API Key" : undefined}
             >
-              {demBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+              {demDownloadBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
               下载并转换 DEM
             </Button>
             <ErrorLine text={demError} />
@@ -3238,8 +3357,8 @@ function renderOutputParameters(
               placeholder: localPreviewOutputRoot,
               title: "浏览本地 DEM 转换输出目录",
             })}
-            <Button variant="outline" onClick={onRunLocalDem} disabled={demBusy || !localDem} className="w-full">
-              {demBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            <Button variant="outline" onClick={onRunLocalDem} disabled={localDemBusy || !localDem} className="w-full">
+              {localDemBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               转换为 SARscape DEM
             </Button>
           </div>
@@ -3485,6 +3604,20 @@ function renderOutputParameters(
                 </Button>
               </div>
             ),
+            workspaceAction: (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="w-full justify-center"
+                disabled={scenes.length === 0}
+                title={scenes.length === 0 ? "请先完成 ASF 检索或导入，才能打开每景影像工作台。" : undefined}
+                onClick={() => setSceneWorkspaceOpen(true)}
+              >
+                <Satellite className="h-4 w-4" />
+                打开下载工作台
+              </Button>
+            ),
             log: dlStatus.log?.map((line) => line.detail) ?? [],
           }
         : null,
@@ -3555,6 +3688,7 @@ function renderOutputParameters(
       detail: string;
       metrics: [string, string | number | null | undefined][];
       controls: React.ReactNode;
+      workspaceAction?: React.ReactNode;
       log: string[];
       activeDownloads?: NonNullable<DownloadStatus["active_downloads"]>;
     }[];
@@ -3570,6 +3704,7 @@ function renderOutputParameters(
     const archivedQueueItems = archivedQueueTasks.map((task) => {
       const out = archiveTaskOutputDir(task);
       const kind = archiveTaskKind(task);
+      const restoring = restoringTaskKeys.has(archiveTaskKey(task));
       return {
         id: task.id,
         name: task.name,
@@ -3581,6 +3716,21 @@ function renderOutputParameters(
             ? "手动暂停的任务已保留；点击继续会回到原输出目录断点续传。"
             : "上次未完成的任务已保留；点击继续会重新进入队列并跳过已完成文件。",
         activeDownloads: [],
+        workspaceAction:
+          kind === "asf" ? (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="w-full justify-center"
+              disabled={scenes.length === 0}
+              title={scenes.length === 0 ? "请先完成 ASF 检索或导入，才能打开每景影像工作台。" : undefined}
+              onClick={() => setSceneWorkspaceOpen(true)}
+            >
+              <Satellite className="h-4 w-4" />
+              打开下载工作台
+            </Button>
+          ) : null,
         metrics: [
           ["类型", kind === "asf" ? "ASF Sentinel-1" : "精密轨道"],
           ["输出目录", out ? pathBaseName(out) : "-"],
@@ -3592,11 +3742,11 @@ function renderOutputParameters(
             <Button
               variant="outline"
               size="sm"
-              disabled={task.status === "running"}
+              disabled={task.status === "running" || restoring}
               onClick={() => void onResumeArchivedTask(task)}
             >
-              {task.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              {task.status === "running" ? "启动中" : task.status === "failed" ? "重试" : "继续"}
+              {task.status === "running" || restoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {task.status === "running" || restoring ? "恢复中" : task.status === "failed" ? "重试" : "继续"}
             </Button>
             <Button
               variant="destructive"
@@ -3685,6 +3835,7 @@ function renderOutputParameters(
                   <div className="mt-3 space-y-1">
                     {task.metrics.map(([label, value]) => kv(label, value))}
                   </div>
+                  {task.workspaceAction && <div className="mt-3">{task.workspaceAction}</div>}
                   <div className="mt-3">{task.controls}</div>
                   {task.log.length > 0 && (
                     <div className="mt-3">
@@ -3778,11 +3929,16 @@ function renderOutputParameters(
                           variant="outline"
                           size="sm"
                           className="h-8 px-2"
+                          disabled={restoringTaskKeys.has(archiveTaskKey(task))}
                           onClick={() => void onResumeArchivedTask(task)}
                           title="使用原输出目录重新进入队列；完整文件会跳过，.part 文件会断点续传"
                         >
-                          <RotateCcw className="h-3.5 w-3.5" />
-                          恢复
+                          {restoringTaskKeys.has(archiveTaskKey(task)) ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          )}
+                          {restoringTaskKeys.has(archiveTaskKey(task)) ? "恢复中" : "恢复"}
                         </Button>
                       )}
                       {task.status !== "deleted" && (
@@ -3831,6 +3987,129 @@ function renderOutputParameters(
             </div>
           </Section>
         )}
+      </div>
+    );
+  }
+
+  function sceneRuntimeStatus(scene: SceneRow) {
+    const active = activeAsfDownloads.find((item) => item.scene_id === scene.scene_id);
+    if (active) {
+      const pct = active.expected_size ? Math.round((Number(active.bytes || 0) / Number(active.expected_size)) * 100) : 0;
+      return {
+        label: pct ? `下载中 ${pct}%` : "下载中",
+        variant: "success" as const,
+        detail: `${fmtBytes(active.bytes)}${active.expected_size ? ` / ${fmtBytes(active.expected_size)}` : ""}`,
+      };
+    }
+    const lastLog = [...(dlStatus?.log ?? [])].reverse().find((line) => line.scene_id === scene.scene_id);
+    const outcome = (lastLog?.outcome || "").toLowerCase();
+    if (outcome.includes("success") || outcome.includes("downloaded") || outcome.includes("copied")) {
+      return { label: "已完成", variant: "success" as const, detail: lastLog?.detail || "" };
+    }
+    if (outcome.includes("skip")) return { label: "已跳过", variant: "neutral" as const, detail: lastLog?.detail || "" };
+    if (outcome.includes("fail") || outcome.includes("interrupt") || outcome.includes("cancel")) {
+      return { label: "未完成", variant: "warning" as const, detail: lastLog?.detail || "" };
+    }
+    if (selectedDownloadSceneIds.has(scene.scene_id)) {
+      return { label: dlActive ? "等待下载" : "已勾选", variant: "success" as const, detail: "" };
+    }
+    return { label: "未勾选", variant: "neutral" as const, detail: "" };
+  }
+
+  function renderSceneWorkspaceOverlay() {
+    if (!sceneWorkspaceOpen || scenes.length === 0) return null;
+    return (
+      <div className="absolute inset-4 z-[760] flex min-h-0 flex-col overflow-hidden rounded-[26px] border border-white/65 bg-white/88 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-zinc-950/88">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border/60 px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-base font-semibold">
+              <Satellite className="h-4 w-4 text-primary" />
+              Sentinel-1 影像下载工作台
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {selectedDownloadSceneIdList.length} / {scenes.length} 景加入下载；点击行只高亮地图边框，不改变地图视图。
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button size="sm" variant="outline" onClick={selectAllDownloadScenes}>
+              全选
+            </Button>
+            <Button size="sm" variant="outline" onClick={clearDownloadSceneSelection}>
+              清空
+            </Button>
+            {dlStatus?.state === "running" && (
+              <Button size="sm" variant="outline" onClick={() => void pauseAsfDownload().then(() => getDownloadStatus().then(setDlStatus))}>
+                <Pause className="h-4 w-4" />
+                暂停任务
+              </Button>
+            )}
+            {dlStatus?.state === "paused" && (
+              <Button size="sm" variant="outline" onClick={() => void resumeAsfDownload().then(() => getDownloadStatus().then(setDlStatus))}>
+                <Play className="h-4 w-4" />
+                继续任务
+              </Button>
+            )}
+            {dlActive && (
+              <Button size="sm" variant="destructive" onClick={() => void stopAsfDownload().then(() => getDownloadStatus().then(setDlStatus))}>
+                <Square className="h-4 w-4" />
+                结束任务
+              </Button>
+            )}
+            <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full" onClick={() => setSceneWorkspaceOpen(false)}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid shrink-0 grid-cols-4 gap-2 border-b border-border/60 px-4 py-3 text-xs">
+          {kv("候选影像", scenes.length)}
+          {kv("加入下载", selectedDownloadSceneIdList.length)}
+          {kv("任务状态", dlStatus ? statusLabel(dlStatus.state) : "未开始")}
+          {kv("并发", dlStatus?.concurrency ?? asfConcurrency)}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="space-y-2">
+            {scenes.map((scene) => {
+              const runtime = sceneRuntimeStatus(scene);
+              return (
+                <div
+                  key={scene.scene_id}
+                  className={cn(
+                    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border bg-white/55 px-3 py-2 text-xs shadow-sm transition-colors hover:bg-white/80 dark:bg-white/5 dark:hover:bg-white/10",
+                    selectedSceneId === scene.scene_id && "border-primary bg-primary/10 ring-1 ring-primary/30",
+                  )}
+                  onClick={() => highlightScene(scene.scene_id)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedDownloadSceneIds.has(scene.scene_id)}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => toggleDownloadScene(scene.scene_id, event.currentTarget.checked)}
+                    className="h-4 w-4 rounded border-border accent-primary"
+                    title="加入本次下载"
+                  />
+                  <div className="min-w-0">
+                    <div className="truncate font-mono" title={scene.scene_id}>
+                      {scene.scene_id}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      <Badge variant="neutral">{scene.product_type || "-"}</Badge>
+                      <Badge variant="neutral">{orbitLabel(scene.orbit_direction)}</Badge>
+                      <Badge variant="neutral">{polarizationLabel(scene.polarization)}</Badge>
+                      <Badge variant={scene.footprint_bbox ? "success" : "neutral"}>
+                        {scene.footprint_bbox ? "有范围" : "无范围"}
+                      </Badge>
+                      {selectedSceneId === scene.scene_id && <Badge variant="success">地图高亮</Badge>}
+                    </div>
+                    {runtime.detail && <div className="mt-1 truncate text-[11px] text-muted-foreground">{runtime.detail}</div>}
+                  </div>
+                  <Badge variant={runtime.variant}>{runtime.label}</Badge>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     );
   }
@@ -4288,7 +4567,7 @@ function renderOutputParameters(
           title="新手引导"
           data-tour="help-button"
         >
-          <Sparkles className="h-3.5 w-3.5" />
+          <BookOpen className="h-3.5 w-3.5" />
         </Button>
 
         <Button
@@ -4404,6 +4683,7 @@ function renderOutputParameters(
             drawMode={drawMode}
             drawActive={drawActive && !aoiBusy}
             onLayerChange={setLayerKey}
+            onSceneSelect={highlightScene}
             onDrawModeChange={setDrawMode}
             onDrawActiveChange={setDrawActive}
             onClearLayers={() => void onClearMapLayers()}
@@ -4411,6 +4691,7 @@ function renderOutputParameters(
             onPolygonDraw={(ring) => void bindPolygon(ring)}
             onPointDraw={bindPoint}
           />
+          {renderSceneWorkspaceOverlay()}
         </main>
       </div>
       {communityOpen && (
@@ -4419,7 +4700,7 @@ function renderOutputParameters(
           onMouseDown={() => setCommunityOpen(false)}
         >
           <div
-            className="w-full max-w-[620px] rounded-[24px] border border-white/70 bg-white/92 p-6 text-foreground shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-zinc-950/92"
+            className="w-full max-w-[760px] rounded-[24px] border border-white/70 bg-white/92 p-6 text-foreground shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-zinc-950/92"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="mb-5 flex items-start justify-between gap-4">
@@ -4440,13 +4721,13 @@ function renderOutputParameters(
               </Button>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-[1.15fr_0.85fr]">
               <div className="rounded-2xl border border-border/70 bg-background/80 p-4 text-center shadow-sm">
                 <div className="mb-3 flex items-center justify-center gap-2 text-sm font-medium">
                   <UserRound className="h-4 w-4" />
                   微信名片
                 </div>
-                <div className="overflow-hidden rounded-2xl border bg-white p-2">
+                <div className="mx-auto max-w-[330px] overflow-hidden rounded-2xl border bg-white p-1.5">
                   <img
                     src="/contact/wechat_story.jpg"
                     alt="你一生的故事 微信二维码"
@@ -4467,6 +4748,15 @@ function renderOutputParameters(
                 </div>
                 <div className="mt-3 text-sm font-medium">后续替换为交流群</div>
                 <div className="text-xs text-muted-foreground">可用于版本通知、问题收集和教程同步</div>
+                <button
+                  type="button"
+                  onClick={() => void openExternalUrl("https://github.com/hhanmj/insar_assistant")}
+                  className="mt-4 inline-flex items-center justify-center gap-1.5 rounded-full border border-amber-300/70 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm transition-colors hover:bg-amber-100 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-200"
+                >
+                  <Star className="h-3.5 w-3.5 fill-current" />
+                  GitHub Stars
+                  <ExternalLink className="h-3 w-3" />
+                </button>
               </div>
             </div>
           </div>
