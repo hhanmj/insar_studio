@@ -1,4 +1,4 @@
-# InSAR Studio V2.0
+# InSAR Studio V2.0.1
 
 InSAR Studio 是一个面向 InSAR 与遥感数据准备流程的桌面工具，当前重点服务于
 Sentinel-1 / SARscape 使用场景：区域 AOI 选择、ASF 元数据检索、SAR 影像下载、
@@ -7,7 +7,7 @@ Sentinel-1 / SARscape 使用场景：区域 AOI 选择、ASF 元数据检索、S
 本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。
 它的定位是“处理前的数据准备助手”，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。
 
-## V2.0 主要特性
+## V2.0.1 主要特性
 
 - 现代化桌面工作台：左侧参数区，右侧地图区，顶部数据源功能区。
 - GeoDownloader 风格交互：数据源入口支持横向滚动，后续可继续扩展 Sentinel-2、Landsat 等模块。
@@ -17,7 +17,7 @@ Sentinel-1 / SARscape 使用场景：区域 AOI 选择、ASF 元数据检索、S
 - 多图层地图：默认使用 Google 卫星底图，并保留多种可切换图源。
 - 精密轨道：支持按 SAR 影像目录或 ASF 官方脚本解析并下载 Sentinel-1 轨道文件。
 - DEM：支持 OpenTopography DEM 下载、原始 DEM 保存、椭球高转换和 SARscape 适配命名。
-- GACOS：支持根据 SAR 影像日期准备请求与下载辅助流程。
+- GACOS：入口暂时保留并暂停启用，后续会重新设计请求与下载辅助流程。
 - 设置中心：支持 Earthdata/ASF 凭据、OpenTopography Key、GACOS 邮箱、网络代理、缓存目录等配置。
 - 无边框桌面窗口：应用图标、窗口控制按钮和主功能区合并为统一顶部体验。
 
@@ -25,7 +25,7 @@ Sentinel-1 / SARscape 使用场景：区域 AOI 选择、ASF 元数据检索、S
 
 当前内部测试版建议直接使用便携包：
 
-1. 下载 `insar-studio-V2.0-portable.zip` 或最新 release 中的便携包。
+1. 下载 `insar-studio-2.0.1-portable.zip` 或最新 release 中的便携包。
 2. 解压后运行 `insar-prep-desktop.exe`。
 3. 首次使用请先在“设置”中填写 Earthdata/ASF 凭据和 OpenTopography Key。
 
@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_exe.ps1
 构建正式安装包需要额外安装 Inno Setup 6：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer.ps1 -Version 2.0.0
+powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer.ps1 -Version 2.0.1
 ```
 
 ## 体积说明

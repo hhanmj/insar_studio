@@ -54,7 +54,8 @@ def run() -> int:
         js_api=api,
         width=1320,
         height=880,
-        min_size=(1024, 680),
+        min_size=(920, 620),
+        resizable=True,
         frameless=True,
         easy_drag=False,
     )

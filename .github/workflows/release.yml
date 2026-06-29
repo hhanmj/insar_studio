@@ -1,18 +1,9 @@
 name: Release
 
-# Publish the Windows one-file executable to a GitHub Release whenever a version
-# tag (e.g. v0.16.0) is pushed. This is what end users download, and it is the
-# release the in-app update check ("update-check" / the post-command notice)
-# compares against, so the loop is: tag -> build -> release -> users notified.
-#
-# Published for now:
-#   * insar-prep.exe -- the lean CLI (no rasterio; convert-dem needs the GUI
-#                       exe or a source install with --extra convert)
-#
-# TEMPORARILY PAUSED (pending the GUI redesign): the desktop GUI exe
-# (insar-prep-gui.exe) and the Inno Setup installer
-# (insar-prep-gui-<version>-setup.exe). The build scripts and packaging are kept
-# in the repo; re-enable the commented steps below once the new UI is ready.
+# Publish Windows desktop builds to a GitHub Release whenever a version tag
+# (for example v2.0.1) is pushed. The desktop app checks the latest GitHub
+# Release on startup and every hour, so the loop is:
+# tag -> build -> release -> users see the update notice.
 
 on:
   push:
@@ -34,48 +25,59 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
 
-      # gui + download + convert extras are bundled into the GUI exe so real
-      # download / DEM conversion / auth work; the dev group provides PyInstaller.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: ui
+        run: npm ci
+
+      # desktop + download + convert extras are bundled into the desktop exe so
+      # real ASF download / DEM conversion / auth work; the dev group provides
+      # PyInstaller.
       - name: Install dependencies
-        run: uv sync --extra gui --extra download --extra convert --dev
+        run: uv sync --extra desktop --extra download --extra convert --dev
 
       - name: Stage artifacts dir
         run: New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 
-      # Runs the quality gate (pytest + ruff), builds dist/insar-prep.exe, and
-      # smoke-tests it fully offline.
-      - name: Build and smoke-test the CLI exe
-        run: pwsh -File scripts/build_windows_exe.ps1
+      - name: Build web UI
+        working-directory: ui
+        run: npm run build
 
-      - name: Stage the CLI exe
-        run: Copy-Item dist/insar-prep.exe artifacts/
+      - name: Build and smoke-test the desktop exe
+        run: pwsh -File scripts/build_windows_desktop_exe.ps1 -SkipUi
 
-      # NOTE: the desktop GUI exe and the Windows installer are TEMPORARILY
-      # PAUSED while the GUI is being redesigned -- only the CLI exe is published
-      # for now. The GUI build/installer scripts (scripts/build_windows_gui_exe.ps1,
-      # scripts/build_windows_installer.ps1) and the Inno Setup packaging are kept
-      # in the repo; re-enable the steps below once the new UI lands.
-      #
-      # - name: Build and smoke-test the GUI exe
-      #   run: pwsh -File scripts/build_windows_gui_exe.ps1
-      # - name: Stage the GUI exe
-      #   run: Copy-Item dist/insar-prep-gui.exe artifacts/
-      # - name: Install Inno Setup
-      #   run: choco install innosetup --no-progress -y
-      # - name: Derive the release version from the tag
-      #   id: version
-      #   shell: pwsh
-      #   run: |
-      #     $version = "${{ github.ref_name }}" -replace '^v', ''
-      #     "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-      # - name: Build the Windows installer
-      #   run: pwsh -File scripts/build_windows_installer.ps1 -Version ${{ steps.version.outputs.version }}
-      # - name: Stage the installer
-      #   run: Copy-Item dist/insar-prep-gui-*-setup.exe artifacts/
+      - name: Stage desktop release assets
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $exeName = "InSAR-Studio-$version.exe"
+          Copy-Item dist/insar-prep-desktop.exe "artifacts/$exeName"
+          @(
+            "InSAR Studio $version",
+            "",
+            "本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。",
+            "它的定位是“处理前的数据准备助手”，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。",
+            "",
+            "运行：双击 $exeName。",
+            "隐私：发行包不包含账号、Token、下载历史、缓存或本机测试目录；用户首次使用需在设置里配置必要凭据。"
+          ) | Set-Content -Encoding UTF8 artifacts/README_RELEASE.txt
+          Compress-Archive -Path "artifacts/$exeName", "artifacts/README_RELEASE.txt" -DestinationPath "artifacts/insar-studio-$version-portable.zip" -Force
+          Get-FileHash -Algorithm SHA256 "artifacts/$exeName", "artifacts/insar-studio-$version-portable.zip" |
+            ForEach-Object { "$($_.Hash)  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content -Encoding ASCII artifacts/SHA256SUMS.txt
 
-      - name: Publish the CLI exe to the GitHub Release
+      - name: Publish desktop assets to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.exe
+          files: |
+            artifacts/*.exe
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt
           generate_release_notes: true
           fail_on_unmatched_files: true

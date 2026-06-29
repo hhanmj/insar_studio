@@ -327,6 +327,33 @@ class Api:
         root = Path(base) if base else Path.home() / "AppData" / "Local"
         return root / "InSAR Assistant" / "desktop_state.json"
 
+    @staticmethod
+    def _default_cache_dir() -> Path:
+        if sys.platform.startswith("win"):
+            base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+            return Path(base) / "InSAR Assistant" / "cache"
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Caches" / "InSAR Assistant"
+        base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+        return Path(base) / "insar-assistant"
+
+    @classmethod
+    def _normalise_network_settings(cls, settings: dict | None = None) -> dict:
+        merged = {**cls._default_network_settings(), **(settings or {})}
+        default_cache = cls._default_cache_dir()
+        cache_dir = str(merged.get("cache_dir") or "").strip()
+        legacy_default = str(Path("C:/InSAR/insar_assistant_cache")).replace("/", "\\").lower()
+        normalised_cache = cache_dir.replace("/", "\\").rstrip("\\").lower()
+        if not cache_dir or normalised_cache == legacy_default:
+            cache_dir = str(default_cache)
+        merged["cache_dir"] = cache_dir
+        merged["cache_enabled"] = True
+        try:
+            merged["cache_limit_mb"] = max(0, int(merged.get("cache_limit_mb") or 10240))
+        except (TypeError, ValueError):
+            merged["cache_limit_mb"] = 10240
+        return merged
+
     def _load_state(self) -> None:
         """Restore the last desktop workspace snapshot, if it exists."""
         if not self._state_path.exists():
@@ -352,10 +379,7 @@ class Api:
                 self._dem_dataset = _normalise_downloadable_dem_dataset(dataset)
             settings = data.get("network_settings")
             if isinstance(settings, dict):
-                self._network_settings = {
-                    **self._default_network_settings(),
-                    **settings,
-                }
+                self._network_settings = self._normalise_network_settings(settings)
             self._download_archive = _normalise_download_archive_for_startup(
                 data.get("download_archive")
             )
@@ -388,11 +412,7 @@ class Api:
 
     @staticmethod
     def _default_network_settings() -> dict:
-        default_cache = Path("C:/InSAR/insar_assistant_cache")
-        if os.name != "nt":
-            base = os.environ.get("LOCALAPPDATA")
-            root = Path(base) if base else Path.home() / "AppData" / "Local"
-            default_cache = root / "InSAR Assistant" / "cache"
+        default_cache = Api._default_cache_dir()
         return {
             "proxy_enabled": False,
             "proxy_url": "",
@@ -466,7 +486,7 @@ class Api:
     def save_network_settings(self, settings: dict | None = None) -> dict:
         """Persist network, proxy and cache preferences for future requests."""
         incoming = settings or {}
-        current = {**self._default_network_settings(), **self._network_settings}
+        current = self._normalise_network_settings(self._network_settings)
 
         proxy_enabled = bool(incoming.get("proxy_enabled", current["proxy_enabled"]))
         proxy_url = _normalise_proxy_url(incoming.get("proxy_url", current["proxy_url"]))
@@ -475,6 +495,8 @@ class Api:
             proxy_url = _detect_system_proxy()
             proxy_auto_detected = bool(proxy_url)
         cache_dir = str(incoming.get("cache_dir", current["cache_dir"]) or "").strip()
+        if not cache_dir:
+            cache_dir = str(self._default_cache_dir())
         tianditu_token = str(incoming.get("tianditu_token", current["tianditu_token"]) or "").strip()
         try:
             cache_limit = int(incoming.get("cache_limit_mb", current["cache_limit_mb"]) or 0)
@@ -484,7 +506,7 @@ class Api:
         self._network_settings = {
             "proxy_enabled": proxy_enabled,
             "proxy_url": proxy_url,
-            "cache_enabled": bool(incoming.get("cache_enabled", current["cache_enabled"])),
+            "cache_enabled": True,
             "cache_dir": cache_dir,
             "cache_limit_mb": max(0, cache_limit),
             "tianditu_token": tianditu_token,
@@ -638,7 +660,7 @@ class Api:
         try:
             from insar_prep.core.update_check import maybe_check_for_update, releases_page_url
 
-            info = maybe_check_for_update(force=bool(force))
+            info = maybe_check_for_update(force=bool(force), interval_seconds=60 * 60)
             fallback_url = releases_page_url()
         except Exception as exc:  # noqa: BLE001 - update checks must never disturb startup
             return {
@@ -981,6 +1003,74 @@ class Api:
         except Exception as exc:  # noqa: BLE001
             return _missing_dep("关闭窗口", exc)
         return {"ok": True}
+
+    def window_get_size(self) -> dict:
+        """Return current native window size for frameless resize handles."""
+        try:
+            import webview  # noqa: PLC0415
+
+            window = webview.active_window()
+            if window is None:
+                return _error_msg("No active window", "GUI000")
+            return {
+                "ok": True,
+                "width": int(window.width),
+                "height": int(window.height),
+                "x": int(window.x),
+                "y": int(window.y),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("window size", exc)
+
+    def window_resize_from_edge(
+        self,
+        edge: str,
+        start_width: int,
+        start_height: int,
+        delta_x: int,
+        delta_y: int,
+    ) -> dict:
+        """Resize a frameless window from a transparent edge/corner handle."""
+        try:
+            import webview  # noqa: PLC0415
+            from webview.window import FixPoint  # noqa: PLC0415
+
+            window = webview.active_window()
+            if window is None:
+                return _error_msg("No active window", "GUI000")
+            edge_key = str(edge or "").lower()
+            min_width, min_height = (920, 620)
+            try:
+                min_width, min_height = window.min_size
+            except Exception:  # noqa: BLE001
+                pass
+
+            width = int(start_width)
+            height = int(start_height)
+            if "e" in edge_key:
+                width = int(start_width) + int(delta_x)
+            if "w" in edge_key:
+                width = int(start_width) - int(delta_x)
+            if "s" in edge_key:
+                height = int(start_height) + int(delta_y)
+            if "n" in edge_key:
+                height = int(start_height) - int(delta_y)
+            width = max(int(min_width), width)
+            height = max(int(min_height), height)
+
+            horizontal = FixPoint.WEST if "e" in edge_key else FixPoint.EAST
+            vertical = FixPoint.NORTH if "s" in edge_key else FixPoint.SOUTH
+            if edge_key in {"e", "w"}:
+                vertical = FixPoint.NORTH
+            if edge_key in {"n", "s"}:
+                horizontal = FixPoint.WEST
+            if self._window_maximized:
+                window.restore()
+                self._window_maximized = False
+            window.resize(width, height, vertical | horizontal)
+            return {"ok": True, "width": width, "height": height}
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("绐楀彛缂╂斁", exc)
 
     def pick_open_file(self, title: str = "", filters: list | None = None) -> dict:
         """Open a native file picker; return {ok, path} ('' if cancelled)."""
@@ -2791,6 +2881,7 @@ class Api:
             "interrupted": summary.interrupted,
             "has_failures": summary.has_failures,
             "results_path": str(summary.results_path) if summary.results_path else "",
+            "output_dir": out,
             "results": [_dump(result) for result in summary.results],
         }
 
@@ -2869,6 +2960,7 @@ class Api:
             "failed": summary.failed,
             "has_failures": summary.has_failures,
             "results_path": str(summary.results_path) if summary.results_path else "",
+            "output_dir": out,
             "results": [_dump(result) for result in summary.results],
         }
 

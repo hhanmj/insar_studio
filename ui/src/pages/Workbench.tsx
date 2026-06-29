@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
 import {
   Activity,
   AlertCircle,
@@ -71,6 +71,7 @@ import {
   getCredentialStatus,
   getDownloadArchive,
   getDownloadStatus,
+  getNativeWindowSize,
   hasBridge,
   checkForUpdate,
   getMetadataStatus,
@@ -104,6 +105,7 @@ import {
   saveDownloadArchive,
   saveNetworkSettings,
   saveOpentopographyKey,
+  resizeNativeWindowFromEdge,
   selectProject,
   selectRegion,
   setDemDataset,
@@ -139,13 +141,113 @@ import {
 import { usePrepContext } from "@/lib/useContext";
 import { cn } from "@/lib/utils";
 
-type SourceMode = "sentinel1" | "dem" | "orbit" | "gacos" | "sentinel2";
+type SourceMode =
+  | "sentinel1"
+  | "dem"
+  | "orbit"
+  | "gacos"
+  | "sentinel2"
+  | "landsat"
+  | "hls";
 type PanelTab = "resources" | "downloads" | "settings";
 
 const DOWNLOAD_ARCHIVE_KEY = "insar.downloadArchive.v1";
 
 function stopWindowDrag(event: { stopPropagation: () => void }) {
   event.stopPropagation();
+}
+
+type NativeResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+const NATIVE_RESIZE_HANDLES: { edge: NativeResizeEdge; className: string }[] = [
+  { edge: "n", className: "left-3 right-3 top-0 h-1.5 cursor-n-resize" },
+  { edge: "s", className: "bottom-0 left-3 right-3 h-1.5 cursor-s-resize" },
+  { edge: "w", className: "bottom-3 left-0 top-3 w-1.5 cursor-w-resize" },
+  { edge: "e", className: "bottom-3 right-0 top-3 w-1.5 cursor-e-resize" },
+  { edge: "nw", className: "left-0 top-0 h-3 w-3 cursor-nw-resize" },
+  { edge: "ne", className: "right-0 top-0 h-3 w-3 cursor-ne-resize" },
+  { edge: "sw", className: "bottom-0 left-0 h-3 w-3 cursor-sw-resize" },
+  { edge: "se", className: "bottom-0 right-0 h-3 w-3 cursor-se-resize" },
+];
+
+function NativeResizeHandles() {
+  const frame = useRef<number | null>(null);
+  const last = useRef<{
+    edge: NativeResizeEdge;
+    startWidth: number;
+    startHeight: number;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (frame.current !== null) window.cancelAnimationFrame(frame.current);
+    };
+  }, []);
+
+  function scheduleResize() {
+    if (frame.current !== null) return;
+    frame.current = window.requestAnimationFrame(() => {
+      frame.current = null;
+      const item = last.current;
+      if (!item) return;
+      void resizeNativeWindowFromEdge(
+        item.edge,
+        item.startWidth,
+        item.startHeight,
+        item.x - item.startX,
+        item.y - item.startY,
+      );
+    });
+  }
+
+  async function beginResize(edge: NativeResizeEdge, event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const size = await getNativeWindowSize();
+    if (!size.ok) return;
+    last.current = {
+      edge,
+      startWidth: size.width,
+      startHeight: size.height,
+      startX: event.screenX,
+      startY: event.screenY,
+      x: event.screenX,
+      y: event.screenY,
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (!last.current) return;
+      moveEvent.preventDefault();
+      last.current = { ...last.current, x: moveEvent.screenX, y: moveEvent.screenY };
+      scheduleResize();
+    };
+    const onUp = () => {
+      last.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }
+
+  return (
+    <>
+      {NATIVE_RESIZE_HANDLES.map((handle) => (
+        <div
+          key={handle.edge}
+          className={cn("fixed z-[1800] bg-transparent", handle.className)}
+          onPointerDown={(event) => void beginResize(handle.edge, event)}
+        />
+      ))}
+    </>
+  );
 }
 
 const DEM_DATASET_GROUPS: {
@@ -313,8 +415,10 @@ const SOURCE_TABS: {
   { key: "sentinel1", label: "Sentinel-1", hint: "SLC / GRD", icon: Satellite },
   { key: "dem", label: "DEM", hint: "下载 + 转换", icon: Mountain },
   { key: "orbit", label: "Orbit", hint: "POEORB", icon: Orbit },
-  { key: "gacos", label: "GACOS", hint: "ZTD 请求", icon: Database },
+  { key: "gacos", label: "GACOS", hint: "暂停", icon: Database, disabled: true },
   { key: "sentinel2", label: "Sentinel-2", hint: "预留", icon: Radar, disabled: true },
+  { key: "landsat", label: "Landsat", hint: "预留", icon: Satellite, disabled: true },
+  { key: "hls", label: "HLS", hint: "预留", icon: Satellite, disabled: true },
 ];
 
 const PANEL_TABS: { key: PanelTab; label: string; icon: typeof CloudDownload }[] = [
@@ -620,6 +724,52 @@ function pathDirName(path: string) {
   return parts.slice(0, -1).join("\\");
 }
 
+function jsonField(value: Json | null | undefined, key: string) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const raw = (value as Record<string, unknown>)[key];
+  return raw == null ? "" : String(raw);
+}
+
+function resultLine(value: Json, index: number) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return String(value ?? "");
+  const parts = [
+    jsonField(value, "outcome") || jsonField(value, "status"),
+    jsonField(value, "dataset"),
+    jsonField(value, "message") || jsonField(value, "error"),
+    jsonField(value, "output_path") || jsonField(value, "path"),
+  ].filter(Boolean);
+  return parts.length ? `${index + 1}. ${parts.join("；")}` : `${index + 1}. ${JSON.stringify(value)}`;
+}
+
+function demRunOutputDir(run: RunSummaryOk) {
+  if (run.output_dir?.trim()) return run.output_dir.trim();
+  const candidate =
+    run.results_path ||
+    run.conversion_results_path ||
+    run.sarscape_ready_dem_path ||
+    run.ellipsoid_dem_path ||
+    run.raw_dem_path ||
+    "";
+  return candidate ? pathDirName(candidate) : "";
+}
+
+function demRunLogLines(run: RunSummaryOk) {
+  const downloadResults = (run.download as { results?: Json[] } | undefined)?.results;
+  const conversionResults = (run.conversion as { results?: Json[] } | null | undefined)?.results;
+  const lines = [
+    run.summary_line,
+    run.raw_dem_path ? `原始 DEM：${run.raw_dem_path}` : "",
+    run.ellipsoid_dem_path ? `椭球高 DEM：${run.ellipsoid_dem_path}` : "",
+    run.sarscape_ready_dem_path ? `SARscape DEM：${run.sarscape_ready_dem_path}` : "",
+    run.results_path ? `结果表：${run.results_path}` : "",
+    run.conversion_results_path ? `转换结果表：${run.conversion_results_path}` : "",
+    ...(run.results ?? []).map(resultLine),
+    ...(Array.isArray(downloadResults) ? downloadResults.map((item, index) => `下载 ${resultLine(item, index)}`) : []),
+    ...(Array.isArray(conversionResults) ? conversionResults.map((item, index) => `转换 ${resultLine(item, index)}`) : []),
+  ];
+  return Array.from(new Set(lines.filter(Boolean))).slice(-160);
+}
+
 function loadDownloadArchive() {
   if (typeof window === "undefined") return [];
   try {
@@ -701,7 +851,7 @@ function isRestorableArchiveTask(item: DownloadArchiveItem) {
   const kind = archiveTaskKind(item);
   return (
     (kind === "asf" || kind === "orbit") &&
-    ["running", "paused", "interrupted", "failed"].includes(item.status) &&
+    ["running", "paused"].includes(item.status) &&
     !!archiveTaskOutputDir(item)
   );
 }
@@ -746,6 +896,8 @@ export function Workbench({
   const [projectNote, setProjectNote] = useState<string | null>(null);
 
   const [outputDir, setOutputDir] = useState("");
+  const [demDownloadOutputDir, setDemDownloadOutputDir] = useState("");
+  const [localDemOutputDir, setLocalDemOutputDir] = useState("");
   const [scenes, setScenes] = useState<SceneRow[]>([]);
   const [sceneText, setSceneText] = useState("");
   const [sceneFile, setSceneFile] = useState("");
@@ -817,6 +969,7 @@ export function Workbench({
   const [demSouth, setDemSouth] = useState("");
   const [demNorth, setDemNorth] = useState("");
   const [demRun, setDemRun] = useState<RunSummaryOk | null>(null);
+  const [demRunSource, setDemRunSource] = useState<"download" | "local" | null>(null);
   const [demBusy, setDemBusy] = useState(false);
   const [demError, setDemError] = useState<string | null>(null);
   const [localDem, setLocalDem] = useState("");
@@ -847,7 +1000,17 @@ export function Workbench({
   );
   const [archiveLoaded, setArchiveLoaded] = useState(false);
   const archiveLoadedFromBridge = useRef(false);
+  const [expandedQueueIds, setExpandedQueueIds] = useState<Set<string>>(() => new Set());
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(() => new Set());
+
+  function onSourceTabsWheel(event: WheelEvent<HTMLElement>) {
+    const target = event.currentTarget;
+    if (target.scrollWidth <= target.clientWidth) return;
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    if (!delta) return;
+    event.preventDefault();
+    target.scrollLeft += delta;
+  }
 
   async function refreshTree() {
     const next = await getTree();
@@ -951,6 +1114,7 @@ export function Workbench({
 
   useEffect(() => {
     let mounted = true;
+    let timer: number | undefined;
     async function checkUpdate() {
       try {
         const res = await checkForUpdate(false);
@@ -960,8 +1124,14 @@ export function Workbench({
       }
     }
     void checkUpdate();
+    if (typeof window !== "undefined") {
+      timer = window.setInterval(() => {
+        void checkUpdate();
+      }, 60 * 60 * 1000);
+    }
     return () => {
       mounted = false;
+      if (timer !== undefined) window.clearInterval(timer);
     };
   }, []);
 
@@ -1052,6 +1222,10 @@ export function Workbench({
   }, [asfSearchBusy, sceneBusy]);
 
   const resolvedOutputDir = useMemo(() => outputDir.trim(), [outputDir]);
+  const resolvedDemDownloadOutputDir = useMemo(() => demDownloadOutputDir.trim(), [demDownloadOutputDir]);
+  const resolvedLocalDemOutputDir = useMemo(() => localDemOutputDir.trim(), [localDemOutputDir]);
+  const inferredLocalDemOutputDir = useMemo(() => (localDem.trim() ? pathDirName(localDem) : ""), [localDem]);
+  const effectiveLocalDemOutputDir = resolvedLocalDemOutputDir || inferredLocalDemOutputDir;
 
   const mapBbox = focusBbox ?? activeBbox(ctx);
   const manualDemBbox: Bbox = {
@@ -1086,7 +1260,7 @@ export function Workbench({
   const dlVisible =
     !!dlStatus &&
     dlStatus.state !== "idle" &&
-    (dlActive || dlStatus.state === "failed" || !!dlStatus.has_failures);
+    dlActive;
   const orbitActive = orbitStatus?.state === "running" || orbitStatus?.state === "paused";
   const transferredBytes = (dlStatus?.done_bytes ?? 0) + (dlStatus?.current_bytes ?? 0);
   const dlPct = dlStatus?.total_bytes
@@ -1110,7 +1284,7 @@ export function Workbench({
       : [];
   const orbitPct =
     orbitStatus && orbitStatus.total > 0 ? Math.round((orbitStatus.done / orbitStatus.total) * 100) : 0;
-  const archiveableStates = new Set(["running", "paused", "finished", "failed", "cancelled"]);
+  const archiveableStates = new Set(["running", "paused", "finished", "failed", "cancelled", "interrupted", "timeout"]);
   const tiandituToken = network?.tianditu_token ?? "";
   const mapAoiGeometry = aoiPreviewGeometry ?? ctx?.region?.aoi_geojson;
   const adminProvinceOptions = useMemo(
@@ -1228,19 +1402,31 @@ export function Workbench({
 
   useEffect(() => {
     if (!demRun) return;
+    if (demRunSource !== "download") return;
+    const outputDir = demRunOutputDir(demRun);
     rememberTask({
-      id: `dem:${demRun.results_path || demRun.raw_dem_path || demRun.summary_line}`,
+      id: `dem:${outputDir || demRun.results_path || demRun.raw_dem_path || demRun.summary_line}:${demRun.total}`,
       name: "DEM 下载与转换",
       status: demRun.has_failures ? "failed" : "finished",
       detail: demRun.summary_line,
-      logs: [
-        demRun.summary_line,
-        demRun.raw_dem_path ? `原始 DEM：${demRun.raw_dem_path}` : "",
-        demRun.ellipsoid_dem_path ? `椭球高 DEM：${demRun.ellipsoid_dem_path}` : "",
-        demRun.sarscape_ready_dem_path ? `SARscape DEM：${demRun.sarscape_ready_dem_path}` : "",
-      ].filter(Boolean),
+      kind: "dem",
+      output_dir: outputDir,
+      total: demRun.total,
+      logs: demRunLogLines(demRun),
     });
-  }, [demRun?.has_failures, demRun?.raw_dem_path, demRun?.results_path, demRun?.summary_line]);
+  }, [
+    demRun?.conversion_results_path,
+    demRun?.ellipsoid_dem_path,
+    demRun?.failed,
+    demRun?.has_failures,
+    demRun?.output_dir,
+    demRun?.raw_dem_path,
+    demRun?.results_path,
+    demRun?.sarscape_ready_dem_path,
+    demRun?.summary_line,
+    demRun?.total,
+    demRunSource,
+  ]);
 
   useEffect(() => {
     if (!gacosPlan) return;
@@ -1265,9 +1451,33 @@ export function Workbench({
     return pick.ok && pick.path ? pick.path : "";
   }
 
+  async function onBrowseDemDownloadOutput() {
+    const pick = await pickDirectory("选择 DEM 下载输出目录");
+    if (pick.ok && pick.path) setDemDownloadOutputDir(pick.path);
+    return pick.ok && pick.path ? pick.path : "";
+  }
+
+  async function onBrowseLocalDemOutput() {
+    const pick = await pickDirectory("选择本地 DEM 转换输出目录");
+    if (pick.ok && pick.path) setLocalDemOutputDir(pick.path);
+    return pick.ok && pick.path ? pick.path : "";
+  }
+
   async function ensureTaskOutput() {
     if (resolvedOutputDir) return resolvedOutputDir;
     const picked = await onBrowseOutput();
+    return picked;
+  }
+
+  async function ensureDemDownloadOutput() {
+    if (resolvedDemDownloadOutputDir) return resolvedDemDownloadOutputDir;
+    const picked = await onBrowseDemDownloadOutput();
+    return picked;
+  }
+
+  async function ensureLocalDemOutput() {
+    if (effectiveLocalDemOutputDir) return effectiveLocalDemOutputDir;
+    const picked = await onBrowseLocalDemOutput();
     return picked;
   }
 
@@ -1392,6 +1602,7 @@ export function Workbench({
 
   async function bindAdminBoundary(boundary: AdminBoundary) {
     setSelectedAdminBoundary(boundary);
+    setSelectedSceneId(null);
     setFocusBbox(boundary.bbox);
     setAoiPreviewGeometry(boundary.geojson ?? null);
     setAoiBusy(true);
@@ -1453,6 +1664,7 @@ export function Workbench({
         return;
       }
       setSelectedAdminBoundary(res.results[0]);
+      setSelectedSceneId(null);
       setFocusBbox(res.results[0].bbox);
       setAoiPreviewGeometry(res.results[0].geojson ?? null);
       const provider =
@@ -1604,8 +1816,14 @@ export function Workbench({
         await refreshTree();
         setMetadataStatus(await getMetadataStatus());
         const total = res.search?.total_count;
+        const returned = res.search?.returned_count ?? res.scenes.length;
+        const requested = res.search?.requested_limit;
         const totalText = typeof total === "number" ? `；当前筛选条件总计 ${total} 景` : "";
-        setAsfSearchNote(`ASF 检索导入 ${res.scenes.length} 景${totalText}；元数据已补全 path/frame/升降轨/范围。`);
+        const rankText =
+          typeof total === "number" && typeof requested === "number" && total > returned
+            ? "；已按 AOI 覆盖率优先保留候选影像"
+            : "";
+        setAsfSearchNote(`ASF 检索导入 ${returned} 景${totalText}${rankText}；元数据已补全 path/frame/升降轨/范围。`);
       } else {
         setAsfSearchError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
       }
@@ -1702,6 +1920,7 @@ export function Workbench({
         setAsfError("开始下载前需要确认一个输出目录。");
         return;
       }
+      setOutputDir(out);
       const res = await startAsfDownload(out, "auto", Number(asfConcurrency) || 1);
       if (res.ok) setDlStatus(await getDownloadStatus());
       else setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
@@ -1835,6 +2054,8 @@ export function Workbench({
   async function onRunDemDownload() {
     setDemBusy(true);
     setDemError(null);
+    setDemRun(null);
+    setDemRunSource(null);
     try {
       if (!DOWNLOADABLE_DEM_DATASETS.has(dataset)) {
         setDemError("当前选择的是本地或未接入 DEM 来源，不能在线下载；请选择 COP30、SRTM、AW3D30 等在线 DEM，或使用“本地 DEM 转换”。");
@@ -1845,7 +2066,7 @@ export function Workbench({
         setPanel("settings");
         return;
       }
-      const out = await ensureTaskOutput();
+      const out = await ensureDemDownloadOutput();
       if (!out) {
         setDemError("开始下载 DEM 前需要确认一个输出目录。");
         return;
@@ -1860,7 +2081,10 @@ export function Workbench({
             out,
             dataset,
           );
-      if (res.ok) setDemRun(res);
+      if (res.ok) {
+        setDemRunSource("download");
+        setDemRun(res);
+      }
       else setDemError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
       setDemError(formatBridgeError(e));
@@ -1874,20 +2098,28 @@ export function Workbench({
       "DEM (*.tif;*.tiff;*.img;*.vrt)",
       "All files (*.*)",
     ]);
-    if (pick.ok && pick.path) setLocalDem(pick.path);
+    if (pick.ok && pick.path) {
+      setLocalDem(pick.path);
+      setLocalDemOutputDir((current) => current.trim() || pathDirName(pick.path));
+    }
   }
 
   async function onRunLocalDem() {
     setDemBusy(true);
     setDemError(null);
+    setDemRun(null);
+    setDemRunSource(null);
     try {
-      const out = await ensureTaskOutput();
+      const out = await ensureLocalDemOutput();
       if (!out) {
         setDemError("转换本地 DEM 前需要确认一个输出目录。");
         return;
       }
       const res = await runLocalDemConversion(localDem, out, localDatum);
-      if (res.ok) setDemRun(res);
+      if (res.ok) {
+        setDemRunSource("local");
+        setDemRun(res);
+      }
       else setDemError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
       setDemError(formatBridgeError(e));
@@ -1992,7 +2224,19 @@ export function Workbench({
     }
   }
 
-function renderOutputParameters(desc = "任务开始前确认输出根目录；留空时使用当前项目或研究区目录。") {
+function renderOutputParameters(
+  desc = "任务开始前确认输出根目录；留空时使用当前项目或研究区目录。",
+  options?: {
+    value?: string;
+    onChange?: (value: string) => void;
+    onBrowse?: () => Promise<string>;
+    placeholder?: string;
+    title?: string;
+  },
+) {
+    const value = options?.value ?? outputDir;
+    const onChange = options?.onChange ?? setOutputDir;
+    const placeholder = options?.placeholder ?? (value.trim() || "开始任务时选择输出目录");
     return (
       <div className="space-y-2 rounded-2xl border border-white/45 bg-white/40 p-2.5 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
         <div className="flex items-center gap-2 text-xs font-medium">
@@ -2001,13 +2245,18 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-2">
           <Input
-            value={outputDir}
-            onChange={(e) => setOutputDir(e.target.value)}
-            placeholder={resolvedOutputDir || "开始任务时选择输出目录"}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={placeholder}
             className="font-mono text-xs"
             spellCheck={false}
           />
-          <Button variant="outline" size="icon" onClick={onBrowseOutput} title="浏览输出目录">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => void (options?.onBrowse ?? onBrowseOutput)()}
+            title={options?.title ?? "浏览输出目录"}
+          >
             <FolderOpen className="h-4 w-4" />
           </Button>
         </div>
@@ -2239,6 +2488,7 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
                   type="button"
                   onClick={() => {
                     setSelectedAdminBoundary(item);
+                    setSelectedSceneId(null);
                     setFocusBbox(item.bbox);
                     setAoiPreviewGeometry(item.geojson ?? null);
                     setAoiNote(`已定位行政边界：${item.label}。确认后可绑定为 AOI。`);
@@ -2802,9 +3052,74 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
     );
   }
 
+  function renderDemResultCard() {
+    if (!demRun) return null;
+    const logs = demRunLogLines(demRun);
+    const title = demRunSource === "local" ? "本地 DEM 转换结果" : "DEM 下载与转换结果";
+    const skipped = Number(demRun.skipped ?? 0);
+    return (
+      <div className="rounded-2xl border border-white/45 bg-white/35 p-3 text-xs shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">{title}</div>
+            <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{demRun.summary_line}</div>
+          </div>
+          <Badge variant={demRun.has_failures ? "warning" : skipped > 0 ? "neutral" : "success"}>
+            {demRun.has_failures ? "需检查" : skipped > 0 ? "已跳过" : "已完成"}
+          </Badge>
+        </div>
+        <Progress value={100} className="mt-3" />
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {kv("任务数", demRun.total)}
+          {kv("成功", demRun.succeeded ?? demRun.copied ?? 0)}
+          {kv("跳过", skipped)}
+          {kv("失败", demRun.failed ?? 0)}
+          {kv("下载结果", demRun.results_path ? pathBaseName(demRun.results_path) : "-")}
+          {kv("转换结果", demRun.conversion_results_path ? pathBaseName(demRun.conversion_results_path) : "-")}
+        </div>
+        <div className="mt-3 space-y-2">
+          {[
+            { label: "原始 DEM", path: demRun.raw_dem_path },
+            { label: "椭球高 DEM", path: demRun.ellipsoid_dem_path },
+            { label: "SARscape DEM", path: demRun.sarscape_ready_dem_path },
+          ].map(({ label, path }) => (
+            <div key={label} className="rounded-md border bg-muted/20 p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="shrink-0 text-muted-foreground">{label}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!path}
+                  onClick={() => void openLocalPath(pathDirName(String(path || "")))}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  打开目录
+                </Button>
+              </div>
+              <div className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{path || "-"}</div>
+            </div>
+          ))}
+        </div>
+        {logs.length > 0 && (
+          <details className="mt-3 rounded-md border bg-muted/20 p-2">
+            <summary className="cursor-pointer select-none text-xs font-medium">详细日志</summary>
+            <div className="mt-2 max-h-52 overflow-y-auto font-mono text-[11px] leading-5">
+              {logs.map((line, i) => (
+                <div key={i} className="break-all">
+                  {line}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  }
+
   function renderDemPanel() {
     const previewStem = demSourceStem(dataset);
-    const previewOutputRoot = resolvedOutputDir || "开始下载时选择输出目录";
+    const previewOutputRoot = resolvedDemDownloadOutputDir || "开始下载时选择输出目录";
+    const localPreviewOutputRoot = effectiveLocalDemOutputDir || "默认使用所选 DEM 所在目录";
     const previewBbox = manualBboxReady
       ? `W ${manualDemBbox.west.toFixed(5)} / E ${manualDemBbox.east.toFixed(5)} / S ${manualDemBbox.south.toFixed(5)} / N ${manualDemBbox.north.toFixed(5)}`
       : "等待 AOI 或经纬度范围";
@@ -2861,7 +3176,13 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
                 OpenTopography 在线接口返回原始 GeoTIFF；软件会先生成椭球高 GeoTIFF，再导出 SARscape 常用的 ENVI _dem + .hdr。
               </div>
             </div>
-            {renderOutputParameters("保存原始 GeoTIFF、椭球高 GeoTIFF 和 SARscape *_dem + *.hdr。")}
+            {renderOutputParameters("保存原始 GeoTIFF、椭球高 GeoTIFF 和 SARscape *_dem + *.hdr。", {
+              value: demDownloadOutputDir,
+              onChange: setDemDownloadOutputDir,
+              onBrowse: onBrowseDemDownloadOutput,
+              placeholder: resolvedDemDownloadOutputDir || "开始下载时选择 DEM 下载输出目录",
+              title: "浏览 DEM 下载输出目录",
+            })}
             {!opentopoConfigured && (
               <div className="rounded-2xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs shadow-sm backdrop-blur-xl">
                 <div className="flex items-start gap-2">
@@ -2910,13 +3231,20 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
               <option value="EGM2008">EGM2008 正高</option>
               <option value="WGS84_ELLIPSOID">WGS84 椭球高</option>
             </select>
-            {renderOutputParameters("本地 DEM 转换输出到椭球高目录和 SARscape 就绪目录。")}
+            {renderOutputParameters("本地 DEM 转换输出到此目录；留空时默认使用所选 DEM 所在文件夹。", {
+              value: localDemOutputDir,
+              onChange: setLocalDemOutputDir,
+              onBrowse: onBrowseLocalDemOutput,
+              placeholder: localPreviewOutputRoot,
+              title: "浏览本地 DEM 转换输出目录",
+            })}
             <Button variant="outline" onClick={onRunLocalDem} disabled={demBusy || !localDem} className="w-full">
               {demBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               转换为 SARscape DEM
             </Button>
           </div>
         </Section>
+        {renderDemResultCard()}
       </div>
     );
   }
@@ -3301,7 +3629,7 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
 
     return (
       <div className="space-y-3">
-        <Section title="任务队列" desc="进行中、暂停和可重试失败任务保留在这里，可暂停、继续、结束或重试。" icon={Activity}>
+        <Section title="任务队列" desc="进行中和手动暂停的任务保留在这里；完成、失败、中断、结束和超时任务进入历史记录。" icon={Activity}>
           <div className="space-y-3">
             {queueTasks.length === 0 ? (
               <div className="rounded-md border border-dashed py-8 text-center text-xs text-muted-foreground">
@@ -3359,12 +3687,37 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
                   </div>
                   <div className="mt-3">{task.controls}</div>
                   {task.log.length > 0 && (
-                    <div className="mt-3 max-h-28 overflow-y-auto rounded-md border bg-muted/20 p-2 font-mono text-[11px]">
-                      {task.log.slice(-8).map((line, i) => (
-                        <div key={i} className="break-all leading-5">
-                          {line}
+                    <div className="mt-3">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() =>
+                          setExpandedQueueIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(task.id)) next.delete(task.id);
+                            else next.add(task.id);
+                            return next;
+                          })
+                        }
+                      >
+                        {expandedQueueIds.has(task.id) ? (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        )}
+                        详细日志
+                      </Button>
+                      {expandedQueueIds.has(task.id) && (
+                        <div className="mt-2 max-h-52 overflow-y-auto rounded-md border bg-muted/20 p-2 font-mono text-[11px]">
+                          {task.log.map((line, i) => (
+                            <div key={i} className="break-all leading-5">
+                              {line}
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      )}
                     </div>
                   )}
                 </div>
@@ -3420,18 +3773,32 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
                       >
                         {task.status === "deleted" ? "已删除" : statusLabel(task.status)}
                       </Badge>
+                      {task.status !== "deleted" && ["asf", "orbit"].includes(archiveTaskKind(task)) && archiveTaskOutputDir(task) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-2"
+                          onClick={() => void onResumeArchivedTask(task)}
+                          title="使用原输出目录重新进入队列；完整文件会跳过，.part 文件会断点续传"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          恢复
+                        </Button>
+                      )}
                       {task.status !== "deleted" && (
                         <Button
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                          onClick={() =>
-                            setDownloadArchive((prev) =>
-                              prev.map((item) =>
-                                archiveTaskKey(item) === archiveTaskKey(task) ? { ...item, status: "deleted", detail: "用户已从历史记录删除" } : item,
-                              ),
-                            )
-                          }
+                          onClick={() => {
+                            const key = archiveTaskKey(task);
+                            setDownloadArchive((prev) => prev.filter((item) => archiveTaskKey(item) !== key));
+                            setExpandedHistoryIds((prev) => {
+                              const next = new Set(prev);
+                              next.delete(task.id);
+                              return next;
+                            });
+                          }}
                           title="删除历史记录"
                         >
                           <Trash2 className="h-4 w-4" />
@@ -3454,63 +3821,16 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
           </div>
         </Section>
 
-        <Section title="DEM / GACOS 结果" icon={Database}>
-          <div className="space-y-3 text-xs">
-            {demRun ? (
-              <div className="rounded-lg border bg-card p-3 shadow-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold">DEM 下载与转换</div>
-                    <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{demRun.summary_line}</div>
-                  </div>
-                  <Badge variant={demRun.has_failures ? "warning" : "success"}>
-                    {demRun.has_failures ? "需检查" : "已完成"}
-                  </Badge>
-                </div>
-                <Progress value={100} className="mt-3" />
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  {kv("任务数", demRun.total)}
-                  {kv("失败", demRun.failed ?? 0)}
-                  {kv("下载结果", demRun.results_path ? pathBaseName(demRun.results_path) : "-")}
-                  {kv("转换结果", demRun.conversion_results_path ? pathBaseName(demRun.conversion_results_path) : "-")}
-                </div>
-                <div className="mt-3 space-y-2">
-                  {[
-                    { label: "原始 tif", path: demRun.raw_dem_path },
-                    { label: "椭球高 tif", path: demRun.ellipsoid_dem_path },
-                    { label: "SARscape DEM", path: demRun.sarscape_ready_dem_path },
-                  ].map(({ label, path }) => (
-                    <div key={label} className="rounded-md border bg-muted/20 p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="shrink-0 text-muted-foreground">{label}</span>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={!path}
-                          onClick={() => void openLocalPath(pathDirName(String(path || "")))}
-                        >
-                          <FolderOpen className="h-4 w-4" />
-                          打开目录
-                        </Button>
-                      </div>
-                      <div className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{path || "-"}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-md border border-dashed py-6 text-center text-muted-foreground">
-                暂无 DEM 执行结果
-              </div>
-            )}
-            {gacosPlan && (
+        {gacosPlan && (
+          <Section title="GACOS 结果" icon={Database}>
+            <div className="space-y-3 text-xs">
               <div className="rounded-md border bg-muted/30 p-3">
                 {kv("GACOS 日期数", String((gacosPlan.unique_dates as string[] | undefined)?.length ?? 0))}
                 {kv("输出目录", resolvedOutputDir || "-")}
               </div>
-            )}
-          </div>
-        </Section>
+            </div>
+          </Section>
+        )}
       </div>
     );
   }
@@ -3831,7 +4151,8 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
                 <input
                   type="checkbox"
                   checked={network.cache_enabled}
-                  onChange={(e) => setNetwork({ ...network, cache_enabled: e.target.checked })}
+                  disabled
+                  onChange={() => undefined}
                   className="h-4 w-4"
                 />
               </label>
@@ -3885,6 +4206,7 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
 
   return (
     <div className="ios-window flex h-screen w-screen flex-col overflow-hidden text-foreground">
+      <NativeResizeHandles />
       <header
         className="ios-topbar pywebview-drag-region z-[520] flex h-12 shrink-0 items-center gap-2 border-b px-3"
         data-tour="app-header"
@@ -3896,7 +4218,10 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
           </div>
         </div>
 
-        <nav className="scrollbar-none relative flex h-11 min-w-0 flex-1 items-center overflow-x-auto border-x border-white/40 px-3 dark:border-white/10">
+        <nav
+          className="source-tab-strip scrollbar-none relative flex h-11 shrink-0 items-center overflow-x-auto overflow-y-hidden rounded-2xl border border-white/55 bg-white/34 px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] backdrop-blur-2xl dark:border-white/10 dark:bg-white/8"
+          onWheel={onSourceTabsWheel}
+        >
           <div
             className="flex min-w-max items-center gap-1"
             data-tour="source-tabs"
@@ -3915,7 +4240,7 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
                   setPanel("resources");
                 }}
                 className={cn(
-                  "relative flex h-11 min-w-[104px] shrink-0 items-center justify-center gap-1.5 px-3 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                  "relative flex h-10 min-w-[104px] shrink-0 items-center justify-center gap-1.5 px-3 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-45",
                   active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
               >
@@ -3930,6 +4255,8 @@ function renderOutputParameters(desc = "任务开始前确认输出根目录；�
           </div>
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-foreground/20 to-transparent" />
         </nav>
+
+        <div className="min-w-0 flex-1" />
 
         {updateInfo && (
           <button

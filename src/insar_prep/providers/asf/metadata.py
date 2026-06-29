@@ -434,6 +434,73 @@ def _filter_scenes_by_aoi_geometry(scenes: list[Scene], aoi_geojson: Mapping[str
     return filtered
 
 
+def _ranking_geometry(aoi_geojson: Mapping[str, Any] | None, bbox: BBox | None) -> Any | None:
+    if isinstance(aoi_geojson, Mapping):
+        geom = _shape_from_geojson(aoi_geojson)
+        if geom is not None:
+            return geom
+    if bbox is not None:
+        try:
+            return bbox.to_polygon()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("could not convert ASF ranking bbox to polygon: %s", exc)
+    return None
+
+
+def _scene_footprint_geometry(scene: Scene) -> Any | None:
+    footprint = _shape_from_geojson(getattr(scene, "footprint_geojson", None))
+    if footprint is not None:
+        return footprint
+    bbox = getattr(scene, "footprint_bbox", None)
+    if bbox is None:
+        return None
+    try:
+        return bbox.to_polygon()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not convert ASF footprint bbox to polygon: %s", exc)
+        return None
+
+
+def _scene_aoi_coverage_score(scene: Scene, aoi_geometry: Any | None) -> tuple[float, float]:
+    """Rank scenes by how much of the user's AOI they cover.
+
+    The first score is intersection/AOI area so smaller partial frames lose to
+    larger-overlap frames. The second score is raw intersection area as a stable
+    tie-breaker for invalid/tiny AOIs.
+    """
+    if aoi_geometry is None:
+        return (0.0, 0.0)
+    footprint = _scene_footprint_geometry(scene)
+    if footprint is None:
+        return (0.0, 0.0)
+    try:
+        intersection = footprint.intersection(aoi_geometry)
+        overlap = float(intersection.area) if not intersection.is_empty else 0.0
+        aoi_area = float(aoi_geometry.area) if aoi_geometry.area else 0.0
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not score ASF scene coverage: %s", exc)
+        return (0.0, 0.0)
+    coverage = overlap / aoi_area if aoi_area > 0 else overlap
+    return (coverage, overlap)
+
+
+def _sort_scenes_by_aoi_coverage(
+    scenes: list[Scene],
+    *,
+    aoi_geojson: Mapping[str, Any] | None,
+    bbox: BBox | None,
+) -> list[Scene]:
+    aoi_geometry = _ranking_geometry(aoi_geojson, bbox)
+    if aoi_geometry is None:
+        return scenes
+    indexed = list(enumerate(scenes))
+    indexed.sort(
+        key=lambda item: (*_scene_aoi_coverage_score(item[1], aoi_geometry), -item[0]),
+        reverse=True,
+    )
+    return [scene for _, scene in indexed]
+
+
 def _asf_datetime(value: str | None, *, end: bool = False) -> str | None:
     text = (value or "").strip()
     if not text:
@@ -858,7 +925,7 @@ def search_scenes_from_asf(
 
     requested_limit = max(1, min(int(max_results or 50), _MAX_REMOTE_SEARCH_RESULTS))
     query_limit = requested_limit
-    if isinstance(aoi_geojson, Mapping):
+    if isinstance(aoi_geojson, Mapping) or bbox is not None:
         query_limit = min(
             _MAX_REMOTE_SEARCH_RESULTS,
             max(requested_limit * 4, requested_limit + 50),
@@ -927,7 +994,12 @@ def search_scenes_from_asf(
                 polarization=polarization,
                 max_results=query_limit,
             )
-            fallback = _filter_scenes_by_aoi_geometry(fallback_scenes, aoi_geojson)[:requested_limit]
+            fallback = _filter_scenes_by_aoi_geometry(fallback_scenes, aoi_geojson)
+            fallback = _sort_scenes_by_aoi_coverage(
+                fallback,
+                aoi_geojson=aoi_geojson,
+                bbox=bbox,
+            )[:requested_limit]
             if stats is not None:
                 stats.update(
                     {
@@ -963,6 +1035,7 @@ def search_scenes_from_asf(
             scenes.append(scene)
     unique, _ = deduplicate_scenes(scenes)
     unique = _filter_scenes_by_aoi_geometry(unique, aoi_geojson)
+    unique = _sort_scenes_by_aoi_coverage(unique, aoi_geojson=aoi_geojson, bbox=bbox)
     unique = unique[:requested_limit]
     if stats is not None:
         stats["returned_count"] = len(unique)

@@ -156,6 +156,45 @@ body {
   background: rgba(8, 13, 20, 0.58);
 }
 
+.source-tab-strip {
+  width: clamp(360px, 42vw, 560px);
+  max-width: max(300px, calc(100vw - 430px));
+  scroll-behavior: smooth;
+  overscroll-behavior-inline: contain;
+}
+
+.source-tab-strip::before,
+.source-tab-strip::after {
+  content: "";
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  width: 22px;
+  height: 100%;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.source-tab-strip::before {
+  left: -0.75rem;
+  margin-left: -0.75rem;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0));
+}
+
+.source-tab-strip::after {
+  right: -0.75rem;
+  margin-right: -0.75rem;
+  background: linear-gradient(270deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0));
+}
+
+.dark .source-tab-strip::before {
+  background: linear-gradient(90deg, rgba(8, 13, 20, 0.92), rgba(8, 13, 20, 0));
+}
+
+.dark .source-tab-strip::after {
+  background: linear-gradient(270deg, rgba(8, 13, 20, 0.92), rgba(8, 13, 20, 0));
+}
+
 .ios-sidebar {
   border-right: 1px solid rgba(255, 255, 255, 0.58);
   background: rgba(255, 255, 255, 0.32);

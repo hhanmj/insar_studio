@@ -270,6 +270,7 @@ export type RunSummaryOk = {
   interrupted?: number;
   has_failures: boolean;
   results_path: string;
+  output_dir?: string;
   results: Json[];
   download?: Json;
   conversion?: Json | null;
@@ -364,6 +365,13 @@ export type AsfSearchParams = {
   max_results?: string | number | null;
 };
 export type SimpleOk = { ok: true; [key: string]: unknown } | ApiError;
+export type NativeWindowSize = {
+  ok: true;
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+} | ApiError;
 export type MetadataStatus = {
   ok: true;
   state: string;
@@ -406,6 +414,14 @@ type PyApi = {
   window_minimize?: () => Promise<SimpleOk>;
   window_toggle_maximize?: () => Promise<SimpleOk>;
   window_close?: () => Promise<SimpleOk>;
+  window_get_size?: () => Promise<NativeWindowSize>;
+  window_resize_from_edge?: (
+    edge: string,
+    startWidth: number,
+    startHeight: number,
+    deltaX: number,
+    deltaY: number,
+  ) => Promise<SimpleOk>;
   create_workspace: (root: string, name?: string | null) => Promise<WorkspaceResult>;
   add_project: (name: string) => Promise<ProjectResult>;
   select_project: (projectId: string) => Promise<ProjectResult>;
@@ -669,7 +685,7 @@ let mockNetworkSettings: NetworkSettings = {
   proxy_enabled: false,
   proxy_url: "",
   cache_enabled: true,
-  cache_dir: "C:\\InSAR\\insar_assistant_cache",
+  cache_dir: "C:\\Users\\<user>\\AppData\\Local\\InSAR Assistant\\cache",
   cache_limit_mb: 10240,
   tianditu_token: "",
   asf_ssl_verify: true,
@@ -825,7 +841,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Studio", version: "2.0.0", offline: true };
+  return { name: "InSAR Studio", version: "2.0.1", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -837,8 +853,8 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "2.0.0",
-    latest_version: "2.0.0",
+    current_version: "2.0.1",
+    latest_version: "2.0.1",
     html_url: "https://github.com/hhanmj/insar_assistant/releases/latest",
     message: "Update checks run only in the packaged desktop app.",
   };
@@ -1068,7 +1084,7 @@ export async function saveNetworkSettings(
     ok: true,
     proxy_enabled: !!settings.proxy_enabled,
     proxy_url: settings.proxy_url || "",
-    cache_enabled: !!settings.cache_enabled,
+    cache_enabled: true,
     cache_dir: settings.cache_dir || "",
     cache_limit_mb: Number(settings.cache_limit_mb) || 0,
     tianditu_token: settings.tianditu_token || "",
@@ -1127,6 +1143,30 @@ export async function closeNativeWindow(): Promise<SimpleOk> {
     return api().window_close!();
   }
   if (typeof window !== "undefined") window.close();
+  return { ok: true };
+}
+
+export async function getNativeWindowSize(): Promise<NativeWindowSize> {
+  if (hasBridge() && typeof api().window_get_size === "function") {
+    return api().window_get_size!();
+  }
+  return {
+    ok: true,
+    width: typeof window !== "undefined" ? window.innerWidth : 1320,
+    height: typeof window !== "undefined" ? window.innerHeight : 880,
+  };
+}
+
+export async function resizeNativeWindowFromEdge(
+  edge: string,
+  startWidth: number,
+  startHeight: number,
+  deltaX: number,
+  deltaY: number,
+): Promise<SimpleOk> {
+  if (hasBridge() && typeof api().window_resize_from_edge === "function") {
+    return api().window_resize_from_edge!(edge, startWidth, startHeight, deltaX, deltaY);
+  }
   return { ok: true };
 }
 

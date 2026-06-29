@@ -241,6 +241,13 @@ function polarizationLabel(value: string | null | undefined): string {
   return labels[upper] ? `${labels[upper]} (${upper})` : upper || "-";
 }
 
+function orbitDirectionColor(value: string | null | undefined): string {
+  const upper = (value || "").toUpperCase();
+  if (upper === "ASCENDING" || upper === "A") return "#2563eb";
+  if (upper === "DESCENDING" || upper === "D") return "#f97316";
+  return "#64748b";
+}
+
 function unionBbox(boxes: (Bbox | null | undefined)[]): Bbox | null {
   const valid = boxes.filter(isValidBbox);
   if (!valid.length) return null;
@@ -755,8 +762,8 @@ export function WorkbenchMap({
     [scenes, selectedSceneId],
   );
   const fitBbox = useMemo(() => {
-    if (isValidBbox(selectedSceneBbox)) return selectedSceneBbox;
     if (isValidBbox(bbox)) return bbox;
+    if (isValidBbox(selectedSceneBbox)) return selectedSceneBbox;
     if (isValidBbox(aoiBbox)) return aoiBbox;
     if (isValidBbox(sceneBbox)) return sceneBbox;
     if (isValidBbox(sceneUnion)) return sceneUnion;
@@ -845,11 +852,12 @@ export function WorkbenchMap({
         {orderedSceneEntries.map(({ scene, index }) => {
           const polygons = scenePolygons(scene);
           const selected = scene.scene_id === selectedSceneId;
+          const orbitColor = orbitDirectionColor(scene.orbit_direction);
           const options = {
-            color: selected ? "#ff2d55" : index % 2 ? "#2563eb" : "#f97316",
+            color: selected ? "#ff2d55" : orbitColor,
             weight: selected ? 4.8 : 1.8,
             opacity: selected ? 1 : 0.78,
-            fillColor: selected ? "#ff2d55" : index % 2 ? "#2563eb" : "#f97316",
+            fillColor: selected ? "#ff2d55" : orbitColor,
             fillOpacity: selected ? 0.24 : 0.12,
           };
           const haloOptions = {
@@ -924,6 +932,22 @@ export function WorkbenchMap({
         <div className="mt-1 font-mono text-[11px] text-muted-foreground">
           W{fmt(fitBbox.west)} S{fmt(fitBbox.south)} E{fmt(fitBbox.east)} N{fmt(fitBbox.north)}
         </div>
+        {footprintCount > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2.5 w-2.5 rounded-full bg-[#2563eb]" />
+              升轨
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2.5 w-2.5 rounded-full bg-[#f97316]" />
+              降轨
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2.5 w-2.5 rounded-full bg-[#64748b]" />
+              未知
+            </span>
+          </div>
+        )}
         {footprintCount > 0 && (
           <div className="mt-1 text-[11px] text-muted-foreground">
             已显示 {footprintCount} 个 SAR 影像范围，点击范围或左侧列表可查看/定位
