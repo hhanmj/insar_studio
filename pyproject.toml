@@ -76,9 +76,18 @@ packages = ["src/insar_prep"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["src", "tests"]
-# Third-party reference code lives here for study only; never lint/format it.
-extend-exclude = ["参考项目"]
+src = ["src"]
+# Local study material and generated build outputs should stay out of public checks.
+extend-exclude = [
+    "参考项目",
+    "sentinel2",
+    "边界",
+    "docs",
+    "tests",
+    "build",
+    "dist",
+    "release",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "T20"]
@@ -86,10 +95,3 @@ select = ["E", "F", "I", "W", "UP", "B", "T20"]
 [tool.ruff.lint.per-file-ignores]
 # Maintenance/data-build scripts are run by hand and may print progress.
 "scripts/*.py" = ["T201"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
-markers = [
-    "real_download: opt-in tests that perform a real, credentialed ASF download (network + Earthdata account). Excluded from CI; run manually with -m real_download.",
-]

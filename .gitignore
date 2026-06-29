@@ -6,6 +6,7 @@ credentials.yaml
 secrets.yaml
 *.key
 *.token
+*.pem
 
 # ---- Python ----
 __pycache__/
@@ -21,16 +22,15 @@ release/
 # ---- uv / virtualenv ----
 .venv/
 venv/
+.uv-cache/
 uv.lock.bak
 
-# ---- PyInstaller / packaging artifacts (Task 022 onward) ----
-# build/ and dist/ are already ignored above; *.exe is ignored below.
+# ---- PyInstaller / packaging artifacts ----
 *.spec
 *.manifest
 pyinstaller-build/
-
-# ---- Windows exe smoke-test package (Task 023; generated locally) ----
 smoke_package/
+*.exe
 
 # ---- Test / lint / type caches ----
 .pytest_cache/
@@ -40,18 +40,21 @@ smoke_package/
 .coverage.*
 htmlcov/
 coverage.xml
+.tmp*/
 .tmp_*
 .ui_preview*/
 _shots/
 
-# ---- OS / editor ----
+# ---- OS / editor / agent-local state ----
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 .codex/
+.cursor/
+.agents/
 
-# ---- InSAR data (must never be committed) ----
+# ---- InSAR data: never commit user data or downloaded products ----
 *.SAFE
 *.SAFE/
 *.zip
@@ -59,13 +62,11 @@ Thumbs.db
 *.tiff
 *.dem
 *.SLC
-# Bulk archives (e.g. GACOS .tar.gz downloads, DEM tiles)
 *.tar
 *.tar.gz
 *.tgz
 *.7z
 *.rar
-# Other large remote-sensing raster / data formats
 *.hgt
 *.img
 *.grd
@@ -74,19 +75,12 @@ Thumbs.db
 *.hdf5
 *.he5
 *.vrt
-# Note: small *.ztd / *.ztd.rsc GACOS fixtures under tests/ are intentionally
-# tracked and must NOT be ignored.
 
-# ---- Third-party reference projects (study only, do not commit) ----
+# ---- Local study material / private docs / bulky cached data ----
 参考项目/
-*.exe
-
-# ---- Local real-data test folders (Task 047/048/052; never commit real inputs) ----
-# Hold a user-provided ASF cart (.py) + AOI vector files used for manual landing
-# tests. Third-party / data only; excluded from git and (via respect-gitignore)
-# from ruff.
+sentinel2/
+边界/
+docs/
+tests/
 insarassistantreal_test/
 insar_realtest_package/
-
-# ---- Local/private documentation drafts ----
-docs/soft_copyright/

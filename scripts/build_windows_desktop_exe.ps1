@@ -123,7 +123,7 @@ $countyName = "$([char]0x53BF)"
 $boundarySource = Join-Path $RepoRoot $boundaryDirName
 $boundaryStage = Join-Path $RepoRoot ".build_boundaries"
 if (-not (Test-Path $boundarySource)) {
-    throw "Local boundary directory not found: $boundarySource"
+    Write-Host "Local boundary directory not found; building without bundled offline administrative boundaries: $boundarySource" -ForegroundColor Yellow
 }
 
 # 2. Clean previous desktop build artifacts (leave other dist\ files in place).
@@ -141,11 +141,21 @@ $boundaryCopies = @(
     @{ Source = "$chinaName`_$cityName.geojson"; Target = "china_city.geojson" },
     @{ Source = "$chinaName`_$countyName.geojson"; Target = "china_county.geojson" }
 )
-foreach ($item in $boundaryCopies) {
-    $src = Join-Path $boundarySource $item.Source
-    $dst = Join-Path $boundaryStage $item.Target
-    if (-not (Test-Path $src)) { throw "Boundary file not found: $src" }
-    Copy-Item -LiteralPath $src -Destination $dst -Force
+$copiedBoundaryCount = 0
+if (Test-Path $boundarySource) {
+    foreach ($item in $boundaryCopies) {
+        $src = Join-Path $boundarySource $item.Source
+        $dst = Join-Path $boundaryStage $item.Target
+        if (-not (Test-Path $src)) {
+            Write-Host "Boundary file not found; skipping: $src" -ForegroundColor Yellow
+            continue
+        }
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+        $copiedBoundaryCount += 1
+    }
+}
+if ($copiedBoundaryCount -eq 0) {
+    Write-Host "No offline administrative boundary files were bundled. The app can still run; boundary data may be supplied by cache or future online sources." -ForegroundColor Yellow
 }
 
 # Call PyInstaller through the venv interpreter directly.

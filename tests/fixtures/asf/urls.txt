@@ -1,5 +1,0 @@
-# ASF Vertex export - download URLs (one per line)
-https://datapool.asf.alaska.edu/SLC/SA/S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234.zip
-
-https://datapool.asf.alaska.edu/SLC/SB/S1B_IW_SLC__1SDV_20240113T100000_20240113T100027_052100_064DEF_5678.zip
-# trailing comment line
