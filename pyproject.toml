@@ -52,8 +52,8 @@ desktop = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/hhanmj/insar_assistant"
-Repository = "https://github.com/hhanmj/insar_assistant"
+Homepage = "https://github.com/hhanmj/insar_studio"
+Repository = "https://github.com/hhanmj/insar_studio"
 
 [project.scripts]
 insar-prep = "insar_prep.cli.main:main"
