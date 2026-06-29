@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 logger = get_logger("core.update_check")
 
 # Public GitHub repository that publishes the releases (matches pyproject URLs).
-GITHUB_REPO = "hhanmj/insar_assistant"
+GITHUB_REPO = "hhanmj/insar_studio"
 
 # Opt out of the *automatic* check (the explicit ``update-check`` command still
 # works). Any of 1/true/yes/on (case-insensitive) disables it.

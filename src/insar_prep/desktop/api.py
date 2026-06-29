@@ -669,7 +669,7 @@ class Api:
                 "update_available": False,
                 "current_version": __version__,
                 "latest_version": __version__,
-                "html_url": "https://github.com/hhanmj/insar_assistant/releases/latest",
+                "html_url": "https://github.com/hhanmj/insar_studio/releases/latest",
                 "message": f"暂时无法检查更新：{exc}",
             }
         if info is None:

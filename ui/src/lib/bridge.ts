@@ -856,7 +856,7 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     update_available: false,
     current_version: "2.0.1",
     latest_version: "2.0.1",
-    html_url: "https://github.com/hhanmj/insar_assistant/releases/latest",
+    html_url: "https://github.com/hhanmj/insar_studio/releases/latest",
     message: "Update checks run only in the packaged desktop app.",
   };
 }

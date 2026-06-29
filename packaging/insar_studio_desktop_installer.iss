@@ -8,7 +8,7 @@
 #endif
 #define AppName "InSAR Studio"
 #define AppPublisher "hhanmj"
-#define AppURL "https://github.com/hhanmj/insar_assistant"
+#define AppURL "https://github.com/hhanmj/insar_studio"
 #define DesktopExeName "insar-prep-desktop.exe"
 
 [Setup]

@@ -4750,7 +4750,7 @@ function renderOutputParameters(
                 <div className="text-xs text-muted-foreground">可用于版本通知、问题收集和教程同步</div>
                 <button
                   type="button"
-                  onClick={() => void openExternalUrl("https://github.com/hhanmj/insar_assistant")}
+                  onClick={() => void openExternalUrl("https://github.com/hhanmj/insar_studio")}
                   className="mt-4 inline-flex items-center justify-center gap-1.5 rounded-full border border-amber-300/70 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm transition-colors hover:bg-amber-100 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-200"
                 >
                   <Star className="h-3.5 w-3.5 fill-current" />

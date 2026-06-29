@@ -19,7 +19,7 @@
 #endif
 #define AppName "InSAR Prep Assistant"
 #define AppPublisher "hhanmj"
-#define AppURL "https://github.com/hhanmj/insar_assistant"
+#define AppURL "https://github.com/hhanmj/insar_studio"
 #define GuiExeName "insar-prep-gui.exe"
 
 [Setup]
