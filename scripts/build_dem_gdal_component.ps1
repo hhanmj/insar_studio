@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Build the optional DEM/GDAL runtime component zip.
+    Build the optional DEM/GDAL vertical-datum component zip.
 
 .DESCRIPTION
-    Packages rasterio/GDAL, numpy, and the small Python dependencies required by
-    the DEM ellipsoid/SARscape conversion path into an external component.  The
+    Packages rasterio/GDAL, numpy, PROJ data, and the geoid grids required by
+    the DEM ellipsoid/SARscape conversion path into an external component. The
     desktop app can download and activate this component on demand instead of
-    bundling GDAL inside the main exe.
+    bundling GDAL and large vertical-datum data inside the main exe.
 
 .PARAMETER Version
     Component version. Defaults to the project version from pyproject.toml.
@@ -170,10 +170,10 @@ Invoke-Step "Trim component cache/test files" {
     }
     $componentInfo = @{
         id = $componentId
-        name = "DEM Advanced Conversion Component"
+        name = "DEM/GDAL Vertical Datum Component"
         version = $Version
         entry = "site-packages"
-        description = "GDAL/rasterio/numpy runtime plus EGM2008 geoid grid for DEM ellipsoid conversion and SARscape *_dem export."
+        description = "GDAL/rasterio/numpy/PROJ runtime plus EGM96/EGM2008 vertical-datum data for DEM ellipsoid conversion and SARscape *_dem export."
         built_at = (Get-Date).ToUniversalTime().ToString("s") + "Z"
     }
     Write-Utf8NoBom -Path (Join-Path $stageRoot "component.json") -Content ($componentInfo | ConvertTo-Json -Depth 4)
@@ -191,13 +191,13 @@ $checksumPath = Join-Path $OutputDir "SHA256SUMS-components.txt"
 
 $manifestComponent = [ordered]@{
     id = $componentId
-    name = "DEM Advanced Conversion Component"
+    name = "DEM/GDAL Vertical Datum Component"
     version = $Version
     size_mb = $sizeMb
     url = $componentUrl
     sha256 = $hash
     entry = "site-packages"
-    description = "On-demand GDAL/rasterio/numpy runtime plus EGM2008 geoid grid for local DEM ellipsoid conversion and SARscape DEM export."
+    description = "On-demand GDAL/rasterio/numpy/PROJ runtime plus EGM96/EGM2008 vertical-datum data for local DEM ellipsoid conversion and SARscape DEM export."
 }
 $manifest = [ordered]@{
     version = 1

@@ -1035,6 +1035,7 @@ export function Workbench({
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateNote, setUpdateNote] = useState<string | null>(null);
+  const [downloadedUpdate, setDownloadedUpdate] = useState<{ path: string; folder: string } | null>(null);
   const [componentStatus, setComponentStatus] = useState<ComponentStatusOk | null>(null);
   const [componentBusy, setComponentBusy] = useState<string | null>(null);
   const [componentNote, setComponentNote] = useState<string | null>(null);
@@ -2806,6 +2807,7 @@ export function Workbench({
   async function onCheckUpdateNow() {
     setUpdateBusy(true);
     setUpdateNote(null);
+    setDownloadedUpdate(null);
     try {
       const res = await checkForUpdate(true);
       if (res.ok) {
@@ -2828,10 +2830,12 @@ export function Workbench({
     }
     setUpdateBusy(true);
     setUpdateNote(null);
+    setDownloadedUpdate(null);
     try {
       const res = await downloadAppUpdate(updateInfo.download_url, updateInfo.asset_name ?? "");
       if (res.ok) {
-        setUpdateNote(`${res.message ?? "更新包已下载。"} 位置：${res.path}`);
+        setDownloadedUpdate({ path: res.path, folder: res.folder });
+        setUpdateNote(res.message ?? "更新包已下载。");
       } else {
         setUpdateNote(formatBridgeError(res));
       }
@@ -5624,6 +5628,12 @@ function renderOutputParameters(
                   {updateAssetSize && ` · ${updateAssetSize}`}
                 </div>
               )}
+              {downloadedUpdate && (
+                <div className="mt-2 rounded-xl border border-success/30 bg-success/10 px-2 py-1.5 text-[11px] leading-5">
+                  <div className="font-medium text-success">更新包已保存</div>
+                  <div className="break-all font-mono text-muted-foreground">{downloadedUpdate.path}</div>
+                </div>
+              )}
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" onClick={onCheckUpdateNow} disabled={updateBusy}>
                   {updateBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
@@ -5636,8 +5646,14 @@ function renderOutputParameters(
                   onClick={onDownloadUpdatePackage}
                 >
                   <CloudDownload className="h-4 w-4" />
-                  {updateInfo?.install_mode === "installer" ? "下载并安装更新" : "在线下载更新包"}
+                  {updateInfo?.install_mode === "installer" ? "下载并启动安装器" : "在线下载更新包"}
                 </Button>
+                {downloadedUpdate && (
+                  <Button variant="outline" size="sm" onClick={() => void openLocalPath(downloadedUpdate.folder)}>
+                    <FolderOpen className="h-4 w-4" />
+                    打开更新目录
+                  </Button>
+                )}
                 <Button variant="ghost" size="sm" onClick={() => void openUrl(updateInfo?.html_url || LINKS.github)}>
                   <ExternalLink className="h-4 w-4" />
                   Release 页面
@@ -5651,7 +5667,7 @@ function renderOutputParameters(
                 <div>
                   <div className="text-sm font-semibold">在线组件</div>
                   <div className="text-muted-foreground">
-                    大体积 DEM/GDAL 运行库与 EGM2008 网格随同一个组件按需安装，主程序保持轻量。
+                    大体积 DEM/GDAL 运行库与 EGM96、EGM2008 高程基准数据随同一个组件按需安装，主程序保持轻量。
                   </div>
                 </div>
                 <Button

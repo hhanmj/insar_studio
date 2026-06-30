@@ -3,13 +3,13 @@
   "components": [
     {
       "id": "dem-gdal",
-      "name": "DEM 高级转换组件",
+      "name": "DEM/GDAL 高程基准组件",
       "version": "2.1.1",
       "size_mb": 205,
       "url": "https://github.com/hhanmj/insar_studio/releases/download/v2.1.1/insar-dem-gdal-2.1.1-win64.zip",
       "sha256": "REPLACE_WITH_SHA256",
       "entry": "site-packages",
-      "description": "按需安装的 GDAL/rasterio/numpy 运行库与 EGM2008 大地水准面网格，用于本地 DEM 椭球高转换和 SARscape DEM 适配输出。"
+      "description": "按需安装的 GDAL/rasterio/numpy/PROJ 运行库与 EGM96、EGM2008 高程基准数据，用于本地 DEM 正高到 WGS84 椭球高转换和 SARscape DEM 适配输出。"
     }
   ]
 }

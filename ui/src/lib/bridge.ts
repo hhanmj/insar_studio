@@ -985,10 +985,10 @@ export async function getComponentStatus(refresh = false): Promise<ComponentStat
     components: [
       {
         id: "dem-gdal",
-        name: "DEM 高级转换组件",
+        name: "DEM/GDAL 高程基准组件",
         version: "2.1.1",
         size_mb: 205,
-        description: "GDAL/rasterio 等 DEM 椭球高转换运行库与 EGM2008 大地水准面网格。",
+        description: "GDAL/rasterio/numpy/PROJ 与 EGM96、EGM2008 高程基准数据。",
         installed: false,
         runtime_available: false,
         partial_runtime_available: false,

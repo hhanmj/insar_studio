@@ -57,7 +57,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path build/geoid | Out-Null
           $archive = "build/geoid/egm2008-5.tar.bz2"
-          Invoke-WebRequest -Uri "https://sourceforge.net/projects/geographiclib/files/geoids-distrib/egm2008-5.tar.bz2/download" -OutFile $archive
+          curl.exe -L --fail --retry 3 --retry-delay 2 -o $archive "https://downloads.sourceforge.net/project/geographiclib/geoids-distrib/egm2008-5.tar.bz2"
+          $magic = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($archive)[0..2])
+          if ($magic -ne "BZh") {
+            throw "Downloaded EGM2008 archive is not a bzip2 file."
+          }
           uv run python scripts/build_geoid_npz.py --model EGM2008 --output build/geoid/egm2008_5.npz $archive
 
       - name: Build optional DEM/GDAL component
@@ -86,12 +90,12 @@ jobs:
           @(
             "InSAR Studio $version",
             "",
-            '本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。',
-            '它的定位是“处理前的数据准备助手”，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。',
+            "本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。",
+            "它的定位是“处理前的数据准备助手”，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。",
             "",
             "运行：双击 $exeName。",
-            'DEM：高级 DEM 椭球高转换组件会在用户需要时从 Release 按需下载，不默认塞进主程序。',
-            '隐私：发行包不包含账号、Token、下载历史、缓存或本机测试目录；用户首次使用需在设置里配置必要凭据。'
+            "DEM：DEM/GDAL 高程基准组件会在用户需要时从 Release 按需下载，不默认塞进主程序。",
+            "隐私：发行包不包含账号、Token、下载历史、缓存或本机测试目录；用户首次使用需在设置里配置必要凭据。"
           ) | Set-Content -Encoding UTF8 artifacts/README_RELEASE.txt
           Compress-Archive -Path "artifacts/$exeName", "artifacts/README_RELEASE.txt" -DestinationPath "artifacts/insar-studio-$version-portable.zip" -Force
           Get-FileHash -Algorithm SHA256 "artifacts/$setupName", "artifacts/$exeName", "artifacts/insar-studio-$version-portable.zip", "artifacts/insar-dem-gdal-$version-win64.zip", "artifacts/components-manifest.json" |

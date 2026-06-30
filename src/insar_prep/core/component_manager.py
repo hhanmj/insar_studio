@@ -144,15 +144,15 @@ def _builtin_manifest() -> dict[str, Any]:
         "components": [
             {
                 "id": DEM_GDAL_COMPONENT_ID,
-                "name": "DEM 高级转换组件",
+                "name": "DEM/GDAL 高程基准组件",
                 "version": __version__,
                 "size_mb": None,
                 "url": "",
                 "sha256": "",
                 "entry": "site-packages",
                 "description": (
-                    "GDAL/rasterio/numpy 运行库与 EGM2008 大地水准面网格；"
-                    "用于 DEM 椭球高转换和 SARscape DEM 适配输出。"
+                    "GDAL/rasterio/numpy/PROJ 运行库与 EGM96、EGM2008 高程基准数据；"
+                    "用于 DEM 正高到 WGS84 椭球高转换和 SARscape DEM 适配输出。"
                 ),
             }
         ],
