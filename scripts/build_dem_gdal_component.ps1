@@ -17,12 +17,16 @@
 .PARAMETER ReleaseBaseUrl
     Base URL used in components-manifest.json. Defaults to the matching GitHub
     Release tag URL.
+
+.PARAMETER Egm2008GeoidNpz
+    Optional EGM2008 geoid .npz file to bundle under geoids\egm2008_5.npz.
 #>
 
 param(
     [string]$Version = "",
     [string]$OutputDir = "",
-    [string]$ReleaseBaseUrl = ""
+    [string]$ReleaseBaseUrl = "",
+    [string]$Egm2008GeoidNpz = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -139,6 +143,19 @@ Invoke-Step "Copy DEM/GDAL runtime files" {
     }
 }
 
+Invoke-Step "Copy EGM2008 geoid grid" {
+    if (-not $Egm2008GeoidNpz) {
+        Write-Host "No EGM2008 geoid grid supplied; component will not support precise COP30/COP90 conversion." -ForegroundColor Yellow
+        return
+    }
+    if (-not (Test-Path -LiteralPath $Egm2008GeoidNpz)) {
+        throw "EGM2008 geoid grid not found: $Egm2008GeoidNpz"
+    }
+    $geoidDir = Join-Path $stageRoot "geoids"
+    New-Item -ItemType Directory -Force -Path $geoidDir | Out-Null
+    Copy-Item -LiteralPath $Egm2008GeoidNpz -Destination (Join-Path $geoidDir "egm2008_5.npz") -Force
+}
+
 Invoke-Step "Trim component cache/test files" {
     Get-ChildItem -Path $stageRoot -Recurse -Force -Directory -Filter "__pycache__" |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -156,7 +173,7 @@ Invoke-Step "Trim component cache/test files" {
         name = "DEM Advanced Conversion Component"
         version = $Version
         entry = "site-packages"
-        description = "GDAL/rasterio/numpy runtime for DEM ellipsoid conversion and SARscape *_dem export."
+        description = "GDAL/rasterio/numpy runtime plus EGM2008 geoid grid for DEM ellipsoid conversion and SARscape *_dem export."
         built_at = (Get-Date).ToUniversalTime().ToString("s") + "Z"
     }
     Write-Utf8NoBom -Path (Join-Path $stageRoot "component.json") -Content ($componentInfo | ConvertTo-Json -Depth 4)
@@ -180,7 +197,7 @@ $manifestComponent = [ordered]@{
     url = $componentUrl
     sha256 = $hash
     entry = "site-packages"
-    description = "On-demand GDAL/rasterio/numpy runtime for local DEM ellipsoid conversion and SARscape DEM export."
+    description = "On-demand GDAL/rasterio/numpy runtime plus EGM2008 geoid grid for local DEM ellipsoid conversion and SARscape DEM export."
 }
 $manifest = [ordered]@{
     version = 1

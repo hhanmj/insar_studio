@@ -782,12 +782,16 @@ def probe_earthdata_auth(
         )
         with sess.get(url, timeout=timeout, allow_redirects=True) as response:  # type: ignore[attr-defined]
             status = int(getattr(response, "status_code", 0))
+            final_url = str(getattr(response, "url", url) or url)
     except Exception as exc:  # noqa: BLE001 - any transport error is reported, masked
         return False, mask_text(f"{type(exc).__name__}: {exc}")
     if status in (401, 403):
         return False, f"HTTP {status}: credentials rejected"
     if status >= 400:
         return False, f"HTTP {status}"
+    final_path = urlsplit(final_url).path.lower()
+    if "/login" in final_path or "/oauth/authorize" in final_path:
+        return False, "HTTP 200: redirected to Earthdata login page; credentials rejected"
     return True, f"HTTP {status}: reachable"
 
 

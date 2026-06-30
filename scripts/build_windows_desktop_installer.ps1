@@ -10,7 +10,7 @@
     Version string embedded in the installer.
 #>
 param(
-    [string]$Version = "2.1"
+    [string]$Version = "2.1.1"
 )
 
 $ErrorActionPreference = "Stop"

@@ -8,7 +8,6 @@ import type {
 } from "leaflet";
 import { DomEvent } from "leaflet";
 import {
-  CircleMarker,
   MapContainer,
   Polyline,
   Polygon,
@@ -707,7 +706,10 @@ function MapStatusOverlay() {
   });
 
   return (
-    <div className="pointer-events-none absolute bottom-4 left-4 z-[520] rounded-2xl border border-white/55 bg-white/62 px-3 py-1.5 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62">
+    <div
+      className="pointer-events-none absolute left-4 z-[520] rounded-2xl border border-white/55 bg-white/62 px-3 py-1.5 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62"
+      style={{ bottom: "max(2rem, calc(env(safe-area-inset-bottom) + 2rem))" }}
+    >
       <span className="text-muted-foreground">{status.label}</span>
       <span className="ml-2 font-mono">
         经度: {fmt(status.lng)}　纬度: {fmt(status.lat)}　|　缩放: {status.zoom}
@@ -865,15 +867,15 @@ export function WorkbenchMap({
             setScenePopup({ sceneId: scene.scene_id, position: event.latlng });
           };
           const options = {
-            color: selected ? "#ff2d55" : orbitColor,
-            weight: selected ? 5.8 : 1.8,
+            color: orbitColor,
+            weight: selected ? 4.8 : 1.8,
             opacity: selected ? 1 : 0.78,
-            fillColor: selected ? "#ff2d55" : orbitColor,
-            fillOpacity: selected ? 0.3 : 0.12,
+            fillColor: orbitColor,
+            fillOpacity: 0,
           };
           const haloOptions = {
             color: "#ffffff",
-            weight: 11,
+            weight: 9,
             opacity: 0.92,
             fillOpacity: 0,
           };
@@ -887,14 +889,6 @@ export function WorkbenchMap({
                   interactive={!drawActive}
                   eventHandlers={{ click: handleSceneClick }}
                 />
-                {selected && scene.footprint_bbox && (
-                  <CircleMarker
-                    center={centerFromBbox(scene.footprint_bbox)}
-                    radius={7}
-                    pathOptions={{ color: "#ffffff", weight: 3, fillColor: "#ff2d55", fillOpacity: 1 }}
-                    interactive={false}
-                  />
-                )}
               </Fragment>
             ));
           }
@@ -913,14 +907,6 @@ export function WorkbenchMap({
                 interactive={!drawActive}
                 eventHandlers={{ click: handleSceneClick }}
               />
-              {selected && scene.footprint_bbox && (
-                <CircleMarker
-                  center={centerFromBbox(scene.footprint_bbox)}
-                  radius={7}
-                  pathOptions={{ color: "#ffffff", weight: 3, fillColor: "#ff2d55", fillOpacity: 1 }}
-                  interactive={false}
-                />
-              )}
             </Fragment>
           );
         })}
@@ -955,7 +941,10 @@ export function WorkbenchMap({
         onToggleLayers={() => setLayersOpen((value) => !value)}
       />
 
-      <div className="pointer-events-none absolute bottom-14 left-4 z-[500] max-w-[460px] rounded-2xl border border-white/55 bg-white/62 px-3 py-2 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62">
+      <div
+        className="pointer-events-none absolute left-4 z-[500] max-w-[460px] rounded-2xl border border-white/55 bg-white/62 px-3 py-2 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62"
+        style={{ bottom: "max(5.25rem, calc(env(safe-area-inset-bottom) + 5.25rem))" }}
+      >
         <div className="flex items-center gap-2 font-medium">
           <MapPinned className="h-3.5 w-3.5 text-primary" />
           {drawActive ? "正在绘制 AOI" : "地图工作区"}
@@ -1081,7 +1070,10 @@ export function WorkbenchMap({
       )}
 
       {!tilesReady && (
-        <div className="pointer-events-none absolute bottom-16 left-4 z-[500] rounded-2xl border border-white/55 bg-white/62 px-3 py-2 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62">
+        <div
+          className="pointer-events-none absolute left-4 z-[500] rounded-2xl border border-white/55 bg-white/62 px-3 py-2 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62"
+          style={{ bottom: "max(6.5rem, calc(env(safe-area-inset-bottom) + 6.5rem))" }}
+        >
           <div className="flex items-center gap-2">
             <LocateFixed className="h-3.5 w-3.5 animate-pulse text-primary" />
             底图加载中，AOI 坐标输入和任务控制仍可使用

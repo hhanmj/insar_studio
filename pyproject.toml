@@ -1,6 +1,6 @@
 [project]
 name = "insar-prep"
-version = "2.1"
+version = "2.1.1"
 description = "Desktop assistant for InSAR and remote sensing data preparation workflows."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -72,6 +72,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/insar_prep"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".git",
+    ".venv",
+    "build",
+    "dist",
+    "release",
+    "sentinel2",
+    "参考项目",
+    "边界",
+    ".tmp_*",
+]
 
 [tool.ruff]
 target-version = "py311"

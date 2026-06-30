@@ -16,6 +16,7 @@ that one feature instead of breaking the whole desktop app on startup.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -25,9 +26,13 @@ from typing import Any
 
 from insar_prep import __version__
 from insar_prep.core.exceptions import InsarPrepError
+from insar_prep.core.logging import mask_text
 from insar_prep.desktop.activity_log import ActivityLog
 from insar_prep.desktop.download_job import AsfDownloadJob, OrbitDownloadJob
 from insar_prep.gui.state import GuiState, workspace_display_name
+
+_EARTHDATA_AUTH_FAILURE_COOLDOWN_SECONDS = 5 * 60
+_EARTHDATA_AUTH_SUCCESS_CACHE_SECONDS = 90 * 60
 
 
 def _error(exc: InsarPrepError) -> dict:
@@ -150,7 +155,7 @@ def _asf_network_candidates(settings: dict) -> list[dict[str, Any]]:
 def _missing_dep(feature: str, exc: Exception) -> dict:
     """Friendly envelope when an optional dependency is not installed."""
     text = str(exc)
-    if "DEM" in feature and ("rasterio" in text.lower() or "convert" in text.lower()):
+    if "DEM" in feature and _is_dem_component_environment_error(text):
         return {
             "ok": False,
             "error": (
@@ -164,6 +169,62 @@ def _missing_dep(feature: str, exc: Exception) -> dict:
         "error": f"{feature}需要可选依赖，但当前环境未安装：{text}",
         "code": "DEP000",
     }
+
+
+def _is_dem_component_environment_error(value: object) -> bool:
+    text = str(value or "")
+    lowered = text.lower()
+    return any(
+        token in lowered
+        for token in (
+            "rasterio",
+            "gdal",
+            "proj.db",
+            "proj_create_from_database",
+            "the epsg code is unknown",
+            "cannot find proj.db",
+            "convert extra",
+        )
+    )
+
+
+def _dem_component_error(feature: str, exc: Exception | str) -> dict:
+    text = str(exc)
+    return {
+        "ok": False,
+        "error": (
+            f"{feature}需要完整的 DEM/GDAL 高级转换组件。"
+            "如果组件状态显示“缺 EGM2008 网格”，说明当前组件包只有 GDAL/PROJ 运行库，"
+            "还缺少 COP30/COP90 精确转椭球高所需的大地水准面网格。"
+            "请到“设置 → 更新与组件”安装或重新安装包含 EGM2008 网格的组件后重试。"
+            f" 原因：{text}"
+        ),
+        "code": "DEP000",
+    }
+
+
+def _ui_log(message: str, *, ts: float | None = None) -> str:
+    when = time.localtime(ts if ts is not None else time.time())
+    return f"[{time.strftime('%Y/%m/%d %H:%M:%S', when)}] {mask_text(message)}"
+
+
+def _dem_result_logs(results: list[Any], *, prefix: str) -> list[str]:
+    lines: list[str] = []
+    for index, result in enumerate(results, start=1):
+        outcome = getattr(getattr(result, "outcome", ""), "value", getattr(result, "outcome", ""))
+        region = str(getattr(result, "region_safe_name", "") or "").strip()
+        message = str(getattr(result, "message", "") or "").strip()
+        path = str(getattr(result, "path", "") or "").strip()
+        code = str(getattr(result, "error_code", "") or "").strip()
+        parts = [prefix, f"{index}", outcome]
+        if region:
+            parts.append(region)
+        if code:
+            parts.append(code)
+        detail = " / ".join(str(item) for item in parts if item)
+        tail = "；".join(item for item in (message, path) if item)
+        lines.append(_ui_log(f"{detail}：{tail}" if tail else detail))
+    return lines
 
 
 def _dump(model: Any) -> Any:
@@ -430,6 +491,12 @@ class Api:
         self._metadata_status: dict[str, Any] = self._idle_metadata_status()
         self._network_settings = self._default_network_settings()
         self._applied_proxy_url: str | None = None
+        self._earthdata_auth_failure_until = 0.0
+        self._earthdata_auth_failure_cache: dict[str, Any] | None = None
+        self._earthdata_auth_success_until = 0.0
+        self._earthdata_auth_success_cache: dict[str, Any] | None = None
+        self._earthdata_candidate_failure_until: dict[str, float] = {}
+        self._earthdata_candidate_failure_message: dict[str, str] = {}
         self._window_maximized = False
         self._shutdown_started = False
         self._state_path = self._desktop_state_path()
@@ -624,10 +691,22 @@ class Api:
         if not cache_dir:
             cache_dir = str(self._default_cache_dir())
         tianditu_token = str(incoming.get("tianditu_token", current["tianditu_token"]) or "").strip()
+        previous_tianditu_token = str(current.get("tianditu_token") or "").strip()
         try:
             cache_limit = int(incoming.get("cache_limit_mb", current["cache_limit_mb"]) or 0)
         except (TypeError, ValueError):
             return _error_msg("缓存容量必须是数字", "GUI003")
+        if tianditu_token and tianditu_token != previous_tianditu_token:
+            results, error = _search_tianditu_admin_boundaries(
+                token=tianditu_token,
+                candidates=["北京市"],
+                limit=1,
+            )
+            if not results:
+                return _error_msg(
+                    f"天地图 Key 校验失败，网络与缓存设置未保存：{mask_text(error or '未返回行政边界数据')}",
+                    "GUI003",
+                )
 
         self._network_settings = {
             "proxy_enabled": proxy_enabled,
@@ -644,6 +723,7 @@ class Api:
             except OSError as exc:
                 return _error_msg(f"无法创建缓存目录：{exc}", "GUI003")
         self._apply_network_settings()
+        self._clear_earthdata_auth_failure()
         self._save_state()
         if proxy_enabled and proxy_auto_detected:
             self._act(f"已自动使用系统代理：{proxy_url}", kind="settings")
@@ -2917,6 +2997,8 @@ class Api:
         except ImportError as exc:
             return _missing_dep("本地 DEM 识别", exc)
         except Exception as exc:  # noqa: BLE001
+            if _is_dem_component_environment_error(exc):
+                return _dem_component_error("本地 DEM 识别", exc)
             return _error_msg(str(exc), "DEM004")
         self._act(f"本地 DEM 转换规划：{Path(input_path).name}", kind="download")
         return {
@@ -2947,6 +3029,8 @@ class Api:
         except ImportError as exc:
             return _missing_dep("本地 DEM 转换", exc)
         except Exception as exc:  # noqa: BLE001
+            if _is_dem_component_environment_error(exc):
+                return _dem_component_error("本地 DEM 转换", exc)
             return _error_msg(str(exc), "DEM004")
         out = (output_dir or "").strip() or self._default_output() or str(Path(input_path).parent)
         mode = (output_mode or "sarscape").strip().lower()
@@ -3043,44 +3127,83 @@ class Api:
             "gacos": _safe(_gacos),
         }
 
-    def check_earthdata_auth(self) -> dict:
-        """Probe saved Earthdata credentials and report only user-actionable states."""
-        try:
-            from insar_prep.providers.asf.credentials import (
-                CredentialSource,
-                resolve_credentials,
-                stored_credential_status,
-            )
-            from insar_prep.providers.asf.downloader import probe_earthdata_auth
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "ok": True,
-                "configured": False,
-                "status": "unavailable",
-                "message": f"Earthdata 凭据检查不可用：{exc}",
-            }
+    def _cached_earthdata_auth_failure(self) -> dict | None:
+        now = time.monotonic()
+        if not self._earthdata_auth_failure_cache or now >= self._earthdata_auth_failure_until:
+            self._earthdata_auth_failure_cache = None
+            self._earthdata_auth_failure_until = 0.0
+            return None
+        remaining_minutes = max(1, int((self._earthdata_auth_failure_until - now + 59) // 60))
+        cached = dict(self._earthdata_auth_failure_cache)
+        message = str(cached.get("message") or "Earthdata/ASF 凭据未通过检测。")
+        cached["message"] = f"{message} 为保护账号，{remaining_minutes} 分钟内不会重复请求登录接口。"
+        return cached
 
-        try:
-            stored = stored_credential_status()
-        except Exception:  # noqa: BLE001
-            stored = "unavailable"
-        try:
-            resolved = resolve_credentials(CredentialSource.AUTO)
-        except Exception as exc:  # noqa: BLE001
-            if stored in {"none", "unavailable"}:
-                return {
-                    "ok": True,
-                    "configured": False,
-                    "status": "missing",
-                    "message": "未保存 Earthdata/ASF 凭据。",
-                }
-            return {
-                "ok": True,
-                "configured": True,
-                "status": "invalid",
-                "message": f"Earthdata 凭据无法读取：{exc}",
-            }
+    def _cached_earthdata_auth_success(self) -> dict | None:
+        now = time.monotonic()
+        if not self._earthdata_auth_success_cache or now >= self._earthdata_auth_success_until:
+            self._earthdata_auth_success_cache = None
+            self._earthdata_auth_success_until = 0.0
+            return None
+        cached = dict(self._earthdata_auth_success_cache)
+        cached["message"] = "Earthdata/ASF 凭据最近已通过检测，当前会话内直接复用该状态。"
+        return cached
 
+    def _remember_earthdata_auth_failure(self, result: dict) -> dict:
+        self._earthdata_auth_failure_cache = dict(result)
+        self._earthdata_auth_failure_until = time.monotonic() + _EARTHDATA_AUTH_FAILURE_COOLDOWN_SECONDS
+        self._earthdata_auth_success_cache = None
+        self._earthdata_auth_success_until = 0.0
+        return result
+
+    def _remember_earthdata_auth_success(self, result: dict) -> dict:
+        self._earthdata_auth_success_cache = dict(result)
+        self._earthdata_auth_success_until = time.monotonic() + _EARTHDATA_AUTH_SUCCESS_CACHE_SECONDS
+        self._earthdata_auth_failure_cache = None
+        self._earthdata_auth_failure_until = 0.0
+        return result
+
+    def _clear_earthdata_auth_failure(self) -> None:
+        self._earthdata_auth_failure_cache = None
+        self._earthdata_auth_failure_until = 0.0
+        self._earthdata_auth_success_cache = None
+        self._earthdata_auth_success_until = 0.0
+
+    @staticmethod
+    def _earthdata_candidate_key(resolved: object) -> str:
+        token = str(getattr(resolved, "token", "") or "")
+        username = str(getattr(resolved, "username", "") or "")
+        password = str(getattr(resolved, "password", "") or "")
+        use_netrc = str(bool(getattr(resolved, "use_netrc", False)))
+        source = str(getattr(getattr(resolved, "source", ""), "value", getattr(resolved, "source", "")))
+        raw = "\0".join([source, token, username, password, use_netrc])
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _cached_earthdata_candidate_failure(self, key: str) -> dict | None:
+        until = self._earthdata_candidate_failure_until.get(key, 0.0)
+        now = time.monotonic()
+        if until <= now:
+            self._earthdata_candidate_failure_until.pop(key, None)
+            self._earthdata_candidate_failure_message.pop(key, None)
+            return None
+        remaining_minutes = max(1, int((until - now + 59) // 60))
+        message = self._earthdata_candidate_failure_message.get(
+            key,
+            "这组 Earthdata/ASF 凭据刚刚校验失败。",
+        )
+        return _error_msg(
+            f"{message} 为保护账号，{remaining_minutes} 分钟内不会对同一组账号/token 重复请求登录接口；"
+            "请确认输入后修改凭据再保存。",
+            "DL004",
+        )
+
+    def _remember_earthdata_candidate_failure(self, key: str, message: str) -> None:
+        self._earthdata_candidate_failure_until[key] = (
+            time.monotonic() + _EARTHDATA_AUTH_FAILURE_COOLDOWN_SECONDS
+        )
+        self._earthdata_candidate_failure_message[key] = message
+
+    def _earthdata_network_options(self) -> dict[str, Any]:
         proxy_enabled = bool(self._network_settings.get("proxy_enabled"))
         proxy_url = (
             _normalise_proxy_url(self._network_settings.get("proxy_url"))
@@ -3089,11 +3212,21 @@ class Api:
         )
         if proxy_enabled and not proxy_url:
             proxy_url = _detect_system_proxy()
+        return {
+            "proxy_url": proxy_url,
+            "ssl_verify": bool(self._network_settings.get("asf_ssl_verify", True)),
+            "trust_env": proxy_enabled,
+        }
+
+    def _probe_earthdata_resolved(self, resolved: object) -> dict:
+        from insar_prep.providers.asf.downloader import probe_earthdata_auth
+
+        network = self._earthdata_network_options()
         ok, message = probe_earthdata_auth(
-            resolved,
-            proxy_url=proxy_url,
-            ssl_verify=bool(self._network_settings.get("asf_ssl_verify", True)),
-            trust_env=proxy_enabled,
+            resolved,  # type: ignore[arg-type]
+            proxy_url=network["proxy_url"],
+            ssl_verify=network["ssl_verify"],
+            trust_env=network["trust_env"],
             timeout=20.0,
         )
         if ok:
@@ -3111,31 +3244,187 @@ class Api:
             "message": message,
         }
 
+    def _validate_earthdata_candidate(self, resolved: object) -> dict:
+        key = self._earthdata_candidate_key(resolved)
+        cached = self._cached_earthdata_candidate_failure(key)
+        if cached is not None:
+            return cached
+        try:
+            auth = self._probe_earthdata_resolved(resolved)
+        except Exception as exc:  # noqa: BLE001
+            message = f"Earthdata/ASF 凭据校验不可用，未保存：{mask_text(str(exc))}"
+            self._remember_earthdata_candidate_failure(key, message)
+            return _error_msg(message, "DL004")
+        if auth.get("status") == "valid":
+            self._earthdata_candidate_failure_until.pop(key, None)
+            self._earthdata_candidate_failure_message.pop(key, None)
+            return auth
+        message = (
+            "Earthdata/ASF 凭据校验失败，未保存；原有凭据保持不变。"
+            f"{auth.get('message') or ''}"
+        )
+        self._remember_earthdata_candidate_failure(key, message)
+        return _error_msg(message, "DL004")
+
+    def _validate_opentopography_key(self, api_key: str) -> dict:
+        api_key = str(api_key or "").strip()
+        if not api_key:
+            return _error_msg("OpenTopography API Key 不能为空，未保存。", "DEM005")
+        try:
+            from insar_prep.core.models import BBox
+            from insar_prep.providers.dem.credentials import DemKeySource, ResolvedDemKey
+            from insar_prep.providers.dem.downloader import (
+                DemDownloadOutcome,
+                DemDownloadRequest,
+                RealDemDownloader,
+            )
+
+            resolved = ResolvedDemKey(source=DemKeySource.KEYRING, api_key=api_key)
+            request = DemDownloadRequest(
+                region_safe_name="credential_probe",
+                dataset="COP30",
+                demtype="COP30",
+                bbox=BBox(west=110.0, east=110.02, south=30.0, north=30.02),
+                destination=self._default_cache_dir() / "_credential_probe" / "opentopo_probe.tif",
+            )
+            result = RealDemDownloader(
+                resolved=resolved,
+                max_retries=1,
+                timeout=20.0,
+            ).verify(request)
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(
+                f"OpenTopography API Key 联网校验不可用，未保存：{mask_text(str(exc))}",
+                "DEM005",
+            )
+        if result.outcome == DemDownloadOutcome.VERIFIED:
+            return {
+                "ok": True,
+                "message": "OpenTopography API Key 校验通过。",
+            }
+        code = result.error_code or "DEM005"
+        prefix = "OpenTopography API Key 校验失败，未保存"
+        if code != "DEM005":
+            prefix = "OpenTopography API Key 无法完成联网校验，未保存"
+        return _error_msg(f"{prefix}：{mask_text(result.message)}", code)
+
+    def check_earthdata_auth(self) -> dict:
+        """Probe saved Earthdata credentials and report only user-actionable states."""
+        try:
+            from insar_prep.providers.asf.credentials import (
+                CredentialSource,
+                resolve_credentials,
+                stored_credential_status,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": True,
+                "configured": False,
+                "status": "unavailable",
+                "message": f"Earthdata 凭据检查不可用：{exc}",
+            }
+
+        cached_failure = self._cached_earthdata_auth_failure()
+        if cached_failure is not None:
+            return cached_failure
+        cached_success = self._cached_earthdata_auth_success()
+        if cached_success is not None:
+            return cached_success
+
+        try:
+            stored = stored_credential_status()
+        except Exception:  # noqa: BLE001
+            stored = "unavailable"
+        try:
+            resolved = resolve_credentials(CredentialSource.AUTO)
+        except Exception as exc:  # noqa: BLE001
+            if stored in {"none", "unavailable"}:
+                return {
+                    "ok": True,
+                    "configured": False,
+                    "status": "missing",
+                    "message": "未保存 Earthdata/ASF 凭据。",
+                }
+            return self._remember_earthdata_auth_failure({
+                "ok": True,
+                "configured": True,
+                "status": "invalid",
+                "message": f"Earthdata 凭据无法读取：{exc}",
+            })
+
+        try:
+            result = self._probe_earthdata_resolved(resolved)
+        except Exception as exc:  # noqa: BLE001
+            result = {
+                "ok": True,
+                "configured": True,
+                "status": "unknown",
+                "message": f"Earthdata/ASF 凭据联网检测失败：{mask_text(str(exc))}",
+            }
+        if result.get("status") == "valid":
+            return self._remember_earthdata_auth_success(result)
+        return self._remember_earthdata_auth_failure(result)
+
     def save_earthdata_token(self, token: str) -> dict:
         """Store a NASA Earthdata bearer token in the OS keyring."""
+        token = str(token or "").strip()
+        if not token:
+            return _error_msg("Earthdata Token 不能为空，未保存。", "DL004")
         try:
-            from insar_prep.providers.asf.credentials import store_token
+            from insar_prep.providers.asf.credentials import (
+                CredentialSource,
+                ResolvedCredential,
+                store_token,
+            )
 
+            auth = self._validate_earthdata_candidate(
+                ResolvedCredential(source=CredentialSource.KEYRING, token=token)
+            )
+            if not auth.get("ok"):
+                return auth
             store_token(token)
         except InsarPrepError as exc:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "DL004")
-        self._act("已保存 Earthdata Token", kind="settings")
-        return {"ok": True, "status": self.get_credential_status()}
+        self._clear_earthdata_auth_failure()
+        self._remember_earthdata_auth_success(auth)
+        self._act("Earthdata Token 校验通过并已保存", kind="settings")
+        return {"ok": True, "status": self.get_credential_status(), "auth": auth}
 
     def save_earthdata_login(self, username: str, password: str) -> dict:
         """Store NASA Earthdata username/password in the OS keyring."""
+        username = str(username or "").strip()
+        password = str(password or "")
+        if not username or not password:
+            return _error_msg("Earthdata 用户名和密码都不能为空，未保存。", "DL004")
         try:
-            from insar_prep.providers.asf.credentials import store_login
+            from insar_prep.providers.asf.credentials import (
+                CredentialSource,
+                ResolvedCredential,
+                store_login,
+            )
 
+            auth = self._validate_earthdata_candidate(
+                ResolvedCredential(
+                    source=CredentialSource.KEYRING,
+                    username=username,
+                    password=password,
+                )
+            )
+            if not auth.get("ok"):
+                return auth
             store_login(username, password)
         except InsarPrepError as exc:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "DL004")
-        self._act("已保存 Earthdata 登录凭据", kind="settings")
-        return {"ok": True, "status": self.get_credential_status()}
+        self._clear_earthdata_auth_failure()
+        self._remember_earthdata_auth_success(auth)
+        self._act("Earthdata 登录凭据校验通过并已保存", kind="settings")
+        return {"ok": True, "status": self.get_credential_status(), "auth": auth}
 
     def clear_earthdata_credentials(self) -> dict:
         """Remove stored NASA Earthdata credentials from the OS keyring."""
@@ -3147,11 +3436,16 @@ class Api:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "DL004")
+        self._clear_earthdata_auth_failure()
         self._act("已清除 Earthdata 凭据", kind="settings")
         return {"ok": True, "removed": removed, "status": self.get_credential_status()}
 
     def save_opentopography_key(self, api_key: str) -> dict:
         """Store an OpenTopography API key in the OS keyring."""
+        api_key = str(api_key or "").strip()
+        check = self._validate_opentopography_key(api_key)
+        if not check.get("ok"):
+            return check
         try:
             from insar_prep.providers.dem.credentials import store_api_key
 
@@ -3160,8 +3454,8 @@ class Api:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "DEM005")
-        self._act("已保存 OpenTopography API Key", kind="settings")
-        return {"ok": True, "status": self.get_credential_status()}
+        self._act("OpenTopography API Key 校验通过并已保存", kind="settings")
+        return {"ok": True, "status": self.get_credential_status(), "check": check}
 
     def clear_opentopography_key(self) -> dict:
         """Remove the stored OpenTopography API key from the OS keyring."""
@@ -3483,11 +3777,14 @@ class Api:
         if not out:
             return _error_msg("请指定 DEM 下载输出根目录", "GUI003")
         try:
+            logs = [_ui_log(f"开始 DEM 下载：{getattr(plan, 'dataset', '')} → {out}")]
             summary = run_dem_download([plan], out, key_source=source)
         except InsarPrepError as exc:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "DEM001")
+        logs.extend(_dem_result_logs(list(summary.results), prefix="DEM 下载"))
+        logs.append(_ui_log(f"DEM 下载完成：{summary.summary_line()}"))
         self._act(f"DEM 下载完成：{summary.summary_line()}", kind="download")
         return {
             "ok": True,
@@ -3501,6 +3798,7 @@ class Api:
             "results_path": str(summary.results_path) if summary.results_path else "",
             "output_dir": out,
             "results": [_dump(result) for result in summary.results],
+            "logs": logs,
             "raw_dem_path": str(getattr(plan, "raw_dem_path", "")),
             "ellipsoid_dem_path": str(getattr(plan, "ellipsoid_dem_path", "")),
             "sarscape_ready_dem_path": str(getattr(plan, "sarscape_ready_dem_path", "")),
@@ -3531,15 +3829,19 @@ class Api:
 
         conversion_failed = bool(conversion and not conversion.get("ok"))
         conversion_has_failures = bool(conversion and conversion.get("has_failures"))
+        logs = list(download.get("logs") or [])
         if conversion is None:
             summary_line = f"下载：{download.get('summary_line')}；转换：因下载失败或中断未执行"
+            logs.append(_ui_log("DEM 转换未执行：下载失败或中断。"))
         elif conversion.get("ok"):
             summary_line = (
                 f"下载：{download.get('summary_line')}；"
                 f"转换：{conversion.get('summary_line')}"
             )
+            logs.extend(str(item) for item in conversion.get("logs", []) if item)
         else:
             summary_line = f"下载：{download.get('summary_line')}；转换失败：{conversion.get('error')}"
+            logs.append(_ui_log(f"DEM 转换失败：{conversion.get('error')}"))
 
         return {
             **download,
@@ -3549,6 +3851,7 @@ class Api:
             or conversion_has_failures,
             "download": download,
             "conversion": conversion,
+            "logs": logs[-180:],
             "conversion_results_path": str(conversion.get("results_path", ""))
             if conversion and conversion.get("ok")
             else "",
@@ -3573,11 +3876,23 @@ class Api:
         if not out:
             return _error_msg("请指定 DEM 转换输出根目录", "GUI003")
         try:
+            source = str(getattr(conv_plan, "source_vertical_datum", ""))
+            target = str(getattr(conv_plan, "target_vertical_datum", ""))
+            logs = [
+                _ui_log(
+                    f"开始 DEM 转换：{source} → {target}，输出模式 "
+                    f"{'椭球高 GeoTIFF' if output_mode == 'ellipsoid' else 'SARscape _dem'}"
+                )
+            ]
             summary = run_dem_conversion([conv_plan], out, output_mode=output_mode)
         except InsarPrepError as exc:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
+            if _is_dem_component_environment_error(exc):
+                return _dem_component_error("DEM 转换执行", exc)
             return _error_msg(str(exc), "DEM003")
+        logs.extend(_dem_result_logs(list(summary.results), prefix="DEM 转换"))
+        logs.append(_ui_log(f"DEM 转换完成：{summary.summary_line()}"))
         self._act(f"DEM 转换完成：{summary.summary_line()}", kind="download")
         return {
             "ok": True,
@@ -3591,6 +3906,7 @@ class Api:
             "results_path": str(summary.results_path) if summary.results_path else "",
             "output_dir": out,
             "results": [_dump(result) for result in summary.results],
+            "logs": logs,
             "raw_dem_path": str(getattr(conv_plan, "raw_dem_path", "")),
             "ellipsoid_dem_path": str(getattr(conv_plan, "ellipsoid_dem_path", "")),
             "sarscape_ready_dem_path": (
@@ -3868,7 +4184,7 @@ def _conversion_summary(conv_plan: Any) -> dict:
             break
     if not requires:
         message = (
-            f"该 DEM 高程基准已为 {source}（椭球高），无需垂直基准转换，将导出 SARscape ENVI _dem + .hdr。"
+            f"该 DEM 高程基准已为 {source}（椭球高），无需垂直基准转换，将导出 SARscape ENVI _dem + .hdr + .sml。"
         )
     elif requires_geoid and geoid:
         message = (

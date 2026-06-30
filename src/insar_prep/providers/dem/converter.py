@@ -18,10 +18,14 @@ GeoTIFF is produced, mirroring the download path's integrity contract.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import sys
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+from xml.etree import ElementTree as ET
 
 import numpy as np
 
@@ -40,6 +44,9 @@ logger = get_logger("providers.dem.converter")
 _BLOCK_ROWS = 512
 
 _GEOID_SOURCES = frozenset({VerticalDatum.EGM96, VerticalDatum.EGM2008, VerticalDatum.ORTHOMETRIC})
+_SARSCAPE_SML_NS = "http://www.sarmap.ch/xml/SARscapeHeaderSchema"
+_SARSCAPE_XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+_SARSCAPE_SML_VERSION = "2.0.2"
 
 # Which vertical datum each OpenTopography dataset's heights are referenced to.
 _DATASET_SOURCE_DATUM: dict[str, VerticalDatum] = {
@@ -62,7 +69,7 @@ def dataset_source_vertical_datum(dataset: DemDataset | str) -> VerticalDatum:
 
 def default_geoid_model_for(source: VerticalDatum) -> str | None:
     """Return the geoid model name needed to convert from ``source`` (or None)."""
-    if source in (VerticalDatum.EGM2008, VerticalDatum.ORTHOMETRIC):
+    if source is VerticalDatum.EGM2008:
         return "EGM2008"
     if source is VerticalDatum.EGM96:
         return "EGM96"
@@ -163,6 +170,29 @@ def _import_rasterio() -> object:
     return rasterio
 
 
+def _is_gdal_proj_runtime_error(exc: Exception) -> bool:
+    lowered = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        token in lowered
+        for token in (
+            "proj.db",
+            "proj_create_from_database",
+            "the epsg code is unknown",
+            "cannot find proj.db",
+            "gdal",
+            "rasterio",
+        )
+    )
+
+
+def _gdal_proj_component_message(exc: Exception) -> str:
+    return (
+        "DEM/GDAL 高级转换组件不完整或未正确激活，无法读取 GDAL/PROJ 坐标数据库。"
+        "请到“设置 → 更新与组件”安装或重新安装 DEM/GDAL 高级转换组件后重试。"
+        f" 原因：{type(exc).__name__}: {exc}"
+    )
+
+
 class RealDemConverter:
     """Convert a DEM's vertical datum to the WGS84 ellipsoid using a geoid grid.
 
@@ -190,9 +220,40 @@ class RealDemConverter:
         if self._geoid_grid_path is not None:
             self._geoid = load_geoid_file(self._geoid_grid_path, model=model_hint)
         else:
-            # Only EGM96 is bundled; EGM2008 sources fall back to it (see warning
-            # emitted by the caller).
-            self._geoid = load_bundled_geoid("EGM96")
+            if not model_hint:
+                raise DemProcessingError(
+                    "无法确定 DEM 需要使用哪一种大地水准面模型；请明确选择 EGM96 或 EGM2008。",
+                    code=ErrorCode.DEM002,
+                )
+            if model_hint.upper() == "EGM2008":
+                try:
+                    from insar_prep.core.component_manager import (  # noqa: PLC0415
+                        DEM_GDAL_COMPONENT_ID,
+                        EGM2008_GEOID_CANDIDATES,
+                        find_component_file,
+                    )
+
+                    component_grid = find_component_file(
+                        DEM_GDAL_COMPONENT_ID, EGM2008_GEOID_CANDIDATES
+                    )
+                except Exception:  # noqa: BLE001 - component state is optional.
+                    component_grid = None
+                if component_grid is not None:
+                    self._geoid = load_geoid_file(component_grid, model=model_hint)
+                    return self._geoid
+            try:
+                self._geoid = load_bundled_geoid(model_hint)
+            except DemProcessingError as exc:
+                if model_hint.upper() == "EGM2008":
+                    raise DemProcessingError(
+                        "检测到源 DEM 为 EGM2008 正高（例如 COP30/COP90），但当前未安装"
+                        "完整的 DEM/GDAL 高级转换组件（缺少 EGM2008 大地水准面网格）。"
+                        "为避免误用 EGM96 近似，已停止转换；"
+                        "请到“设置 → 更新与组件”安装 DEM/GDAL 高级转换组件后重试，"
+                        "或在确认可接受近似时手动选择 EGM96。",
+                        code=ErrorCode.DEM003,
+                    ) from exc
+                raise
         return self._geoid
 
     def convert(self, plan: DemConversionPlan) -> DemConversionResult:
@@ -212,16 +273,6 @@ class RealDemConverter:
                 error_code=code.value,
             )
 
-        if dest.exists() and dest.stat().st_size > 0:
-            return DemConversionResult(
-                region_safe_name=plan.region_safe_name,
-                dataset=plan.dataset,
-                outcome=DemConversionOutcome.SKIPPED,
-                source_vertical_datum=source,
-                target_vertical_datum=target,
-                path=dest,
-                message="SARscape-ready DEM already present; skipped",
-            )
         if VerticalDatum.UNKNOWN in (source, target):
             return failed(
                 "DEM vertical datum is unknown; specify it before converting",
@@ -253,7 +304,7 @@ class RealDemConverter:
                 target_vertical_datum=target,
                 path=dest,
                 message=(
-                    "dataset already ellipsoidal; exported SARscape ENVI _dem"
+                    "dataset already ellipsoidal; exported SARscape ENVI _dem + .hdr + .sml"
                     if self.write_sarscape_ready
                     else "dataset already ellipsoidal; wrote ellipsoid GeoTIFF"
                 ),
@@ -263,10 +314,27 @@ class RealDemConverter:
             return failed(f"unsupported vertical-datum conversion {source.value} -> {target.value}")
 
         model_hint = default_geoid_model_for(source)
+        if model_hint is None and self._geoid is None and self._geoid_grid_path is None:
+            return failed(
+                "无法根据当前 DEM 自动判断大地水准面模型；请手动选择 EGM96 或 EGM2008。",
+                ErrorCode.DEM002,
+            )
         try:
             geoid = self._load_geoid(model_hint)
         except DemProcessingError as exc:
             return failed(str(exc))
+
+        if dest.exists() and dest.stat().st_size > 0:
+            return DemConversionResult(
+                region_safe_name=plan.region_safe_name,
+                dataset=plan.dataset,
+                outcome=DemConversionOutcome.SKIPPED,
+                source_vertical_datum=source,
+                target_vertical_datum=target,
+                geoid_model=geoid.model,
+                path=dest,
+                message=f"SARscape-ready DEM already present; skipped after validating {geoid.model}",
+            )
 
         approximated = source is VerticalDatum.EGM2008 and geoid.model.upper() != "EGM2008"
         try:
@@ -274,6 +342,8 @@ class RealDemConverter:
         except DemProcessingError as exc:
             return failed(str(exc))
         except Exception as exc:  # noqa: BLE001 - surface any raster error as FAILED
+            if _is_gdal_proj_runtime_error(exc):
+                return failed(_gdal_proj_component_message(exc))
             return failed(f"{type(exc).__name__}: {exc}")
 
         message = f"converted {source.value} -> {target.value} using {geoid.model}"
@@ -334,7 +404,8 @@ class RealDemConverter:
         part = dest.with_name(dest.name + ".part")
         part_hdr = part.with_name(part.name + ".hdr")
         final_hdr = dest.with_name(dest.name + ".hdr")
-        for stale in (part, part_hdr):
+        final_sml = dest.with_name(dest.name + ".sml")
+        for stale in (part, part_hdr, final_sml):
             try:
                 stale.unlink()
             except FileNotFoundError:
@@ -357,6 +428,146 @@ class RealDemConverter:
         os.replace(part, dest)
         if part_hdr.exists():
             os.replace(part_hdr, final_hdr)
+        self._write_sarscape_sml(dest, final_sml)
+        if final_hdr.exists():
+            self._normalize_envi_header(final_hdr)
+
+    def _normalize_envi_header(self, header_path: Path) -> None:
+        """Remove temporary ``.part`` paths from the ENVI header description."""
+        try:
+            text = header_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = header_path.read_text(encoding="latin-1")
+        text = re.sub(
+            r"(?is)description\s*=\s*\{.*?\}",
+            "description = {\n   ELLIPSOIDAL DEM.\n   Generated by InSAR Studio}",
+            text,
+            count=1,
+        )
+        header_path.write_text(text, encoding="utf-8")
+
+    def _write_sarscape_sml(self, raster_path: Path, sml_path: Path) -> None:
+        """Write SARscape's XML sidecar so SBAS can recognize the DEM as ellipsoidal."""
+        rasterio = _import_rasterio()
+        ET.register_namespace("", _SARSCAPE_SML_NS)
+        ET.register_namespace("xsi", _SARSCAPE_XSI_NS)
+
+        def tag(name: str) -> str:
+            return f"{{{_SARSCAPE_SML_NS}}}{name}"
+
+        with rasterio.open(raster_path) as src:  # type: ignore[attr-defined]
+            transform = src.transform
+            bounds = src.bounds
+            x_spacing = float(transform.a)
+            y_spacing = float(transform.e)
+            wkt = self._sarscape_wkt(src.crs)
+            nodata = self._format_sml_number(src.nodata) if src.nodata is not None else "NaN"
+            root = ET.Element(
+                tag("HEADER_INFO"),
+                {
+                    f"{{{_SARSCAPE_XSI_NS}}}schemaLocation": (
+                        f"{_SARSCAPE_SML_NS}\n"
+                        f"{_SARSCAPE_SML_NS}/SARscapeHeaderSchema_version_"
+                        f"{_SARSCAPE_SML_VERSION}.xsd"
+                    )
+                },
+            )
+            raster_info = ET.SubElement(root, tag("RasterInfo"))
+            for key, value in (
+                ("HeaderOffset", "0"),
+                ("RowPrefix", "0"),
+                ("RowSuffix", "0"),
+                ("CellType", self._sarscape_cell_type(src.dtypes[0])),
+                ("DataUnits", "ELLIPSOIDAL DEM"),
+                ("NullCellValue", nodata),
+                ("NrOfChannels", str(src.count)),
+                ("NrOfPixelsPerLine", str(src.width)),
+                ("NrOfLinesPerImage", str(src.height)),
+                ("GeocodedImage", "OK"),
+                ("Interleave", "LAYOUT_BSQ"),
+                ("SmlVersion", _SARSCAPE_SML_VERSION),
+                ("BytesOrder", "LSBF" if sys.byteorder == "little" else "MSBF"),
+            ):
+                ET.SubElement(raster_info, tag(key)).text = value
+
+            other = ET.SubElement(raster_info, tag("OtherInfo"))
+            matrix = ET.SubElement(other, tag("MatrixString"), NumberOfRows="2", NumberOfColumns="2")
+            self._add_sml_matrix_row(matrix, tag, 0, "SOFTWARE", "InSAR Studio")
+            self._add_sml_matrix_row(matrix, tag, 1, "SML VERSION", _SARSCAPE_SML_VERSION)
+
+            cart = ET.SubElement(root, tag("CartographicSystem"))
+            ET.SubElement(cart, tag("cartographic_system_specification")).text = wkt
+
+            reg = ET.SubElement(root, tag("RegistrationCoordinates"))
+            for key, value in (
+                ("LatNorthing", self._format_sml_number(bounds.top)),
+                ("LonEasting", self._format_sml_number(bounds.left)),
+                ("PixelSpacingLatNorth", self._format_sml_number(y_spacing)),
+                ("PixelSpacingLonEast", self._format_sml_number(x_spacing)),
+            ):
+                ET.SubElement(reg, tag(key)).text = value
+
+            dem = ET.SubElement(root, tag("DEMCoordinates"))
+            for key, value in (
+                ("EastingCoordinateBegin", self._format_sml_number(bounds.left)),
+                ("EastingCoordinateEnd", self._format_sml_number(bounds.right)),
+                ("EastingGridSize", self._format_sml_number(abs(x_spacing))),
+                ("NorthingCoordinateBegin", self._format_sml_number(bounds.bottom)),
+                ("NorthingCoordinateEnd", self._format_sml_number(bounds.top)),
+                ("NorthingGridSize", self._format_sml_number(abs(y_spacing))),
+            ):
+                ET.SubElement(dem, tag(key)).text = value
+
+        tree = ET.ElementTree(root)
+        ET.indent(tree, space="   ")
+        tree.write(sml_path, encoding="utf-8", xml_declaration=True)
+
+    def _add_sml_matrix_row(
+        self,
+        matrix: ET.Element,
+        tag: Callable[[str], str],
+        row_id: int,
+        key: str,
+        value: str,
+    ) -> None:
+        row = ET.SubElement(matrix, tag("MatrixRowString"), ID=str(row_id))
+        ET.SubElement(row, tag("ValueString"), ID="0").text = key
+        ET.SubElement(row, tag("ValueString"), ID="1").text = value
+
+    def _sarscape_wkt(self, crs: object) -> str:
+        if crs is None:
+            return ""
+        try:
+            return crs.to_wkt(version="WKT1_ESRI")  # type: ignore[attr-defined]
+        except TypeError:
+            return crs.to_wkt()  # type: ignore[attr-defined]
+
+    def _sarscape_cell_type(self, dtype: str) -> str:
+        value = str(dtype).lower()
+        if value in {"float32", "single"}:
+            return "FLOAT"
+        if value in {"float64", "double"}:
+            return "DOUBLE"
+        if value in {"uint8", "ubyte"}:
+            return "UCHAR"
+        if value in {"int16"}:
+            return "SHORT"
+        if value in {"uint16"}:
+            return "USHORT"
+        if value in {"int32"}:
+            return "INT"
+        if value in {"uint32"}:
+            return "UINT"
+        return "FLOAT"
+
+    def _format_sml_number(self, value: object) -> str:
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return str(value)
+        if np.isnan(number):
+            return "NaN"
+        return format(number, ".17g")
 
     def _apply_block_offsets(
         self,

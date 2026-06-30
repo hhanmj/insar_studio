@@ -646,6 +646,7 @@ class AsfDownloadJob:
             thread.start()
 
     def _worker_loop(self) -> None:
+        downloader = self._worker_downloader()
         while not self._cancel.is_set():
             while self._pause.is_set() and not self._cancel.is_set():
                 time.sleep(0.25)
@@ -681,18 +682,31 @@ class AsfDownloadJob:
                         )
                         self._status.updated_at = time.monotonic()
                         continue
-                if not self._run_one(request):
+                if not self._run_one(request, downloader):
                     return
             finally:
                 pending.task_done()
 
-    def _run_one(self, request: object) -> bool:
+    def _worker_downloader(self) -> RealAsfDownloader | None:
+        context = self._worker_context
+        if context is None:
+            return None
+        return RealAsfDownloader(
+            resolved=context["resolved"],
+            max_retries=context["max_retries"],
+            proxy_url=context["proxy_url"],
+            ssl_verify=context["ssl_verify"],
+            trust_env=context["trust_env"],
+            pause_event=self._pause,
+            progress_callback=self._update_progress,
+        )
+
+    def _run_one(self, request: object, downloader: RealAsfDownloader | None) -> bool:
         while self._pause.is_set() and not self._cancel.is_set():
             time.sleep(0.25)
         if self._cancel.is_set():
             return False
-        context = self._worker_context
-        if context is None:
+        if downloader is None:
             return False
         scene_id = str(getattr(request, "scene_id", ""))
         scene_key = self._normalise_scene_id(scene_id)
@@ -718,16 +732,7 @@ class AsfDownloadJob:
             ]
             self._status.current_expected_size = sum(known_expected) if known_expected else None
             self._status.updated_at = now
-        downloader = RealAsfDownloader(
-            resolved=context["resolved"],
-            max_retries=context["max_retries"],
-            proxy_url=context["proxy_url"],
-            ssl_verify=context["ssl_verify"],
-            trust_env=context["trust_env"],
-            cancel_event=_CombinedEvent(self._cancel, scene_cancel),
-            pause_event=self._pause,
-            progress_callback=self._update_progress,
-        )
+        downloader.cancel_event = _CombinedEvent(self._cancel, scene_cancel)
         result = downloader.download(request)
         with self._lock:
             self._scene_cancel_events.pop(scene_key, None)
@@ -737,6 +742,21 @@ class AsfDownloadJob:
         with self._results_lock:
             self._results.append(result)
         self._append_log(result)
+        if result.error_code == ErrorCode.DL004.value:
+            with self._lock:
+                self._status.error = "Earthdata/ASF 凭据被拒绝，已停止后续下载以保护账号。"
+                self._status.log.append(
+                    {
+                        "scene_id": scene_id,
+                        "outcome": "credential_rejected",
+                        "bytes_written": result.bytes_written,
+                        "message": "凭据被拒绝",
+                        "detail": "Earthdata/ASF 凭据被拒绝，已停止后续下载；请检查 Token、用户名或密码。",
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+            self._cancel.set()
+            return False
         if result.outcome is DownloadOutcome.INTERRUPTED:
             self._cancel.set()
             return False

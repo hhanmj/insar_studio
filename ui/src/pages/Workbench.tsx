@@ -10,11 +10,12 @@ import {
   ClipboardPaste,
   CloudDownload,
   Database,
+  Eye,
+  EyeOff,
   ExternalLink,
   FileText,
   FileUp,
   FolderOpen,
-  FolderPlus,
   HardDrive,
   Info,
   KeyRound,
@@ -56,8 +57,6 @@ import {
 } from "@/components/WorkbenchMap";
 import { OnboardingTour, type TourStep } from "@/components/OnboardingTour";
 import {
-  addProject,
-  addRegion,
   appendAsfDownload,
   checkEarthdataAuth,
   checkScenes,
@@ -68,10 +67,8 @@ import {
   clearEarthdataCredentials,
   clearGacosEmail,
   clearOpentopographyKey,
-  createWorkspace,
   deleteDownloadArchiveItem,
   downloadAppUpdate,
-  ensureDirectory,
   formatBridgeError,
   getComponentStatus,
   getCredentialStatus,
@@ -118,8 +115,6 @@ import {
   saveNetworkSettings,
   saveOpentopographyKey,
   resizeNativeWindowFromEdge,
-  selectProject,
-  selectRegion,
   removeComponent,
   setDemDataset,
   setRegionAoiBbox,
@@ -139,6 +134,7 @@ import {
   type AdminBoundary,
   type AppInfo,
   type CheckOk,
+  type ComponentSummary,
   type ComponentStatusOk,
   type Context,
   type CredentialStatus,
@@ -152,7 +148,6 @@ import {
   type RunSummaryOk,
   type SceneRow,
   type SimpleOk,
-  type Tree,
   type UpdateInfo,
 } from "@/lib/bridge";
 import { usePrepContext } from "@/lib/useContext";
@@ -336,7 +331,6 @@ function demDatasetLabel(value: string) {
   return value;
 }
 
-const DEFAULT_ROOT = "";
 const DEFAULT_BBOX: Bbox = {
   west: 73.5,
   east: 135.1,
@@ -446,10 +440,10 @@ const PANEL_TABS: { key: PanelTab; label: string; icon: typeof CloudDownload }[]
   { key: "settings", label: "设置", icon: Settings },
 ];
 
-const WORKBENCH_TOUR_VERSION = 3;
+const WORKBENCH_TOUR_VERSION = 4;
 const WORKBENCH_TOUR_STEPS: TourStep[] = [
   {
-    title: "欢迎使用 InSAR Assistant",
+    title: "欢迎使用 InSAR Studio",
     body: "这一版按下载工具的真实流程走：先配置必要账号或密钥，再选择资源、区域和输出，最后进入下载中心看队列。",
     hint: "没有 Earthdata/ASF 凭据时不会允许开始 Sentinel-1 下载，避免任务进入队列后才连续失败。",
     placement: "center",
@@ -514,8 +508,24 @@ const LINKS = {
   github: "https://github.com/hhanmj/insar_studio/releases/latest",
 };
 
+const EARTHDATA_AUTH_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
+
 function isConfigured(value: string | undefined) {
   return !!value && value !== "none" && value !== "unavailable";
+}
+
+function needsDemGdalComponent(message: string | null | undefined) {
+  const text = String(message || "");
+  const lowered = text.toLowerCase();
+  return Boolean(
+    text.includes("DEM/GDAL 高级转换组件") ||
+      (text.includes("EGM2008") && text.includes("组件")) ||
+      lowered.includes("proj.db") ||
+      lowered.includes("proj_create_from_database") ||
+      lowered.includes("the epsg code is unknown") ||
+      lowered.includes("cannot find proj.db") ||
+      lowered.includes("rasterio/gdal"),
+  );
 }
 
 function providerLabel(value: string | undefined) {
@@ -649,6 +659,7 @@ function Section({
   children,
   defaultOpen = true,
   storageKey,
+  forceOpenSignal = 0,
 }: {
   title: string;
   desc?: string;
@@ -656,12 +667,20 @@ function Section({
   children: React.ReactNode;
   defaultOpen?: boolean;
   storageKey?: string;
+  forceOpenSignal?: number;
 }) {
   const [open, setOpen] = useState(() => {
     if (!storageKey || typeof window === "undefined") return defaultOpen;
     const stored = window.localStorage.getItem(`insar.section.${storageKey}`);
     return stored == null ? defaultOpen : stored === "open";
   });
+  useEffect(() => {
+    if (!forceOpenSignal) return;
+    setOpen(true);
+    if (storageKey && typeof window !== "undefined") {
+      window.localStorage.setItem(`insar.section.${storageKey}`, "open");
+    }
+  }, [forceOpenSignal, storageKey]);
   function toggleOpen() {
     setOpen((value) => {
       const next = !value;
@@ -727,12 +746,6 @@ function withAllOption(options: string[]) {
   return ["全部", ...uniqueOptions(options)];
 }
 
-function compactStamp() {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
-}
-
 function formatLogTime(value: number | string | null | undefined) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return "";
@@ -794,6 +807,7 @@ function demRunLogLines(run: RunSummaryOk) {
   const downloadResults = (run.download as { results?: Json[] } | undefined)?.results;
   const conversionResults = (run.conversion as { results?: Json[] } | null | undefined)?.results;
   const lines = [
+    ...(run.logs ?? []),
     run.summary_line,
     run.raw_dem_path ? `原始 DEM：${run.raw_dem_path}` : "",
     run.ellipsoid_dem_path ? `椭球高 DEM：${run.ellipsoid_dem_path}` : "",
@@ -974,17 +988,6 @@ function archiveTaskInlineMeta(item: DownloadArchiveItem) {
   return archiveTaskBadges(item).join(" · ");
 }
 
-function autoProjectName(root: string) {
-  const base = pathBaseName(root);
-  if (base && !/^projects?$/i.test(base)) return base;
-  return `project_${compactStamp()}`;
-}
-
-function autoRegionName(project: string) {
-  const base = project.trim().replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
-  return `${base || "region"}_area`;
-}
-
 function compactSearchText(value: unknown) {
   return String(value ?? "").replace(/[-_:TZ.\s]/g, "").toLowerCase();
 }
@@ -1035,15 +1038,8 @@ export function Workbench({
   const [componentStatus, setComponentStatus] = useState<ComponentStatusOk | null>(null);
   const [componentBusy, setComponentBusy] = useState<string | null>(null);
   const [componentNote, setComponentNote] = useState<string | null>(null);
+  const [settingsComponentsOpenSignal, setSettingsComponentsOpenSignal] = useState(0);
   const [communityOpen, setCommunityOpen] = useState(false);
-
-  const [tree, setTree] = useState<Tree | null>(null);
-  const [root, setRoot] = useState(DEFAULT_ROOT);
-  const [projectName, setProjectName] = useState("");
-  const [regionName, setRegionName] = useState("");
-  const [projectBusy, setProjectBusy] = useState(false);
-  const [projectError, setProjectError] = useState<string | null>(null);
-  const [projectNote, setProjectNote] = useState<string | null>(null);
 
   const [outputDir, setOutputDir] = useState("");
   const [demDownloadOutputDir, setDemDownloadOutputDir] = useState("");
@@ -1135,7 +1131,7 @@ export function Workbench({
   const [demRun, setDemRun] = useState<RunSummaryOk | null>(null);
   const [demRunSource, setDemRunSource] = useState<"download" | "download-only" | "local-ellipsoid" | "local-sarscape" | null>(null);
   const [demDownloadBusy, setDemDownloadBusy] = useState(false);
-  const [localDemBusy, setLocalDemBusy] = useState(false);
+  const [localDemAction, setLocalDemAction] = useState<"ellipsoid" | "sarscape" | null>(null);
   const [demError, setDemError] = useState<string | null>(null);
   const [localDem, setLocalDem] = useState("");
   const [localDatum, setLocalDatum] = useState("auto");
@@ -1149,6 +1145,10 @@ export function Workbench({
   const [earthUser, setEarthUser] = useState("");
   const [earthPassword, setEarthPassword] = useState("");
   const [earthCredentialMode, setEarthCredentialMode] = useState<"token" | "login">("token");
+  const [showEarthToken, setShowEarthToken] = useState(false);
+  const [showEarthPassword, setShowEarthPassword] = useState(false);
+  const [showOpentopoKey, setShowOpentopoKey] = useState(false);
+  const [showTiandituKey, setShowTiandituKey] = useState(false);
   const [opentopoKey, setOpentopoKey] = useState("");
   const [gacosEmail, setGacosEmail] = useState("");
   const [credBusy, setCredBusy] = useState<string | null>(null);
@@ -1156,6 +1156,8 @@ export function Workbench({
   const [credNote, setCredNote] = useState<string | null>(null);
   const [earthdataAuth, setEarthdataAuth] = useState<EarthdataAuthCheck | null>(null);
   const [earthdataAuthChecking, setEarthdataAuthChecking] = useState(false);
+  const earthdataAuthInFlight = useRef(false);
+  const earthdataAuthRetryAfter = useRef(0);
   const [network, setNetwork] = useState<NetworkSettings | null>(null);
   const [networkBusy, setNetworkBusy] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
@@ -1179,13 +1181,7 @@ export function Workbench({
   }
 
   async function refreshTree() {
-    const next = await getTree();
-    setTree(next);
-    if (next.workspace?.root) setRoot(next.workspace.root);
-    const currentProject = next.projects.find((p) => p.project_id === next.current_project_id);
-    if (currentProject) setProjectName(currentProject.name);
-    const currentRegion = currentProject?.regions.find((r) => r.region_id === next.current_region_id);
-    if (currentRegion) setRegionName(currentRegion.name);
+    await getTree();
   }
 
   async function refreshScenes() {
@@ -1199,14 +1195,55 @@ export function Workbench({
     return next;
   }
 
-  async function refreshEarthdataAuth() {
+  async function refreshEarthdataAuth(
+    reason: "startup" | "manual" | "timer" | "download" = "manual",
+    credentialStatus = creds?.earthdata,
+  ): Promise<EarthdataAuthCheck | null> {
+    if (!isConfigured(credentialStatus)) {
+      const missing: EarthdataAuthCheck = {
+        ok: true,
+        configured: false,
+        status: "missing",
+        message: "未保存 Earthdata/ASF 凭据。",
+      };
+      setEarthdataAuth(missing);
+      return missing;
+    }
+    const now = Date.now();
+    if (reason === "manual" && earthdataAuthRetryAfter.current > now) {
+      const minutes = Math.ceil((earthdataAuthRetryAfter.current - now) / 60000);
+      setCredNote(`上次登录检测未通过，为保护账号已暂停重复检测；请 ${minutes} 分钟后再试，或重新保存正确 Token/密码。`);
+      return earthdataAuth;
+    }
+    if (earthdataAuthInFlight.current) return null;
+    earthdataAuthInFlight.current = true;
     setEarthdataAuthChecking(true);
+    if (reason !== "timer") {
+      setEarthdataAuth({
+        ok: true,
+        configured: true,
+        status: "unknown",
+        message: reason === "startup" ? "正在自动检测 Earthdata/ASF 凭据状态..." : "正在检测 Earthdata/ASF 凭据状态...",
+      });
+    }
     try {
       const res = await checkEarthdataAuth();
-      if (res.ok) setEarthdataAuth(res);
+      if (res.ok) {
+        setEarthdataAuth(res);
+        if (res.configured && res.status !== "valid") {
+          earthdataAuthRetryAfter.current = Date.now() + EARTHDATA_AUTH_RETRY_COOLDOWN_MS;
+        } else {
+          earthdataAuthRetryAfter.current = 0;
+        }
+        return res;
+      }
+      setCredError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+      return null;
     } catch {
       setEarthdataAuth(null);
+      return null;
     } finally {
+      earthdataAuthInFlight.current = false;
       setEarthdataAuthChecking(false);
     }
   }
@@ -1247,6 +1284,15 @@ export function Workbench({
     }
     setComponentNote(formatBridgeError(res));
     return null;
+  }
+
+  function openSettingsComponents() {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("insar.section.settings-updates-components", "open");
+    }
+    setPanel("settings");
+    setSettingsComponentsOpenSignal((value) => value + 1);
+    void refreshComponents(true);
   }
 
   async function refreshDownloadArchive() {
@@ -1295,7 +1341,7 @@ export function Workbench({
     void getAppInfo().then((info) => setAppInfo(info));
     void refreshTree();
     void refreshScenes();
-    void refreshCredentials().then(() => refreshEarthdataAuth());
+    void refreshCredentials().then((next) => refreshEarthdataAuth("startup", next.earthdata));
     void refreshNetwork();
     void refreshComponents(false);
     void refreshDownloadArchive();
@@ -1305,7 +1351,7 @@ export function Workbench({
     const reloadFromBridge = () => {
       void refreshTree();
       void refreshScenes();
-      void refreshCredentials();
+      void refreshCredentials().then((next) => refreshEarthdataAuth("startup", next.earthdata));
       void refreshNetwork();
       void refreshComponents(false);
       void refreshDownloadArchive();
@@ -1356,11 +1402,12 @@ export function Workbench({
 
   useEffect(() => {
     if (!isConfigured(creds?.earthdata)) return;
+    if (earthdataAuth && earthdataAuth.status !== "valid") return;
     const id = window.setInterval(() => {
-      void refreshEarthdataAuth();
-    }, 30 * 60 * 1000);
+      void refreshEarthdataAuth("timer", creds?.earthdata);
+    }, 60 * 60 * 1000);
     return () => window.clearInterval(id);
-  }, [creds?.earthdata]);
+  }, [creds?.earthdata, earthdataAuth?.status]);
 
   useEffect(() => {
     void refreshScenes();
@@ -1476,6 +1523,8 @@ export function Workbench({
   const earthdataStatusLabel =
     !earthdataConfigured
       ? "未配置"
+      : earthdataAuthChecking || earthdataAuth?.status === "unknown"
+        ? "正在检测"
       : earthdataAuth?.status === "valid"
         ? "正常"
         : earthdataInvalid
@@ -1775,11 +1824,6 @@ export function Workbench({
     });
   }, [gacosPlan, resolvedOutputDir]);
 
-  async function onBrowseRoot() {
-    const pick = await pickDirectory("选择项目根目录");
-    if (pick.ok && pick.path) setRoot(pick.path);
-  }
-
   async function onBrowseOutput() {
     const pick = await pickDirectory("选择本次任务输出目录");
     if (pick.ok && pick.path) setOutputDir(pick.path);
@@ -1814,65 +1858,6 @@ export function Workbench({
     if (effectiveLocalDemOutputDir) return effectiveLocalDemOutputDir;
     const picked = await onBrowseLocalDemOutput();
     return picked;
-  }
-
-  async function onCreateProject() {
-    if (!root.trim()) {
-      setProjectError("请先选择或填写项目根目录。");
-      return;
-    }
-    const finalProjectName = projectName.trim() || autoProjectName(root);
-    const finalRegionName = regionName.trim() || autoRegionName(finalProjectName);
-    setProjectBusy(true);
-    setProjectError(null);
-    setProjectNote(null);
-    try {
-      const dir = await ensureDirectory(root.trim());
-      if (!dir.ok) {
-        setProjectError(`${dir.error}${dir.code ? ` (${dir.code})` : ""}`);
-        return;
-      }
-      const ws = await createWorkspace(root.trim(), `${finalProjectName} 工作目录`);
-      if (!ws.ok) {
-        setProjectError(`${ws.error}${ws.code ? ` (${ws.code})` : ""}`);
-        return;
-      }
-      const project = await addProject(finalProjectName);
-      if (!project.ok) {
-        setProjectError(`${project.error}${project.code ? ` (${project.code})` : ""}`);
-        return;
-      }
-      const region = await addRegion(finalRegionName);
-      if (!region.ok) {
-        setProjectError(`${region.error}${region.code ? ` (${region.code})` : ""}`);
-        return;
-      }
-      setProjectName(finalProjectName);
-      setRegionName(finalRegionName);
-      await refresh();
-      await refreshTree();
-      setProjectNote(
-        `已创建：${finalProjectName} / ${finalRegionName}。名称留空时会自动生成，目录仍按 根目录\\项目\\研究区 组织。`,
-      );
-    } catch (e) {
-      setProjectError(formatBridgeError(e));
-    } finally {
-      setProjectBusy(false);
-    }
-  }
-
-  async function onSelectProject(projectId: string) {
-    const res = await selectProject(projectId);
-    if (!res.ok) setProjectError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
-    await refresh();
-    await refreshTree();
-  }
-
-  async function onSelectRegion(regionId: string) {
-    const res = await selectRegion(regionId);
-    if (!res.ok) setProjectError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
-    await refresh();
-    await refreshTree();
   }
 
   async function bindBbox(bbox: Bbox) {
@@ -2360,15 +2345,7 @@ export function Workbench({
     setAsfStartBusy(true);
     setAsfError(null);
     try {
-      if (!earthdataCanDownload) {
-        setAsfError(
-          earthdataInvalid
-            ? "Earthdata/ASF 凭据已过期或失效，请在设置里重新保存 Token 或账号密码。"
-            : "开始 Sentinel-1 下载前，请先在设置里保存 Earthdata Token 或账号密码。",
-        );
-        setPanel("settings");
-        return;
-      }
+      if (!(await ensureEarthdataReadyForDownload("开始 Sentinel-1 下载"))) return;
       const out = await ensureTaskOutput();
       if (!out) {
         setAsfError("开始下载前需要确认一个输出目录。");
@@ -2393,15 +2370,7 @@ export function Workbench({
     setAsfStartBusy(true);
     setAsfError(null);
     try {
-      if (!earthdataCanDownload) {
-        setAsfError(
-          earthdataInvalid
-            ? "Earthdata/ASF 凭据已过期或失效，请在设置里重新保存 Token 或账号密码。"
-            : "追加 Sentinel-1 下载前，请先在设置里保存 Earthdata Token 或账号密码。",
-        );
-        setPanel("settings");
-        return;
-      }
+      if (!(await ensureEarthdataReadyForDownload("追加 Sentinel-1 下载"))) return;
       if (selectedDownloadSceneIdList.length === 0) {
         setAsfError("请先在“所选 SAR 数据”中勾选要追加下载的影像。");
         return;
@@ -2431,15 +2400,7 @@ export function Workbench({
     setAsfStartBusy(true);
     setAsfError(null);
     try {
-      if (!earthdataCanDownload) {
-        setAsfError(
-          earthdataInvalid
-            ? "Earthdata/ASF 凭据已过期或失效，请在设置里重新保存 Token 或账号密码。"
-            : "开始 Sentinel-1 下载前，请先在设置里保存 Earthdata Token 或账号密码。",
-        );
-        setPanel("settings");
-        return;
-      }
+      if (!(await ensureEarthdataReadyForDownload("开始 Sentinel-1 下载"))) return;
       if (dlActive) {
         const out = dlStatus?.output_dir || outputDir || resolvedOutputDir;
         const res = await appendAsfDownload(out, Math.max(1, ids.length), ids);
@@ -2539,15 +2500,7 @@ export function Workbench({
       return;
     }
 
-    if (kind === "asf" && !earthdataCanDownload) {
-      setAsfError(
-        earthdataInvalid
-          ? "Earthdata/ASF 凭据已过期或失效，请在设置里重新保存 Token 或账号密码。"
-          : "继续 Sentinel-1 下载前，请先在设置里保存 Earthdata Token 或账号密码。",
-      );
-      setPanel("settings");
-      return;
-    }
+    if (kind === "asf" && !(await ensureEarthdataReadyForDownload("继续 Sentinel-1 下载"))) return;
 
     setRestoringTaskKeys((prev) => new Set(prev).add(taskKey));
 
@@ -2703,7 +2656,7 @@ export function Workbench({
   }
 
   async function onRunLocalDem(outputMode: "ellipsoid" | "sarscape") {
-    setLocalDemBusy(true);
+    setLocalDemAction(outputMode);
     setDemError(null);
     setDemRun(null);
     setDemRunSource(null);
@@ -2722,7 +2675,7 @@ export function Workbench({
     } catch (e) {
       setDemError(formatBridgeError(e));
     } finally {
-      setLocalDemBusy(false);
+      setLocalDemAction(null);
     }
   }
 
@@ -2758,7 +2711,15 @@ export function Workbench({
       const res = await action();
       if (res.ok) {
         await refreshCredentials();
-        await refreshEarthdataAuth();
+        if (label.startsWith("earth-")) {
+          earthdataAuthRetryAfter.current = 0;
+          const auth = res.auth as EarthdataAuthCheck | undefined;
+          if (auth?.ok && typeof auth.configured === "boolean") {
+            setEarthdataAuth(auth);
+          } else {
+            setEarthdataAuth(null);
+          }
+        }
         setCredNote(success);
       } else {
         setCredError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
@@ -2768,6 +2729,26 @@ export function Workbench({
     } finally {
       setCredBusy(null);
     }
+  }
+
+  async function ensureEarthdataReadyForDownload(actionLabel: string) {
+    const latest = await refreshCredentials();
+    if (!isConfigured(latest.earthdata)) {
+      setAsfError(`${actionLabel}前，请先在设置里保存 Earthdata Token 或账号密码。`);
+      setPanel("settings");
+      return false;
+    }
+    const auth = await refreshEarthdataAuth("download", latest.earthdata);
+    if (!auth || auth.status !== "valid") {
+      const message =
+        auth?.status === "missing"
+          ? `${actionLabel}前，请先在设置里保存 Earthdata Token 或账号密码。`
+          : auth?.message || "Earthdata/ASF 凭据未通过登录检测，请检查 Token、用户名或密码。";
+      setAsfError(message);
+      setPanel("settings");
+      return false;
+    }
+    return true;
   }
 
   async function openUrl(url: string) {
@@ -2804,7 +2785,7 @@ export function Workbench({
       });
       if (res.ok) {
         setNetwork(res);
-        await refreshEarthdataAuth();
+        setEarthdataAuth(null);
         setNetworkNote(
           wantsAutoProxy && res.proxy_url
             ? `已自动识别系统代理：${res.proxy_url}`
@@ -2969,94 +2950,6 @@ function renderOutputParameters(
           </div>
         )}
       </div>
-    );
-  }
-
-  function renderProjectContext() {
-    return (
-      <Section
-        title="高级目录管理"
-        desc="一般不用先设置；需要固定根目录、项目名或研究区名时再展开。"
-        icon={HardDrive}
-        defaultOpen={false}
-      >
-        <div className="space-y-3">
-          <div className="grid grid-cols-[1fr_auto] gap-2">
-            <Input
-              value={root}
-              onChange={(e) => setRoot(e.target.value)}
-              placeholder="选择或新建工作目录"
-              spellCheck={false}
-              className="font-mono text-xs"
-            />
-            <Button variant="outline" size="icon" onClick={onBrowseRoot} title="浏览根目录">
-              <FolderOpen className="h-4 w-4" />
-            </Button>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Input
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              placeholder="项目名称（可选）"
-            />
-            <Input
-              value={regionName}
-              onChange={(e) => setRegionName(e.target.value)}
-              placeholder="研究区名称（可选）"
-            />
-          </div>
-          <Button
-            className="w-full"
-            onClick={onCreateProject}
-            disabled={projectBusy || !root.trim()}
-          >
-            {projectBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderPlus className="h-4 w-4" />}
-            创建 / 切换目录
-          </Button>
-          <div className="rounded-md border bg-muted/35 px-3 py-2 text-xs">
-            {kv("当前项目", ctx?.project?.name ?? "未选择")}
-            {kv("当前研究区", ctx?.region?.name ?? "未选择")}
-            {kv("目录结构", "根目录\\项目\\研究区")}
-          </div>
-          <ErrorLine text={projectError} />
-          <NoteLine text={projectNote} />
-          {tree?.projects.length ? (
-            <div className="max-h-40 space-y-2 overflow-y-auto pr-1">
-              {tree.projects.map((project) => (
-                <div key={project.project_id} className="rounded-md border bg-card px-2 py-2">
-                  <button
-                    type="button"
-                    onClick={() => void onSelectProject(project.project_id)}
-                    className="flex w-full items-center justify-between gap-2 text-left text-xs"
-                  >
-                    <span className="truncate font-medium">{project.name}</span>
-                    {tree.current_project_id === project.project_id && <Badge variant="success">当前</Badge>}
-                  </button>
-                  {project.regions.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {project.regions.map((region) => (
-                        <button
-                          key={region.region_id}
-                          type="button"
-                          onClick={() => void onSelectRegion(region.region_id)}
-                          className={cn(
-                            "rounded-full border px-2 py-1 text-[11px]",
-                            tree.current_region_id === region.region_id
-                              ? "border-primary bg-primary/10 text-primary"
-                              : "bg-background text-muted-foreground hover:text-foreground",
-                          )}
-                        >
-                          {region.name} · {region.scene_count} 景
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </Section>
     );
   }
 
@@ -3964,8 +3857,8 @@ function renderOutputParameters(
                 <div className="flex items-start gap-2">
                   <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" />
                   <div className="min-w-0 flex-1 leading-5">
-                    <div className="font-medium">正在自动检查 Earthdata/ASF 凭据</div>
-                    <div className="text-muted-foreground">会读取已保存 Token、账号密码、环境变量或 netrc，完成后自动刷新状态。</div>
+                    <div className="font-medium">正在检查 Earthdata/ASF 凭据</div>
+                    <div className="text-muted-foreground">会读取已保存 Token、账号密码、环境变量或 netrc；检测失败后不会反复重试。</div>
                   </div>
                 </div>
               </div>
@@ -4054,6 +3947,11 @@ function renderOutputParameters(
   function renderDemResultCard() {
     if (!demRun) return null;
     const logs = demRunLogLines(demRun);
+    const demGdalComponent = componentStatus?.components.find((item) => item.id === "dem-gdal");
+    const componentFailure = needsDemGdalComponent([demRun.summary_line, ...logs].join("\n"));
+    const componentReady = !!demGdalComponent?.runtime_available;
+    const needsComponent = componentFailure && !componentReady;
+    const previousComponentFailure = componentFailure && componentReady;
     const title =
       demRunSource === "local-ellipsoid"
         ? "本地 DEM 椭球高转换结果"
@@ -4075,6 +3973,37 @@ function renderOutputParameters(
             {demRun.has_failures ? "需检查" : skipped > 0 ? "已跳过" : "已完成"}
           </Badge>
         </div>
+        {needsComponent && (
+          <div className="mt-3 rounded-2xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs leading-5">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium">
+                  {demGdalComponent?.state === "partial" ? "DEM/GDAL 组件缺少 EGM2008 网格" : "需要安装或修复 DEM/GDAL 高级转换组件"}
+                </div>
+                <div className="text-muted-foreground">
+                  {demGdalComponent?.state === "partial"
+                    ? "已识别 GDAL/PROJ 运行库，但没有 EGM2008 网格；COP30/COP90 转椭球高会被阻止。"
+                    : "当前缺少 GDAL/PROJ/EGM2008 所需运行数据，安装或修复组件后再转换。"}
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={openSettingsComponents}>
+                去修复组件
+              </Button>
+            </div>
+          </div>
+        )}
+        {previousComponentFailure && (
+          <div className="mt-3 rounded-2xl border border-success/30 bg-success/10 px-3 py-2 text-xs leading-5 text-success">
+            <div className="flex items-start gap-2">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <div className="font-medium">组件现在已可用</div>
+                <div className="text-success/80">这条记录是修复组件前的失败结果，请重新执行 DEM 转换。</div>
+              </div>
+            </div>
+          </div>
+        )}
         <Progress value={100} className="mt-3" />
         <div className="mt-3 grid grid-cols-2 gap-2">
           {kv("任务数", demRun.total)}
@@ -4184,7 +4113,7 @@ function renderOutputParameters(
                 {kv("SARscape 头文件", `${previewStem}_dem.hdr`)}
               </div>
               <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
-                仅下载时只保存原始 GeoTIFF；下载并转换时会生成椭球高 GeoTIFF，并导出 SARscape 常用的 ENVI _dem + .hdr。
+                仅下载时只保存原始 GeoTIFF；下载并转换时会生成椭球高 GeoTIFF，并导出 SARscape 常用的 ENVI _dem + .hdr + .sml。
               </div>
             </div>
             {renderOutputParameters("保存原始 GeoTIFF、椭球高 GeoTIFF 和 SARscape *_dem + *.hdr。", {
@@ -4230,6 +4159,18 @@ function renderOutputParameters(
               </Button>
             </div>
             <ErrorLine text={demError} />
+            {needsDemGdalComponent(demError) && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full"
+                onClick={openSettingsComponents}
+              >
+                <CloudDownload className="h-4 w-4" />
+                去设置安装/修复 DEM/GDAL 组件
+              </Button>
+            )}
           </div>
         </Section>
         <Section
@@ -4266,19 +4207,19 @@ function renderOutputParameters(
               <Button
                 variant="outline"
                 onClick={() => void onRunLocalDem("ellipsoid")}
-                disabled={localDemBusy || !localDem}
+                disabled={!!localDemAction || !localDem}
                 className="w-full"
               >
-                {localDemBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                {localDemAction === "ellipsoid" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 转换椭球高
               </Button>
               <Button
                 variant="outline"
                 onClick={() => void onRunLocalDem("sarscape")}
-                disabled={localDemBusy || !localDem}
+                disabled={!!localDemAction || !localDem}
                 className="w-full"
               >
-                {localDemBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                {localDemAction === "sarscape" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 转换SARscape格式
               </Button>
             </div>
@@ -5303,27 +5244,32 @@ function renderOutputParameters(
     const earth = creds?.earthdata ?? "none";
     const dem = creds?.opentopography ?? "none";
     const gacos = creds?.gacos ?? "none";
-    const demComponent = componentStatus?.components.find((item) => item.id === "dem-gdal");
-    const demComponentLabel =
-      demComponent?.state === "installed"
-        ? "已安装"
-        : demComponent?.state === "bundled"
-          ? "当前版本内置"
-          : demComponent?.state === "available"
-            ? "可在线安装"
-            : "在线包未发布";
-    const demComponentBadge =
-      demComponent?.runtime_available || demComponent?.installed
-        ? "success"
-        : demComponent?.can_install
-          ? "warning"
-          : "neutral";
-    const demComponentHint =
-      demComponent?.runtime_available || demComponent?.installed
-        ? "组件运行库已可用，DEM 椭球高转换和 SARscape DEM 输出可直接使用。"
-        : demComponent?.can_install
-          ? "可从在线组件库安装；安装后无需重新下载主程序。"
-          : "在线组件包尚未发布或当前网络无法读取清单；需要在 GitHub Release 上传组件清单和 DEM/GDAL 压缩包后才能一键安装。";
+    const components = componentStatus?.components ?? [];
+    const componentLabel = (item: ComponentSummary) => {
+      if (item.runtime_available) return "完整可用";
+      if (item.state === "partial") return "缺 EGM2008 网格";
+      if (item.state === "broken") return "需修复";
+      if (item.state === "installed") return "已安装";
+      if (item.state === "bundled") return "当前版本内置";
+      if (item.state === "available") return "可在线安装";
+      return "在线包未发布";
+    };
+    const componentBadge = (item: ComponentSummary) =>
+      item.runtime_available ? "success" : item.state === "partial" || item.state === "broken" || item.can_install ? "warning" : "neutral";
+    const componentHint = (item: ComponentSummary) => {
+      if (item.runtime_available) return "组件已完整可用，GDAL/rasterio 与 EGM2008 网格均已识别。";
+      if (item.state === "partial") {
+        const manifestMentionsGrid = String(item.description || "").toLowerCase().includes("egm2008");
+        if (!manifestMentionsGrid) {
+          return "已识别 GDAL/rasterio 运行库，但当前在线组件包没有声明 EGM2008 网格；重装同一包可能仍无法完成 COP30/COP90 精确椭球高转换，需要发布包含 EGM2008 网格的组件包。";
+        }
+        return "已识别 GDAL/rasterio 运行库，但缺少 EGM2008 大地水准面网格；COP30/COP90 精确椭球高转换会被阻止，请重新安装包含 EGM2008 网格的组件。";
+      }
+      if (item.state === "broken") return "组件目录存在，但运行库未能加载；请移除后重新安装组件。";
+      if (item.installed) return "组件已安装，但完整运行条件未通过；请刷新组件或重新安装。";
+      if (item.can_install) return "可从在线组件库安装；安装后无需重新下载主程序。";
+      return "在线组件包尚未发布或当前网络无法读取清单；上传组件清单和压缩包后即可一键安装。";
+    };
     const updateAssetSize = updateInfo?.asset_size
       ? `${(updateInfo.asset_size / 1024 / 1024).toFixed(1)} MB`
       : "";
@@ -5343,7 +5289,16 @@ function renderOutputParameters(
             <Button
               variant="outline"
               size="sm"
-              onClick={() => void refreshCredentials().then(() => refreshEarthdataAuth())}
+              onClick={() =>
+                void refreshCredentials().then(async (next) => {
+                  if (isConfigured(next.earthdata)) {
+                    await refreshEarthdataAuth("manual", next.earthdata);
+                    setCredNote("已刷新本机保存状态，并检测 Earthdata/ASF 登录状态。");
+                  } else {
+                    setCredNote("已刷新本机保存状态。");
+                  }
+                })
+              }
             >
               <RotateCcw className="h-4 w-4" />
               刷新状态
@@ -5359,7 +5314,7 @@ function renderOutputParameters(
                 </div>
               </div>
             )}
-            {earthdataAuth && !earthdataAuth.configured && (
+            {earthdataAuth && !earthdataAuth.configured && !earthdataConfigured && (
               <div className="rounded-2xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs leading-5">
                 <div className="flex items-start gap-2">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
@@ -5383,10 +5338,18 @@ function renderOutputParameters(
                   <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
                   <div>
                     <div className="font-medium">
-                      {earthdataAuth?.status === "valid" ? "设置完成，状态正常" : `已设置：${providerLabel(earth)}`}
+                      {earthdataAuth?.status === "valid"
+                        ? "设置完成，状态正常"
+                        : earthdataAuthChecking || earthdataAuth?.status === "unknown"
+                          ? `已设置：${providerLabel(earth)}，正在检测`
+                          : `已设置：${providerLabel(earth)}`}
                     </div>
                     <div className="text-muted-foreground">
-                      {earthdataAuth?.status === "valid" ? "启动时已自动检测，无需重复确认。" : "可点“刷新状态”重新检测。"}
+                      {earthdataAuth?.status === "valid"
+                        ? "最近一次登录检测通过；下载前会再做单次校验。"
+                        : earthdataAuthChecking || earthdataAuth?.status === "unknown"
+                          ? "软件正在校验当前凭据是否可用。"
+                          : "保存后不会反复检测；可手动检测，下载前也会单次校验。"}
                     </div>
                   </div>
                 </div>
@@ -5409,12 +5372,24 @@ function renderOutputParameters(
             </div>
             {earthCredentialMode === "token" ? (
               <div className="grid grid-cols-[1fr_auto] gap-2">
-                <Input
-                  type="password"
-                  value={earthToken}
-                  onChange={(e) => setEarthToken(e.target.value)}
-                  placeholder="Earthdata Token"
-                />
+                <div className="relative">
+                  <Input
+                    type={showEarthToken ? "text" : "password"}
+                    value={earthToken}
+                    onChange={(e) => setEarthToken(e.target.value)}
+                    placeholder="Earthdata Token"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    onClick={() => setShowEarthToken((value) => !value)}
+                    aria-label={showEarthToken ? "隐藏 Token" : "显示 Token"}
+                    title={showEarthToken ? "隐藏 Token" : "显示 Token"}
+                  >
+                    {showEarthToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
                 <Button
                   size="icon"
                   disabled={credBusy === "earth-token" || !earthToken.trim()}
@@ -5422,7 +5397,7 @@ function renderOutputParameters(
                     void runCredentialAction(
                       "earth-token",
                       () => saveEarthdataToken(earthToken),
-                      "Earthdata Token 已保存",
+                      "Earthdata Token 校验通过并已保存",
                     )
                   }
                 >
@@ -5432,12 +5407,24 @@ function renderOutputParameters(
             ) : (
               <div className="grid grid-cols-2 gap-2">
                 <Input value={earthUser} onChange={(e) => setEarthUser(e.target.value)} placeholder="用户名" />
-                <Input
-                  type="password"
-                  value={earthPassword}
-                  onChange={(e) => setEarthPassword(e.target.value)}
-                  placeholder="密码"
-                />
+                <div className="relative">
+                  <Input
+                    type={showEarthPassword ? "text" : "password"}
+                    value={earthPassword}
+                    onChange={(e) => setEarthPassword(e.target.value)}
+                    placeholder="密码"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    onClick={() => setShowEarthPassword((value) => !value)}
+                    aria-label={showEarthPassword ? "隐藏密码" : "显示密码"}
+                    title={showEarthPassword ? "隐藏密码" : "显示密码"}
+                  >
+                    {showEarthPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
             )}
             <div className="flex flex-wrap gap-2">
@@ -5450,7 +5437,7 @@ function renderOutputParameters(
                     void runCredentialAction(
                       "earth-login",
                       () => saveEarthdataLogin(earthUser, earthPassword),
-                      "Earthdata 登录凭据已保存",
+                      "Earthdata 登录凭据校验通过并已保存",
                     )
                   }
                 >
@@ -5461,6 +5448,15 @@ function renderOutputParameters(
               <Button variant="outline" size="sm" onClick={() => void openUrl(LINKS.earthdataToken)}>
                 <ExternalLink className="h-4 w-4" />
                 Token
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!isConfigured(earth) || earthdataAuthChecking}
+                onClick={() => void refreshCredentials().then((next) => refreshEarthdataAuth("manual", next.earthdata))}
+              >
+                {earthdataAuthChecking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                检测登录
               </Button>
               <Button variant="outline" size="sm" onClick={() => void openUrl(LINKS.earthdataRegister)}>
                 <ExternalLink className="h-4 w-4" />
@@ -5494,12 +5490,24 @@ function renderOutputParameters(
               </div>
             )}
             <div className="grid grid-cols-[1fr_auto] gap-2">
-              <Input
-                type="password"
-                value={opentopoKey}
-                onChange={(e) => setOpentopoKey(e.target.value)}
-                placeholder="OpenTopography API Key"
-              />
+              <div className="relative">
+                <Input
+                  type={showOpentopoKey ? "text" : "password"}
+                  value={opentopoKey}
+                  onChange={(e) => setOpentopoKey(e.target.value)}
+                  placeholder="OpenTopography API Key"
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  onClick={() => setShowOpentopoKey((value) => !value)}
+                  aria-label={showOpentopoKey ? "隐藏 Key" : "显示 Key"}
+                  title={showOpentopoKey ? "隐藏 Key" : "显示 Key"}
+                >
+                  {showOpentopoKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
               <Button
                 size="icon"
                 disabled={credBusy === "dem-key" || !opentopoKey.trim()}
@@ -5507,7 +5515,7 @@ function renderOutputParameters(
                   void runCredentialAction(
                     "dem-key",
                     () => saveOpentopographyKey(opentopoKey),
-                    "OpenTopography API Key 已保存",
+                    "OpenTopography API Key 校验通过并已保存",
                   )
                 }
               >
@@ -5594,6 +5602,7 @@ function renderOutputParameters(
           icon={HardDrive}
           defaultOpen={false}
           storageKey="settings-updates-components"
+          forceOpenSignal={settingsComponentsOpenSignal}
         >
           <div className="space-y-3">
             <div className="rounded-2xl border border-white/45 bg-white/35 p-3 text-xs leading-5 dark:border-white/10 dark:bg-white/10">
@@ -5601,7 +5610,7 @@ function renderOutputParameters(
                 <div>
                   <div className="text-sm font-semibold">软件更新</div>
                   <div className="text-muted-foreground">
-                    当前版本 {updateInfo?.current_version ?? appInfo?.version ?? "-"}
+                    当前版本 {appInfo?.version ?? updateInfo?.current_version ?? "-"}
                     {updateInfo?.checked && `，最新版本 ${updateInfo.latest_version}`}
                   </div>
                 </div>
@@ -5640,22 +5649,11 @@ function renderOutputParameters(
             <div className="rounded-2xl border border-white/45 bg-white/35 p-3 text-xs leading-5 dark:border-white/10 dark:bg-white/10">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <div className="text-sm font-semibold">DEM 高级转换组件</div>
+                  <div className="text-sm font-semibold">在线组件</div>
                   <div className="text-muted-foreground">
-                    GDAL/rasterio/numpy 运行库，用于 DEM 椭球高转换与 SARscape DEM 适配输出。
+                    大体积 DEM/GDAL 运行库与 EGM2008 网格随同一个组件按需安装，主程序保持轻量。
                   </div>
                 </div>
-                <Badge variant={demComponentBadge}>{demComponentLabel}</Badge>
-              </div>
-              <div className="mt-2 grid gap-1 rounded-xl border border-white/45 bg-white/35 px-2 py-1.5 font-mono text-[11px] text-muted-foreground dark:border-white/10 dark:bg-white/10">
-                <div>组件目录：{componentStatus?.root ?? "正在读取..."}</div>
-                <div>清单：{componentStatus?.manifest_url ?? "未读取"}</div>
-                {demComponent?.installed_path && <div>已安装：{demComponent.installed_path}</div>}
-              </div>
-              <div className="mt-2 rounded-xl border border-white/45 bg-white/28 px-2 py-1.5 text-[11px] text-muted-foreground dark:border-white/10 dark:bg-white/10">
-                {demComponentHint}
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   size="sm"
@@ -5669,31 +5667,65 @@ function renderOutputParameters(
                   {componentBusy === "refresh" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
                   刷新组件
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!demComponent?.can_install || componentBusy === "dem-gdal"}
-                  onClick={() => void onInstallComponent("dem-gdal")}
-                >
-                  {componentBusy === "dem-gdal" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
-                  安装组件
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={!demComponent?.installed || componentBusy === "dem-gdal"}
-                  onClick={() => void onRemoveComponent("dem-gdal")}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  移除
-                </Button>
+              </div>
+              <div className="mt-2 grid gap-1 rounded-xl border border-white/45 bg-white/35 px-2 py-1.5 font-mono text-[11px] text-muted-foreground dark:border-white/10 dark:bg-white/10">
+                <div>组件目录：{componentStatus?.root ?? "正在读取..."}</div>
+                <div>清单：{componentStatus?.manifest_url ?? "未读取"}</div>
+              </div>
+              <div className="mt-3 space-y-2">
+                {components.map((item) => (
+                  <div key={item.id} className="rounded-xl border border-white/45 bg-white/28 p-2 dark:border-white/10 dark:bg-white/10">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold">{item.name}</span>
+                          <Badge variant={componentBadge(item)}>{componentLabel(item)}</Badge>
+                        </div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">{item.description || componentHint(item)}</div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">{componentHint(item)}</div>
+                        {item.id === "dem-gdal" && (
+                          <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                            <span>运行库：{item.partial_runtime_available || item.runtime_available ? "已识别" : "未识别"}</span>
+                            <span>EGM2008 网格：{item.egm2008_grid_available ? "已识别" : "缺失"}</span>
+                          </div>
+                        )}
+                        {item.installed_path && (
+                          <div className="mt-1 break-all font-mono text-[11px] text-muted-foreground">已安装：{item.installed_path}</div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!item.can_install || componentBusy === item.id}
+                          onClick={() => void onInstallComponent(item.id)}
+                        >
+                          {componentBusy === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+                          {item.installed || item.state === "partial" || item.state === "broken" ? "修复" : "安装"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={!item.installed || componentBusy === item.id}
+                          onClick={() => void onRemoveComponent(item.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          移除
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {!components.length && (
+                  <div className="rounded-xl border border-dashed p-3 text-center text-muted-foreground">
+                    暂未读取到组件清单。
+                  </div>
+                )}
               </div>
               <NoteLine text={componentNote} />
             </div>
           </div>
         </Section>
-
-        {renderProjectContext()}
 
         <Section
           title="网络代理与缓存"
@@ -5769,12 +5801,24 @@ function renderOutputParameters(
                   onChange={(e) => setNetwork({ ...network, cache_limit_mb: Number(e.target.value) || 0 })}
                   placeholder="缓存上限 MB"
                 />
-                <Input
-                  type="password"
-                  value={network.tianditu_token}
-                  onChange={(e) => setNetwork({ ...network, tianditu_token: e.target.value })}
-                  placeholder="天地图 Key（底图 / 行政边界）"
-                />
+                <div className="relative">
+                  <Input
+                    type={showTiandituKey ? "text" : "password"}
+                    value={network.tianditu_token}
+                    onChange={(e) => setNetwork({ ...network, tianditu_token: e.target.value })}
+                    placeholder="天地图 Key（底图 / 行政边界）"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    onClick={() => setShowTiandituKey((value) => !value)}
+                    aria-label={showTiandituKey ? "隐藏 Key" : "显示 Key"}
+                    title={showTiandituKey ? "隐藏 Key" : "显示 Key"}
+                  >
+                    {showTiandituKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
                 <Button variant="outline" size="icon" onClick={() => void openUrl(LINKS.tiandituKey)} title="申请天地图 Key">
                   <ExternalLink className="h-4 w-4" />
                 </Button>
@@ -5798,7 +5842,7 @@ function renderOutputParameters(
   }
 
   return (
-    <div className="ios-window flex h-screen w-screen flex-col overflow-hidden text-foreground">
+    <div className="ios-window flex h-[100dvh] w-screen flex-col overflow-hidden text-foreground">
       <NativeResizeHandles />
       <header
         className="ios-topbar pywebview-drag-region z-[520] flex h-12 shrink-0 items-center gap-2 border-b px-3"
@@ -5988,7 +6032,7 @@ function renderOutputParameters(
           </div>
         </aside>
 
-        <main className="relative min-w-0 flex-1" data-tour="map-canvas">
+        <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden" data-tour="map-canvas">
           <WorkbenchMap
             bbox={mapBbox}
             aoiBbox={ctx?.region?.bbox ?? null}
@@ -6087,7 +6131,7 @@ function renderOutputParameters(
         storageKey="insar-assistant:workbench-tour"
         version={WORKBENCH_TOUR_VERSION}
         runSignal={tourSignal}
-        autoStart={false}
+        autoStart
         onStepChange={handleTourStepChange}
       />
     </div>

@@ -1,4 +1,4 @@
-"""Build the bundled EGM96 geoid grid (``egm96_15.npz``) from a GeographicLib PGM.
+"""Build a geoid grid ``.npz`` from a GeographicLib PGM.
 
 The real DEM vertical-datum conversion (``providers/dem/converter.py``) needs a
 geoid-undulation grid to turn orthometric (EGM96/EGM2008) DEM heights into WGS84
@@ -15,8 +15,9 @@ Usage::
 
     uv run --no-sync python scripts/build_geoid_npz.py PATH_TO_egm96-15.tar.bz2
     uv run --no-sync python scripts/build_geoid_npz.py PATH_TO_egm96-15.pgm
+    uv run --no-sync python scripts/build_geoid_npz.py --model EGM2008 --output build/egm2008_5.npz PATH_TO_egm2008-5.tar.bz2
 
-The output is written to ``src/insar_prep/data/egm96_15.npz`` with arrays:
+The default output is ``src/insar_prep/data/egm96_15.npz`` with arrays:
 
 * ``undulation`` -- float32 (height, width) geoid undulation N in metres, where
   ``N = ellipsoidal_height - orthometric_height``.
@@ -29,6 +30,7 @@ The grid runs north->south (row 0 = +90 deg lat) and west->east over
 
 from __future__ import annotations
 
+import argparse
 import sys
 import tarfile
 from pathlib import Path
@@ -99,13 +101,16 @@ def parse_geographiclib_pgm(data: bytes) -> tuple[np.ndarray, float, float]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print(__doc__)
-        return 2
-    src = Path(argv[1])
+    parser = argparse.ArgumentParser(description="Build a compressed geoid .npz from a GeographicLib PGM/tar.bz2.")
+    parser.add_argument("source", help="Path to a GeographicLib .pgm or .tar.bz2 containing one.")
+    parser.add_argument("--model", default="EGM96", help="Model label stored in the .npz, e.g. EGM96 or EGM2008.")
+    parser.add_argument("--output", default=str(_OUT), help="Output .npz path.")
+    args = parser.parse_args(argv[1:])
+    src = Path(args.source)
     if not src.exists():
         print(f"input not found: {src}")
         return 2
+    out = Path(args.output)
     undulation, offset, scale = parse_geographiclib_pgm(_read_pgm_bytes(src))
     height, width = undulation.shape
     # GeographicLib layout: latitude spans -90..+90 inclusive (height-1 steps),
@@ -113,19 +118,19 @@ def main(argv: list[str]) -> int:
     # final stored column is at 360 - dlon and column ``width`` wraps to column 0.
     dlon = 360.0 / width
     dlat = -180.0 / (height - 1)
-    _OUT.parent.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        _OUT,
+        out,
         undulation=undulation,
         lat0=np.float64(90.0),
         lon0=np.float64(0.0),
         dlat=np.float64(dlat),
         dlon=np.float64(dlon),
-        model=np.str_("EGM96"),
-        source=np.str_(_SOURCE),
+        model=np.str_(str(args.model).upper()),
+        source=np.str_(f"GeographicLib {src.name}"),
     )
     print(
-        f"wrote {_OUT} ({_OUT.stat().st_size} bytes); grid {height}x{width}, "
+        f"wrote {out} ({out.stat().st_size} bytes); grid {height}x{width}, "
         f"dlat={dlat}, dlon={dlon}, offset={offset}, scale={scale}, "
         f"N range [{float(undulation.min()):.2f}, {float(undulation.max()):.2f}] m"
     )

@@ -32,6 +32,15 @@ DEFAULT_COMPONENT_MANIFEST_URL = (
 )
 COMPONENT_MANIFEST_ENV = "INSAR_COMPONENT_MANIFEST_URL"
 DEM_GDAL_COMPONENT_ID = "dem-gdal"
+EGM2008_GEOID_CANDIDATES = (
+    "geoids/egm2008_5.npz",
+    "geoids/egm2008-5.npz",
+    "egm2008_5.npz",
+    "egm2008-5.npz",
+    "egm2008_1.npz",
+    "egm2008-1.npz",
+    "egm2008.npz",
+)
 
 
 class ComponentError(RuntimeError):
@@ -141,7 +150,10 @@ def _builtin_manifest() -> dict[str, Any]:
                 "url": "",
                 "sha256": "",
                 "entry": "site-packages",
-                "description": "GDAL/rasterio 等 DEM 椭球高转换运行库。发布组件包后可按需下载。",
+                "description": (
+                    "GDAL/rasterio/numpy 运行库与 EGM2008 大地水准面网格；"
+                    "用于 DEM 椭球高转换和 SARscape DEM 适配输出。"
+                ),
             }
         ],
     }
@@ -196,10 +208,17 @@ def load_manifest(*, refresh: bool = False, url: str | None = None) -> dict[str,
 
 def _manifest_components(manifest: dict[str, Any]) -> list[ComponentSpec]:
     values = manifest.get("components")
-    if not isinstance(values, list):
-        return []
+    items = [
+        item
+        for item in (list(values) if isinstance(values, list) else [])
+        if not (isinstance(item, dict) and str(item.get("id") or "").strip() == "geoid-egm2008")
+    ]
+    seen_ids = {str(item.get("id") or "").strip() for item in items if isinstance(item, dict)}
+    for fallback in _builtin_manifest().get("components", []):
+        if isinstance(fallback, dict) and str(fallback.get("id") or "").strip() not in seen_ids:
+            items.append(fallback)
     specs: list[ComponentSpec] = []
-    for item in values:
+    for item in items:
         if isinstance(item, dict):
             spec = ComponentSpec.from_dict(item)
             if spec is not None:
@@ -292,6 +311,59 @@ def _component_entry_path(root: Path, installed: dict[str, Any]) -> Path | None:
     return entry_path if entry_path.exists() else None
 
 
+def _component_base_path(root: Path, installed: dict[str, Any]) -> Path | None:
+    path = str(installed.get("path") or "").strip()
+    if not path:
+        return None
+    component_dir = Path(path).resolve()
+    try:
+        component_dir.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return component_dir if component_dir.exists() else None
+
+
+def component_entry_path(component_id: str) -> Path | None:
+    """Return an installed component entry path, if available."""
+    root = component_root()
+    installed = _load_state(root).get("installed", {}).get(component_id)
+    if not isinstance(installed, dict):
+        return None
+    return _component_entry_path(root, installed)
+
+
+def find_component_file(component_id: str, candidates: tuple[str, ...]) -> Path | None:
+    """Return a file inside an installed component by trying common names."""
+    root = component_root()
+    installed = _load_state(root).get("installed", {}).get(component_id)
+    if not isinstance(installed, dict):
+        return None
+    roots = [
+        path
+        for path in (
+            _component_entry_path(root, installed),
+            _component_base_path(root, installed),
+        )
+        if path is not None
+    ]
+    for name in candidates:
+        for base in roots:
+            direct = base / name
+            if direct.is_file():
+                return direct
+    lowered = {name.lower() for name in candidates}
+    for base in roots:
+        if base.is_file():
+            if base.name.lower() in lowered or base.stem.lower().startswith("egm2008"):
+                return base
+            continue
+        for path in base.rglob("*.npz"):
+            relative = path.relative_to(base).as_posix().lower()
+            if path.name.lower() in lowered or relative in lowered or path.stem.lower().startswith("egm2008"):
+                return path
+    return None
+
+
 _DLL_HANDLES: list[Any] = []
 
 
@@ -304,6 +376,8 @@ def activate_component(component_id: str = DEM_GDAL_COMPONENT_ID) -> bool:
     entry = _component_entry_path(root, installed)
     if entry is None:
         return False
+    if not entry.is_dir():
+        return True
     entry_text = str(entry)
     if entry_text not in sys.path:
         sys.path.insert(0, entry_text)
@@ -311,10 +385,10 @@ def activate_component(component_id: str = DEM_GDAL_COMPONENT_ID) -> bool:
     gdal_data = rasterio_dir / "gdal_data"
     proj_data = rasterio_dir / "proj_data"
     if gdal_data.exists():
-        os.environ.setdefault("GDAL_DATA", str(gdal_data))
+        os.environ["GDAL_DATA"] = str(gdal_data)
     if proj_data.exists():
-        os.environ.setdefault("PROJ_LIB", str(proj_data))
-        os.environ.setdefault("PROJ_DATA", str(proj_data))
+        os.environ["PROJ_LIB"] = str(proj_data)
+        os.environ["PROJ_DATA"] = str(proj_data)
     for candidate in (entry / "bin", entry.parent / "bin"):
         if not candidate.exists():
             continue
@@ -333,6 +407,10 @@ def _dem_runtime_available() -> bool:
     return importlib.util.find_spec("rasterio") is not None
 
 
+def _egm2008_grid_available() -> bool:
+    return find_component_file(DEM_GDAL_COMPONENT_ID, EGM2008_GEOID_CANDIDATES) is not None
+
+
 def get_component_status(*, refresh: bool = False) -> dict[str, Any]:
     """Return a JSON-safe optional component status snapshot."""
     root = component_root()
@@ -340,6 +418,7 @@ def get_component_status(*, refresh: bool = False) -> dict[str, Any]:
     state = _load_state(root)
     installed_map = state.get("installed", {})
     runtime = _dem_runtime_available()
+    egm2008_grid = _egm2008_grid_available()
     components: list[dict[str, Any]] = []
     for spec in _manifest_components(manifest):
         installed = installed_map.get(spec.id) if isinstance(installed_map, dict) else None
@@ -351,8 +430,12 @@ def get_component_status(*, refresh: bool = False) -> dict[str, Any]:
             installed_path = str(installed.get("path") or "")
             entry_path = _component_entry_path(root, installed)
         is_installed = entry_path is not None
-        runtime_available = runtime if spec.id == DEM_GDAL_COMPONENT_ID else is_installed
-        if is_installed:
+        runtime_available = runtime and egm2008_grid if spec.id == DEM_GDAL_COMPONENT_ID else is_installed
+        if spec.id == DEM_GDAL_COMPONENT_ID and runtime and not egm2008_grid:
+            state_label = "partial"
+        elif spec.id == DEM_GDAL_COMPONENT_ID and is_installed and not runtime:
+            state_label = "broken"
+        elif is_installed:
             state_label = "installed"
         elif runtime_available:
             state_label = "bundled"
@@ -367,6 +450,8 @@ def get_component_status(*, refresh: bool = False) -> dict[str, Any]:
                 "installed_version": installed_version,
                 "installed_path": installed_path,
                 "runtime_available": runtime_available,
+                "partial_runtime_available": bool(spec.id == DEM_GDAL_COMPONENT_ID and runtime and not egm2008_grid),
+                "egm2008_grid_available": bool(egm2008_grid) if spec.id == DEM_GDAL_COMPONENT_ID else None,
                 "state": state_label,
                 "can_install": bool(spec.url),
             }

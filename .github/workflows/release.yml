@@ -52,8 +52,16 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      - name: Build EGM2008 geoid grid for the DEM/GDAL component
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/geoid | Out-Null
+          $archive = "build/geoid/egm2008-5.tar.bz2"
+          Invoke-WebRequest -Uri "https://sourceforge.net/projects/geographiclib/files/geoids-distrib/egm2008-5.tar.bz2/download" -OutFile $archive
+          uv run python scripts/build_geoid_npz.py --model EGM2008 --output build/geoid/egm2008_5.npz $archive
+
       - name: Build optional DEM/GDAL component
-        run: pwsh -File scripts/build_dem_gdal_component.ps1
+        run: pwsh -File scripts/build_dem_gdal_component.ps1 -Egm2008GeoidNpz build/geoid/egm2008_5.npz
 
       - name: Build and smoke-test the lean desktop exe
         run: pwsh -File scripts/build_windows_desktop_exe.ps1 -SkipUi -ExternalDemComponent

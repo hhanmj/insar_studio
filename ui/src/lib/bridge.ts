@@ -56,6 +56,8 @@ export type ComponentSummary = {
   installed_version?: string;
   installed_path?: string;
   runtime_available: boolean;
+  partial_runtime_available?: boolean;
+  egm2008_grid_available?: boolean;
   state: "installed" | "bundled" | "available" | "not_configured" | string;
   can_install: boolean;
 };
@@ -339,6 +341,7 @@ export type RunSummaryOk = {
   raw_dem_path?: string;
   ellipsoid_dem_path?: string;
   sarscape_ready_dem_path?: string;
+  logs?: string[];
 };
 export type OrbitDownloadOk = {
   ok: true;
@@ -637,6 +640,14 @@ export function hasBridge(): boolean {
 const api = () => window.pywebview!.api;
 
 export function formatBridgeError(error: unknown): string {
+  if (error && typeof error === "object") {
+    const value = error as Record<string, unknown>;
+    const message = value.error ?? value.message;
+    const code = value.code;
+    if (message) {
+      return `${String(message)}${code ? ` (${String(code)})` : ""}`;
+    }
+  }
   const raw = error instanceof Error ? error.message : String(error ?? "");
   const text = raw.replace(/^Error:\s*/i, "").trim();
   if (text.includes("NoneType") && text.includes("model_dump")) {
@@ -928,7 +939,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Studio", version: "2.0.1", offline: true };
+  return { name: "InSAR Studio", version: "2.1.1", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -940,8 +951,8 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "2.0.1",
-    latest_version: "2.0.1",
+    current_version: "2.1.1",
+    latest_version: "2.1.1",
     html_url: "https://github.com/hhanmj/insar_studio/releases/latest",
     message: "Update checks run only in the packaged desktop app.",
   };
@@ -975,13 +986,15 @@ export async function getComponentStatus(refresh = false): Promise<ComponentStat
       {
         id: "dem-gdal",
         name: "DEM 高级转换组件",
-        version: "2.1",
-        size_mb: 180,
-        description: "GDAL/rasterio 等 DEM 椭球高转换运行库。",
+        version: "2.1.1",
+        size_mb: 205,
+        description: "GDAL/rasterio 等 DEM 椭球高转换运行库与 EGM2008 大地水准面网格。",
         installed: false,
-        runtime_available: true,
-        state: "bundled",
-        can_install: false,
+        runtime_available: false,
+        partial_runtime_available: false,
+        egm2008_grid_available: false,
+        state: "available",
+        can_install: true,
       },
     ],
   };
@@ -2439,12 +2452,12 @@ export async function planDemConversion(outputDir = ""): Promise<ConvertResult> 
           requires_geoid: true,
           geoid_model: geoid,
         },
-        { step_type: "COPY_TO_SARSCAPE_READY", description: "导出 SARscape ENVI _dem + .hdr" },
+        { step_type: "COPY_TO_SARSCAPE_READY", description: "导出 SARscape ENVI _dem + .hdr + .sml" },
       ]
     : [
         {
           step_type: "COPY_TO_SARSCAPE_READY",
-          description: "该 DEM 已是椭球高，直接导出 SARscape ENVI _dem + .hdr",
+          description: "该 DEM 已是椭球高，直接导出 SARscape ENVI _dem + .hdr + .sml",
         },
       ];
 
@@ -2456,7 +2469,7 @@ export async function planDemConversion(outputDir = ""): Promise<ConvertResult> 
     geoid_model: geoid,
     message: requires
       ? `检测到高程基准为 ${source}（正高），将自动转换为 WGS84_ELLIPSOID，采用大地水准面模型 ${geoid}（系统自动选择）。`
-      : `该 DEM 高程基准已为 ${source}（椭球高），无需垂直基准转换，将导出 SARscape ENVI _dem + .hdr。`,
+      : `该 DEM 高程基准已为 ${source}（椭球高），无需垂直基准转换，将导出 SARscape ENVI _dem + .hdr + .sml。`,
   };
 
   return {
@@ -2515,7 +2528,7 @@ export async function planLocalDemConversion(
       geoid_model: geoid,
       message: requires
         ? `检测到或选择高程基准为 ${source}，将转换为 WGS84_ELLIPSOID。`
-        : "该 DEM 已按椭球高处理，将导出 SARscape ENVI _dem + .hdr。",
+        : "该 DEM 已按椭球高处理，将导出 SARscape ENVI _dem + .hdr + .sml。",
     },
     plan: {
       dataset: "USER_LOCAL",
@@ -2530,9 +2543,9 @@ export async function planLocalDemConversion(
               requires_geoid: true,
               geoid_model: geoid,
             },
-            { step_type: "COPY_TO_SARSCAPE_READY", description: "导出 SARscape ENVI _dem + .hdr" },
+            { step_type: "COPY_TO_SARSCAPE_READY", description: "导出 SARscape ENVI _dem + .hdr + .sml" },
           ]
-        : [{ step_type: "COPY_TO_SARSCAPE_READY", description: "导出 SARscape ENVI _dem + .hdr" }],
+        : [{ step_type: "COPY_TO_SARSCAPE_READY", description: "导出 SARscape ENVI _dem + .hdr + .sml" }],
     },
     report: mockReport(),
   };
@@ -2565,7 +2578,7 @@ export async function planDemConversionBbox(
       geoid_model: geoid,
       message: requires
         ? `检测到高程基准为 ${source}（正高），将自动转换为 WGS84_ELLIPSOID，采用大地水准面模型 ${geoid}（系统自动选择）。`
-        : `该 DEM 高程基准已为 ${source}（椭球高），无需垂直基准转换，将导出 SARscape ENVI _dem + .hdr。`,
+        : `该 DEM 高程基准已为 ${source}（椭球高），无需垂直基准转换，将导出 SARscape ENVI _dem + .hdr + .sml。`,
     },
     plan: {
       ...mockDemPlan(
@@ -2584,12 +2597,12 @@ export async function planDemConversionBbox(
               requires_geoid: true,
               geoid_model: geoid,
             },
-            { step_type: "COPY_TO_SARSCAPE_READY", description: "导出 SARscape ENVI _dem + .hdr" },
+            { step_type: "COPY_TO_SARSCAPE_READY", description: "导出 SARscape ENVI _dem + .hdr + .sml" },
           ]
         : [
             {
               step_type: "COPY_TO_SARSCAPE_READY",
-              description: "该 DEM 已是椭球高，直接导出 SARscape ENVI _dem + .hdr",
+              description: "该 DEM 已是椭球高，直接导出 SARscape ENVI _dem + .hdr + .sml",
             },
           ],
     },

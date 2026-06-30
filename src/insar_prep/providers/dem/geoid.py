@@ -84,13 +84,14 @@ class GeoidGrid:
 def load_geoid_file(path: Path | str, *, model: str | None = None) -> GeoidGrid:
     """Load a geoid grid from a ``.npz`` produced by ``scripts/build_geoid_npz.py``."""
     with np.load(path, allow_pickle=False) as data:
+        stored_model = str(data["model"]) if "model" in data.files else None
         return GeoidGrid(
             undulation=np.asarray(data["undulation"], dtype=np.float32),
             lat0=float(data["lat0"]),
             lon0=float(data["lon0"]),
             dlat=float(data["dlat"]),
             dlon=float(data["dlon"]),
-            model=model if model is not None else str(data["model"]),
+            model=stored_model or model or "CUSTOM",
         )
 
 
