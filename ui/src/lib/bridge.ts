@@ -939,7 +939,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Studio", version: "2.1.1", offline: true };
+  return { name: "InSAR Studio", version: "2.1.2", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -951,8 +951,8 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "2.1.1",
-    latest_version: "2.1.1",
+    current_version: "2.1.2",
+    latest_version: "2.1.2",
     html_url: "https://github.com/hhanmj/insar_studio/releases/latest",
     message: "Update checks run only in the packaged desktop app.",
   };
@@ -986,7 +986,7 @@ export async function getComponentStatus(refresh = false): Promise<ComponentStat
       {
         id: "dem-gdal",
         name: "DEM/GDAL 高程基准组件",
-        version: "2.1.1",
+        version: "2.1.2",
         size_mb: 205,
         description: "GDAL/rasterio/numpy/PROJ 与 EGM96、EGM2008 高程基准数据。",
         installed: false,

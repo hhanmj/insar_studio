@@ -1,6 +1,6 @@
 [project]
 name = "insar-prep"
-version = "2.1.1"
+version = "2.1.2"
 description = "Desktop assistant for InSAR and remote sensing data preparation workflows."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
