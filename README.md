@@ -72,14 +72,6 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer
 - 调整 DEM 下载/转换入口，支持 DEM/GDAL 高级转换组件外置。
 - 改进 iOS 风格界面、顶部资源区、下载中心角标、新手引导和地图交互。
 
-## 仓库边界
-
-公开仓库只保留软件源码、构建脚本、打包配置和必要的公开说明。以下内容不应提交：
-
-- 本地测试数据、下载成果、缓存和临时目录。
-- 个人账号、Token、密钥、证书和日志。
-- 第三方参考项目、临时研究资料、离线边界大文件。
-- 仅供本机调试的编辑器配置和代理工具状态。
 
 ## 体积说明
 
@@ -89,7 +81,6 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer
 
 - 完善正式 Windows 安装包与软件内覆盖更新。
 - 接入 Sentinel-2、Landsat、HLS 等免费遥感数据源。
-- 学习 GeoDownloader 的批量缓存判断、多要素任务拆分、下载工作台和轻量安装逻辑。
 - 优化多数据源任务队列、缓存机制和更新提醒。
 - 继续完善 AOI、下载日志、DEM 转换和新手引导体验。
 
