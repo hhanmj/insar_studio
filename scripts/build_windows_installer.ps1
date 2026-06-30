@@ -15,13 +15,13 @@
     The compiled installer is git-ignored.
 
 .PARAMETER Version
-    Version string embedded in the installer (default: 2.1.2).
+    Version string embedded in the installer (default: 2.1.3).
 
 .NOTES
     Run from anywhere; the script resolves the repo root from its own location.
 #>
 param(
-    [string]$Version = "2.1.2"
+    [string]$Version = "2.1.3"
 )
 
 $ErrorActionPreference = "Stop"
