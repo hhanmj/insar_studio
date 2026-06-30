@@ -114,7 +114,7 @@ def create_dem_request_plan(
     processing_bbox = processing_aoi.bbox
     request_bbox = processing_bbox.buffer(buffer_degrees)
 
-    dem_root = Path(output_root) / "DEM"
+    dem_root = Path(output_root)
     source_stem = dem_source_stem(dataset_value)
     raw_dem_path = dem_root / f"{source_stem}.tif"
     ellipsoid_dem_path = dem_root / f"{source_stem}_ellipsoid.tif"

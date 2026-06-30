@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "dem-gdal",
+      "name": "DEM 高级转换组件",
+      "version": "2.1",
+      "size_mb": 180,
+      "url": "https://github.com/hhanmj/insar_studio/releases/download/v2.1/insar-dem-gdal-2.1-win64.zip",
+      "sha256": "REPLACE_WITH_SHA256",
+      "entry": "site-packages",
+      "description": "按需安装的 GDAL/rasterio/numpy 运行库，用于本地 DEM 椭球高转换和 SARscape DEM 适配输出。"
+    }
+  ]
+}

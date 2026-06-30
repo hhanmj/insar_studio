@@ -53,7 +53,7 @@ def write_dem_convert_results_csv(
     output_dir: Path | str, results: Sequence[DemConversionResult]
 ) -> Path:
     """Write a per-region DEM conversion results CSV; return its path."""
-    plan_dir = Path(output_dir) / DEM_CONVERT_SUBDIR
+    plan_dir = Path(output_dir) if len(results) <= 1 else Path(output_dir) / DEM_CONVERT_SUBDIR
     plan_dir.mkdir(parents=True, exist_ok=True)
     results_path = plan_dir / "dem_convert_results.csv"
     with results_path.open("w", encoding="utf-8", newline="") as handle:
@@ -120,6 +120,7 @@ def run_dem_conversion(
     *,
     converter: DemConverter | None = None,
     geoid_grid_path: Path | str | None = None,
+    output_mode: str = "sarscape",
     progress: ProgressCallback | None = None,
 ) -> DemConvertRunSummary:
     """Convert each plan's raw DEM to a SARscape-ready ellipsoidal DEM.
@@ -138,7 +139,10 @@ def run_dem_conversion(
 
     active = converter
     if active is None:
-        active = RealDemConverter(geoid_grid_path=geoid_grid_path)
+        active = RealDemConverter(
+            geoid_grid_path=geoid_grid_path,
+            write_sarscape_ready=(output_mode or "sarscape").lower() != "ellipsoid",
+        )
 
     results: list[DemConversionResult] = []
     for plan in plan_list:

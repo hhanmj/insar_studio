@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type WheelEvent } from "react";
 import {
   Activity,
   AlertCircle,
@@ -58,17 +58,22 @@ import { OnboardingTour, type TourStep } from "@/components/OnboardingTour";
 import {
   addProject,
   addRegion,
+  appendAsfDownload,
   checkEarthdataAuth,
   checkScenes,
   closeNativeWindow,
   clearMapLayers,
+  clearOrbitCandidateScenes,
   clearScenes,
   clearEarthdataCredentials,
   clearGacosEmail,
   clearOpentopographyKey,
   createWorkspace,
+  deleteDownloadArchiveItem,
+  downloadAppUpdate,
   ensureDirectory,
   formatBridgeError,
+  getComponentStatus,
   getCredentialStatus,
   getDownloadArchive,
   getDownloadStatus,
@@ -77,25 +82,31 @@ import {
   checkForUpdate,
   getMetadataStatus,
   getAdminOptions,
+  getAppInfo,
   getNetworkSettings,
   getOrbitDownloadStatus,
   getTree,
   importScenesDirectory,
   importScenesFile,
   importScenesText,
+  installComponent,
   listScenes,
-  matchOrbitsDirectory,
   minimizeNativeWindow,
   openExternalUrl,
   openPath,
   pauseAsfDownload,
+  pauseAsfScenes,
   pauseOrbitDownload,
   pickDirectory,
   pickOpenFile,
   planAsfDownload,
   planGacosRequest,
+  previewScenesDirectory,
+  previewScenesFile,
+  previewAoiFile,
   retryAsfDownload,
   resumeAsfDownload,
+  resumeAsfScenes,
   resumeOrbitDownload,
   runDemDownload,
   runDemDownloadBbox,
@@ -109,9 +120,11 @@ import {
   resizeNativeWindowFromEdge,
   selectProject,
   selectRegion,
+  removeComponent,
   setDemDataset,
   setRegionAoiBbox,
   setRegionAoiFile,
+  setRegionAoiFileFeatures,
   setRegionAoiGeojson,
   searchAdminBoundaries,
   searchAsfScenes,
@@ -121,8 +134,12 @@ import {
   stopOrbitDownload,
   toggleNativeWindowMaximize,
   type Bbox,
+  type AoiFeaturePreview,
+  type AoiPreviewOk,
   type AdminBoundary,
+  type AppInfo,
   type CheckOk,
+  type ComponentStatusOk,
   type Context,
   type CredentialStatus,
   type DownloadArchiveItem,
@@ -132,7 +149,6 @@ import {
   type NetworkSettings,
   type MetadataStatus,
   type OrbitDownloadStatus,
-  type OrbitMatchOk,
   type RunSummaryOk,
   type SceneRow,
   type SimpleOk,
@@ -328,8 +344,10 @@ const DEFAULT_BBOX: Bbox = {
   north: 53.6,
   crs: "EPSG:4326",
 };
+const CHINA_BBOX: Bbox = DEFAULT_BBOX;
 
 const CHINA_PROVINCES = [
+  "全国",
   "不限",
   "北京市",
   "天津市",
@@ -455,7 +473,7 @@ const WORKBENCH_TOUR_STEPS: TourStep[] = [
     placement: "right",
   },
   {
-    target: '[data-tour="resource-panel"]',
+    target: '[data-tour="asf-filter"]',
     title: "4. 设置 ASF 筛选并检索",
     body: "资源下载面板里完成 ASF 筛选、SAR 文件导入、DEM 下载转换、Orbit/GACOS 日期解析等操作。每个功能都可以收起，避免信息堆在一起。",
     placement: "right",
@@ -493,6 +511,7 @@ const LINKS = {
   opentopoRegister: "https://portal.opentopography.org/newUser",
   gacosPortal: "http://www.gacos.net/",
   tiandituKey: "https://console.tianditu.gov.cn/api/key",
+  github: "https://github.com/hhanmj/insar_studio/releases/latest",
 };
 
 function isConfigured(value: string | undefined) {
@@ -714,6 +733,23 @@ function compactStamp() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
+function formatLogTime(value: number | string | null | undefined) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const d = new Date(n < 10_000_000_000 ? n * 1000 : n);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (item: number) => String(item).padStart(2, "0");
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatDownloadLogEntry(entry: { detail?: string; ts?: number | string } | string) {
+  if (typeof entry === "string") return entry;
+  const detail = String(entry.detail || "").trim();
+  if (!detail) return "";
+  const stamp = formatLogTime(entry.ts);
+  return stamp ? `[${stamp}] ${detail}` : detail;
+}
+
 function pathBaseName(path: string) {
   return path.trim().replace(/[\\/]+$/, "").split(/[\\/]/).pop()?.trim() || "";
 }
@@ -799,6 +835,11 @@ function loadDownloadArchive() {
     const raw = window.localStorage.getItem(DOWNLOAD_ARCHIVE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
+    const deletedKeys = new Set(
+      parsed
+        .filter((item) => item && typeof item === "object" && item.status === "deleted")
+        .map((item) => archiveTaskKey({ ...(item as DownloadArchiveItem), status: "cancelled" })),
+    );
     return dedupeArchiveItems(parsed
       .filter(
         (item) =>
@@ -806,9 +847,11 @@ function loadDownloadArchive() {
         typeof item.id === "string" &&
         typeof item.name === "string" &&
         typeof item.status === "string" &&
+        item.status !== "deleted" &&
         typeof item.detail === "string",
       )
-      .map((item) => normaliseArchiveItemForStartup(item as DownloadArchiveItem)))
+      .map((item) => normaliseArchiveItemForStartup(item as DownloadArchiveItem))
+      .filter((item) => !deletedKeys.has(archiveTaskKey(item))))
       .slice(0, 30);
   } catch {
     return [];
@@ -858,12 +901,25 @@ function archiveTaskKey(item: DownloadArchiveItem) {
   return item.id;
 }
 
+function archiveTaskStatusRank(item: DownloadArchiveItem) {
+  if (["finished", "failed", "cancelled", "interrupted", "timeout"].includes(item.status)) return 4;
+  if (item.status === "paused") return 3;
+  if (item.status === "running") return 2;
+  return 1;
+}
+
 function dedupeArchiveItems(items: DownloadArchiveItem[]) {
   const byKey = new Map<string, DownloadArchiveItem>();
   for (const item of items) {
     const key = archiveTaskKey(item);
     const prev = byKey.get(key);
-    if (!prev || Number(item.ts || 0) >= Number(prev.ts || 0)) {
+    const itemTs = Number(item.ts || 0);
+    const prevTs = Number(prev?.ts || 0);
+    if (
+      !prev ||
+      itemTs > prevTs ||
+      (itemTs === prevTs && archiveTaskStatusRank(item) > archiveTaskStatusRank(prev))
+    ) {
       byKey.set(key, item);
     }
   }
@@ -874,9 +930,48 @@ function isRestorableArchiveTask(item: DownloadArchiveItem) {
   const kind = archiveTaskKind(item);
   return (
     (kind === "asf" || kind === "orbit") &&
-    ["running", "paused"].includes(item.status) &&
+    item.status === "paused" &&
     !!archiveTaskOutputDir(item)
   );
+}
+
+function archiveTaskShortId(item: DownloadArchiveItem) {
+  const key = archiveTaskKey(item);
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36).toUpperCase().padStart(5, "0").slice(-5);
+}
+
+function archiveTaskTimeLabel(item: DownloadArchiveItem) {
+  const stamp = formatLogTime(item.ts);
+  return stamp ? stamp.slice(5, 16) : "";
+}
+
+function archiveTaskDisplayName(item: DownloadArchiveItem) {
+  const name = item.name || "";
+  if (archiveTaskKind(item) === "asf" || /ASF\s*Sentinel-1/i.test(name)) return "Sentinel-1 下载任务";
+  return name || "下载任务";
+}
+
+function archiveTaskDisplayTitle(item: DownloadArchiveItem) {
+  const time = archiveTaskTimeLabel(item);
+  const name = archiveTaskDisplayName(item);
+  return time ? `${name} · ${time}` : `${name} · #${archiveTaskShortId(item)}`;
+}
+
+function archiveTaskBadges(item: DownloadArchiveItem) {
+  const out = archiveTaskOutputDir(item);
+  const parts = [`#${archiveTaskShortId(item)}`];
+  if (out) parts.push(`目录 ${pathBaseName(out) || out}`);
+  if (item.total) parts.push(`${item.total}景`);
+  if (item.concurrency) parts.push(`并发${item.concurrency}`);
+  return parts;
+}
+
+function archiveTaskInlineMeta(item: DownloadArchiveItem) {
+  return archiveTaskBadges(item).join(" · ");
 }
 
 function autoProjectName(root: string) {
@@ -890,6 +985,32 @@ function autoRegionName(project: string) {
   return `${base || "region"}_area`;
 }
 
+function compactSearchText(value: unknown) {
+  return String(value ?? "").replace(/[-_:TZ.\s]/g, "").toLowerCase();
+}
+
+function sceneMatchesQuery(scene: SceneRow, query: string) {
+  const raw = query.trim();
+  if (!raw) return true;
+  const q = raw.toLowerCase();
+  const compact = compactSearchText(raw);
+  const fields = [
+    scene.scene_id,
+    scene.product_type,
+    scene.beam_mode,
+    scene.polarization,
+    scene.orbit_direction,
+    scene.path,
+    scene.relative_orbit,
+    scene.frame,
+    scene.absolute_orbit,
+    scene.acquisition_datetime,
+  ];
+  const text = fields.map((item) => String(item ?? "")).join(" ").toLowerCase();
+  const packed = compactSearchText(fields.join(" "));
+  return text.includes(q) || (compact.length > 0 && packed.includes(compact));
+}
+
 export function Workbench({
   dark,
   onToggleDark,
@@ -901,13 +1022,19 @@ export function Workbench({
 
   const [source, setSource] = useState<SourceMode>("sentinel1");
   const [panel, setPanel] = useState<PanelTab>("resources");
-  const [layerKey, setLayerKey] = useState<MapLayerKey>("googleSatellite");
+  const [layerKey, setLayerKey] = useState<MapLayerKey>("arcgisSatellite");
   const [drawMode, setDrawMode] = useState<WorkbenchDrawMode>("rect");
   const [drawActive, setDrawActive] = useState(false);
   const [aoiToolsOpen, setAoiToolsOpen] = useState(false);
   const [manualAoiOpen, setManualAoiOpen] = useState(false);
   const [tourSignal, setTourSignal] = useState(0);
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateNote, setUpdateNote] = useState<string | null>(null);
+  const [componentStatus, setComponentStatus] = useState<ComponentStatusOk | null>(null);
+  const [componentBusy, setComponentBusy] = useState<string | null>(null);
+  const [componentNote, setComponentNote] = useState<string | null>(null);
   const [communityOpen, setCommunityOpen] = useState(false);
 
   const [tree, setTree] = useState<Tree | null>(null);
@@ -925,6 +1052,9 @@ export function Workbench({
   const [sceneText, setSceneText] = useState("");
   const [sceneFile, setSceneFile] = useState("");
   const [sceneDir, setSceneDir] = useState("");
+  const [orbitScenes, setOrbitScenes] = useState<SceneRow[]>([]);
+  const [orbitSceneFile, setOrbitSceneFile] = useState("");
+  const [orbitSceneDir, setOrbitSceneDir] = useState("");
   const [sceneBusy, setSceneBusy] = useState(false);
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [sceneNote, setSceneNote] = useState<string | null>(null);
@@ -948,12 +1078,24 @@ export function Workbench({
   const [selectedAdminBoundary, setSelectedAdminBoundary] = useState<AdminBoundary | null>(null);
   const [adminBusy, setAdminBusy] = useState(false);
   const [aoiFile, setAoiFile] = useState("");
+  const [aoiFeaturePreview, setAoiFeaturePreview] = useState<AoiPreviewOk | null>(null);
+  const [aoiFeaturePickerOpen, setAoiFeaturePickerOpen] = useState(false);
+  const [aoiFeatureNameField, setAoiFeatureNameField] = useState("");
+  const [aoiFeatureFilter, setAoiFeatureFilter] = useState("");
+  const [selectedAoiFeatureIds, setSelectedAoiFeatureIds] = useState<Set<string>>(() => new Set());
+  const [aoiDownloadMode, setAoiDownloadMode] = useState<"merge" | "split">("merge");
+  const [boundAoiFeatureCount, setBoundAoiFeatureCount] = useState(0);
   const [aoiPreviewGeometry, setAoiPreviewGeometry] = useState<Json | null>(null);
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(null);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [selectedDownloadSceneIds, setSelectedDownloadSceneIds] = useState<Set<string>>(() => new Set());
+  const [selectedOrbitSceneIds, setSelectedOrbitSceneIds] = useState<Set<string>>(() => new Set());
   const [hoveredSceneId, setHoveredSceneId] = useState<string | null>(null);
+  const [sceneMetaCardPos, setSceneMetaCardPos] = useState<{ x: number; y: number } | null>(null);
   const [sceneWorkspaceOpen, setSceneWorkspaceOpen] = useState(false);
+  const [orbitWorkspaceOpen, setOrbitWorkspaceOpen] = useState(false);
+  const [sceneWorkspaceQuery, setSceneWorkspaceQuery] = useState("");
+  const [orbitWorkspaceQuery, setOrbitWorkspaceQuery] = useState("");
 
   const [asfPlan, setAsfPlan] = useState<Json | null>(null);
   const [asfBusy, setAsfBusy] = useState(false);
@@ -981,9 +1123,6 @@ export function Workbench({
   const [asfSearchPolarization, setAsfSearchPolarization] = useState("");
   const [dlStatus, setDlStatus] = useState<DownloadStatus | null>(null);
 
-  const [orbitDir, setOrbitDir] = useState("");
-  const [orbitMatch, setOrbitMatch] = useState<OrbitMatchOk | null>(null);
-  const [orbitBusy, setOrbitBusy] = useState(false);
   const [orbitStartBusy, setOrbitStartBusy] = useState(false);
   const [orbitError, setOrbitError] = useState<string | null>(null);
   const [orbitStatus, setOrbitStatus] = useState<OrbitDownloadStatus | null>(null);
@@ -994,7 +1133,7 @@ export function Workbench({
   const [demSouth, setDemSouth] = useState("");
   const [demNorth, setDemNorth] = useState("");
   const [demRun, setDemRun] = useState<RunSummaryOk | null>(null);
-  const [demRunSource, setDemRunSource] = useState<"download" | "local" | null>(null);
+  const [demRunSource, setDemRunSource] = useState<"download" | "download-only" | "local-ellipsoid" | "local-sarscape" | null>(null);
   const [demDownloadBusy, setDemDownloadBusy] = useState(false);
   const [localDemBusy, setLocalDemBusy] = useState(false);
   const [demError, setDemError] = useState<string | null>(null);
@@ -1072,6 +1211,12 @@ export function Workbench({
     }
   }
 
+  const orbitCandidateScenes = useMemo(
+    () => (orbitScenes.length > 0 ? orbitScenes : scenes),
+    [orbitScenes, scenes],
+  );
+  const orbitUsesManualSource = orbitScenes.length > 0;
+
   useEffect(() => {
     setSelectedDownloadSceneIds((previous) => {
       const ids = scenes.map((scene) => scene.scene_id).filter(Boolean);
@@ -1081,8 +1226,27 @@ export function Workbench({
     });
   }, [scenes]);
 
+  useEffect(() => {
+    setSelectedOrbitSceneIds((previous) => {
+      const ids = orbitCandidateScenes.map((scene) => scene.scene_id).filter(Boolean);
+      if (!ids.length) return new Set();
+      const kept = ids.filter((id) => previous.has(id));
+      return new Set(kept.length ? kept : ids);
+    });
+  }, [orbitCandidateScenes]);
+
   async function refreshNetwork() {
     setNetwork(await getNetworkSettings());
+  }
+
+  async function refreshComponents(refresh = false) {
+    const res = await getComponentStatus(refresh);
+    if (res.ok) {
+      setComponentStatus(res);
+      return res;
+    }
+    setComponentNote(formatBridgeError(res));
+    return null;
   }
 
   async function refreshDownloadArchive() {
@@ -1111,11 +1275,29 @@ export function Workbench({
     setTourSignal((value) => value + 1);
   }
 
+  const handleTourStepChange = useCallback((index: number) => {
+    setAoiToolsOpen(false);
+    if (index === 1 || index === 7) {
+      setPanel("settings");
+      return;
+    }
+    if (index === 2 || index === 3 || index === 4 || index === 5) {
+      setSource("sentinel1");
+      setPanel("resources");
+      return;
+    }
+    if (index === 6) {
+      setPanel("downloads");
+    }
+  }, []);
+
   useEffect(() => {
+    void getAppInfo().then((info) => setAppInfo(info));
     void refreshTree();
     void refreshScenes();
     void refreshCredentials().then(() => refreshEarthdataAuth());
     void refreshNetwork();
+    void refreshComponents(false);
     void refreshDownloadArchive();
   }, []);
 
@@ -1123,8 +1305,9 @@ export function Workbench({
     const reloadFromBridge = () => {
       void refreshTree();
       void refreshScenes();
-      void refreshCredentials().then(() => refreshEarthdataAuth());
+      void refreshCredentials();
       void refreshNetwork();
+      void refreshComponents(false);
       void refreshDownloadArchive();
     };
     window.addEventListener("insar-context-changed", reloadFromBridge);
@@ -1170,6 +1353,14 @@ export function Workbench({
       if (timer !== undefined) window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isConfigured(creds?.earthdata)) return;
+    const id = window.setInterval(() => {
+      void refreshEarthdataAuth();
+    }, 30 * 60 * 1000);
+    return () => window.clearInterval(id);
+  }, [creds?.earthdata]);
 
   useEffect(() => {
     void refreshScenes();
@@ -1292,12 +1483,13 @@ export function Workbench({
           : "已保存";
   const opentopoConfigured = isConfigured(creds?.opentopography);
   const gacosConfigured = isConfigured(creds?.gacos);
-  const dlActive = dlStatus?.state === "running" || dlStatus?.state === "paused";
+  const dlActive = !dlStatus?.cancelled && (dlStatus?.state === "running" || dlStatus?.state === "paused");
   const dlVisible =
     !!dlStatus &&
     dlStatus.state !== "idle" &&
     dlActive;
-  const orbitActive = orbitStatus?.state === "running" || orbitStatus?.state === "paused";
+  const orbitActive = !orbitStatus?.cancelled && (orbitStatus?.state === "running" || orbitStatus?.state === "paused");
+  const activeDownloadTaskCount = (dlActive ? 1 : 0) + (orbitActive ? 1 : 0);
   const transferredBytes = (dlStatus?.done_bytes ?? 0) + (dlStatus?.current_bytes ?? 0);
   const dlPct = dlStatus?.total_bytes
     ? Math.round((transferredBytes / dlStatus.total_bytes) * 100)
@@ -1318,26 +1510,75 @@ export function Workbench({
           },
         ]
       : [];
+  const activeAsfSceneIds = useMemo(
+    () => new Set(activeAsfDownloads.map((item) => item.scene_id).filter(Boolean)),
+    [activeAsfDownloads],
+  );
+  const pausedAsfSceneIds = useMemo(() => new Set(dlStatus?.paused_scene_ids ?? []), [dlStatus?.paused_scene_ids]);
   const orbitPct =
     orbitStatus && orbitStatus.total > 0 ? Math.round((orbitStatus.done / orbitStatus.total) * 100) : 0;
   const archiveableStates = new Set(["running", "paused", "finished", "failed", "cancelled", "interrupted", "timeout"]);
   const tiandituToken = network?.tianditu_token ?? "";
   const mapAoiGeometry = aoiPreviewGeometry ?? ctx?.region?.aoi_geojson;
+  const visibleMapScenes = source === "orbit" ? orbitCandidateScenes : scenes;
   const adminProvinceOptions = useMemo(
     () => uniqueOptions(adminOptions.provinces.length ? adminOptions.provinces : CHINA_PROVINCES),
     [adminOptions.provinces],
   );
   const adminCityOptions = useMemo(() => {
+    if (adminProvince === "全国") return ["全部"];
     const preset = ADMIN_PRESETS[adminProvince];
     return withAllOption(adminOptions.cities.length ? adminOptions.cities : (preset?.cities ?? []));
   }, [adminOptions.cities, adminProvince]);
   const adminDistrictOptions = useMemo(() => {
+    if (adminProvince === "全国") return ["全部"];
     const preset = ADMIN_PRESETS[adminProvince];
     return withAllOption(adminOptions.districts.length ? adminOptions.districts : ((preset?.districts ?? {})[adminCity] ?? []));
   }, [adminCity, adminOptions.districts, adminProvince]);
+  const displayedAoiFeatureField = aoiFeatureNameField || aoiFeaturePreview?.display_field || "";
+  const filteredAoiFeatures = useMemo(() => {
+    const features = aoiFeaturePreview?.features ?? [];
+    const query = aoiFeatureFilter.trim().toLowerCase();
+    if (!query) return features;
+    return features.filter((feature) => {
+      const fieldValue = displayedAoiFeatureField
+        ? String(feature.properties?.[displayedAoiFeatureField] ?? "")
+        : "";
+      const haystack = [
+        feature.name,
+        fieldValue,
+        feature.index,
+        feature.source_index,
+        ...Object.values(feature.properties ?? {}),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [aoiFeatureFilter, aoiFeaturePreview?.features, displayedAoiFeatureField]);
+  const selectedAoiFeatures = useMemo(
+    () => (aoiFeaturePreview?.features ?? []).filter((feature) => selectedAoiFeatureIds.has(feature.id)),
+    [aoiFeaturePreview?.features, selectedAoiFeatureIds],
+  );
+  const selectedAoiAreaKm2 = useMemo(
+    () => selectedAoiFeatures.reduce((sum, feature) => sum + Number(feature.area_km2 || 0), 0),
+    [selectedAoiFeatures],
+  );
+  const activeAoiFeatureCount = useMemo(() => {
+    if (boundAoiFeatureCount > 1) return boundAoiFeatureCount;
+    return 0;
+  }, [boundAoiFeatureCount]);
   const hoveredScene = useMemo(
     () => scenes.find((scene) => scene.scene_id === hoveredSceneId) ?? null,
     [hoveredSceneId, scenes],
+  );
+  const filteredSceneWorkspaceScenes = useMemo(
+    () => scenes.filter((scene) => sceneMatchesQuery(scene, sceneWorkspaceQuery)),
+    [sceneWorkspaceQuery, scenes],
+  );
+  const filteredOrbitWorkspaceScenes = useMemo(
+    () => orbitCandidateScenes.filter((scene) => sceneMatchesQuery(scene, orbitWorkspaceQuery)),
+    [orbitWorkspaceQuery, orbitCandidateScenes],
   );
   const selectedDownloadScenes = useMemo(
     () => scenes.filter((scene) => selectedDownloadSceneIds.has(scene.scene_id)),
@@ -1347,24 +1588,14 @@ export function Workbench({
     () => selectedDownloadScenes.map((scene) => scene.scene_id),
     [selectedDownloadScenes],
   );
-  const sceneMetadataStats = useMemo(() => {
-    const total = scenes.length;
-    const withFootprint = scenes.filter((scene) => scene.footprint_bbox || scene.footprint_geojson).length;
-    const withCore = scenes.filter(
-      (scene) =>
-        (scene.path || scene.relative_orbit) &&
-        scene.frame &&
-        scene.orbit_direction &&
-        scene.polarization,
-    ).length;
-    return {
-      total,
-      withFootprint,
-      withCore,
-      ready: total > 0 && withFootprint === total && withCore === total,
-    };
-  }, [scenes]);
-
+  const selectedOrbitScenes = useMemo(
+    () => orbitCandidateScenes.filter((scene) => selectedOrbitSceneIds.has(scene.scene_id)),
+    [orbitCandidateScenes, selectedOrbitSceneIds],
+  );
+  const selectedOrbitSceneIdList = useMemo(
+    () => selectedOrbitScenes.map((scene) => scene.scene_id),
+    [selectedOrbitScenes],
+  );
   function selectAllDownloadScenes() {
     setSelectedDownloadSceneIds(new Set(scenes.map((scene) => scene.scene_id).filter(Boolean)));
   }
@@ -1383,8 +1614,40 @@ export function Workbench({
     });
   }
 
+  function selectAllOrbitScenes() {
+    setSelectedOrbitSceneIds(new Set(orbitCandidateScenes.map((scene) => scene.scene_id).filter(Boolean)));
+  }
+
+  function clearOrbitSceneSelection() {
+    setSelectedOrbitSceneIds(new Set());
+  }
+
+  function toggleOrbitScene(sceneId: string, checked?: boolean) {
+    setSelectedOrbitSceneIds((previous) => {
+      const next = new Set(previous);
+      const shouldSelect = checked ?? !next.has(sceneId);
+      if (shouldSelect) next.add(sceneId);
+      else next.delete(sceneId);
+      return next;
+    });
+  }
+
   function highlightScene(sceneId: string | null) {
     setSelectedSceneId(sceneId);
+  }
+
+  function showSceneMetaCard(sceneId: string, event: MouseEvent<HTMLElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setHoveredSceneId(sceneId);
+    setSceneMetaCardPos({
+      x: Math.max(16, Math.min(rect.right + 10, window.innerWidth - 380)),
+      y: Math.max(16, Math.min(rect.top - 8, window.innerHeight - 280)),
+    });
+  }
+
+  function hideSceneMetaCard() {
+    setHoveredSceneId(null);
+    setSceneMetaCardPos(null);
   }
 
   function rememberTask(item: Omit<DownloadArchiveItem, "ts"> & { ts?: number }) {
@@ -1403,7 +1666,9 @@ export function Workbench({
   }
 
   useEffect(() => {
-    if (!dlStatus || !archiveableStates.has(dlStatus.state)) return;
+    if (!dlStatus) return;
+    const archivedState = dlStatus.cancelled ? "cancelled" : dlStatus.state;
+    if (!archiveableStates.has(archivedState)) return;
     const activeNames = (dlStatus.active_downloads ?? [])
       .map((item) => item.scene_id)
       .filter(Boolean)
@@ -1416,17 +1681,18 @@ export function Workbench({
     if (!detail) return;
     rememberTask({
       id: `asf:${dlStatus.results_path || dlStatus.output_dir || "active"}:${dlStatus.total}`,
-      name: "ASF Sentinel-1 数据下载",
-      status: dlStatus.state,
+      name: "Sentinel-1 下载任务",
+      status: archivedState,
       detail,
       kind: "asf",
       output_dir: dlStatus.output_dir || dlStatus.results_path || "",
       total: dlStatus.total,
       concurrency: dlStatus.concurrency || Number(asfConcurrency) || 1,
-      logs: dlStatus.log?.map((line) => line.detail).filter(Boolean) ?? [],
+      logs: dlStatus.log?.map(formatDownloadLogEntry).filter(Boolean) ?? [],
     });
   }, [
     dlStatus?.active_downloads,
+    dlStatus?.cancelled,
     dlStatus?.concurrency,
     dlStatus?.done,
     dlStatus?.error,
@@ -1438,7 +1704,9 @@ export function Workbench({
   ]);
 
   useEffect(() => {
-    if (!orbitStatus || !archiveableStates.has(orbitStatus.state)) return;
+    if (!orbitStatus) return;
+    const archivedState = orbitStatus.cancelled ? "cancelled" : orbitStatus.state;
+    if (!archiveableStates.has(archivedState)) return;
     const detail =
       orbitStatus.error ||
       orbitStatus.summary_line ||
@@ -1449,15 +1717,16 @@ export function Workbench({
     rememberTask({
       id: `orbit:${orbitStatus.orbit_dir || "active"}:${orbitStatus.total}`,
       name: "Sentinel-1 精密轨道下载",
-      status: orbitStatus.state,
+      status: archivedState,
       detail,
       kind: "orbit",
       output_dir: orbitStatus.orbit_dir || "",
       total: orbitStatus.total,
-      logs: orbitStatus.log?.map((line) => line.detail).filter(Boolean) ?? [],
+      logs: orbitStatus.log?.map(formatDownloadLogEntry).filter(Boolean) ?? [],
     });
   }, [
     orbitStatus?.current_scene,
+    orbitStatus?.cancelled,
     orbitStatus?.done,
     orbitStatus?.error,
     orbitStatus?.orbit_dir,
@@ -1468,11 +1737,11 @@ export function Workbench({
 
   useEffect(() => {
     if (!demRun) return;
-    if (demRunSource !== "download") return;
+    if (demRunSource !== "download" && demRunSource !== "download-only") return;
     const outputDir = demRunOutputDir(demRun);
     rememberTask({
       id: `dem:${outputDir || demRun.results_path || demRun.raw_dem_path || demRun.summary_line}:${demRun.total}`,
-      name: "DEM 下载与转换",
+      name: demRunSource === "download-only" ? "仅下载DEM" : "DEM 下载并转换椭球高",
       status: demRun.has_failures ? "failed" : "finished",
       detail: demRun.summary_line,
       kind: "dem",
@@ -1609,6 +1878,7 @@ export function Workbench({
   async function bindBbox(bbox: Bbox) {
     setFocusBbox(bbox);
     setAoiPreviewGeometry(null);
+    setBoundAoiFeatureCount(0);
     setAoiBusy(true);
     setAoiError(null);
     setAoiNote(null);
@@ -1632,6 +1902,7 @@ export function Workbench({
   async function bindPolygon(ring: [number, number][]) {
     const geometry: Json = { type: "Polygon", coordinates: [ring] };
     setAoiPreviewGeometry(geometry);
+    setBoundAoiFeatureCount(0);
     setAoiBusy(true);
     setAoiError(null);
     setAoiNote(null);
@@ -1671,6 +1942,7 @@ export function Workbench({
     setSelectedSceneId(null);
     setFocusBbox(boundary.bbox);
     setAoiPreviewGeometry(boundary.geojson ?? null);
+    setBoundAoiFeatureCount(0);
     setAoiBusy(true);
     setAoiError(null);
     setAoiNote(null);
@@ -1702,10 +1974,34 @@ export function Workbench({
     }
   }
 
+  async function bindChinaBoundary() {
+    setSelectedAdminBoundary({
+      label: "全国",
+      bbox: CHINA_BBOX,
+      geojson: null,
+      source: "内置范围",
+      class: "boundary",
+      type: "administrative",
+    });
+    setAdminResults([]);
+    setAoiPreviewGeometry(null);
+    setFocusBbox(CHINA_BBOX);
+    setDemWest(String(CHINA_BBOX.west));
+    setDemEast(String(CHINA_BBOX.east));
+    setDemSouth(String(CHINA_BBOX.south));
+    setDemNorth(String(CHINA_BBOX.north));
+    await bindBbox(CHINA_BBOX);
+    setAoiNote("已绑定全国范围 AOI。全国范围仅作为快速检索/下载范围，正式边界建议上传权威面文件。");
+  }
+
   async function onSearchAdminBoundary({
     bindFirst = false,
     queryOnly = false,
   }: { bindFirst?: boolean; queryOnly?: boolean } = {}) {
+    if (!queryOnly && adminProvince === "全国") {
+      await bindChinaBoundary();
+      return;
+    }
     setAdminBusy(true);
     setAoiError(null);
     setAoiNote(null);
@@ -1755,7 +2051,38 @@ export function Workbench({
       "AOI boundary (*.shp;*.kml;*.kmz;*.geojson;*.json)",
       "All files (*.*)",
     ]);
-    if (pick.ok && pick.path) setAoiFile(pick.path);
+    if (pick.ok && pick.path) {
+      const nextPath = pick.path.trim();
+      setAoiFile(nextPath);
+      await onPreviewAoiFile(nextPath);
+    }
+  }
+
+  async function onPreviewAoiFile(path = aoiFile) {
+    if (!path.trim()) {
+      setAoiError("请选择 shp/kml/kmz/geojson 边界文件。");
+      return;
+    }
+    setAoiBusy(true);
+    setAoiError(null);
+    setAoiNote(null);
+    try {
+      const res = await previewAoiFile(path);
+      if (!res.ok) {
+        setAoiError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+        return;
+      }
+      setAoiFeaturePreview(res);
+      setAoiFeatureNameField(res.display_field || res.fields[0] || "");
+      setSelectedAoiFeatureIds(new Set(res.features.map((feature) => feature.id)));
+      setAoiFeatureFilter("");
+      setAoiFeaturePickerOpen(true);
+      setAoiNote(`已识别 ${res.total_features} 个边界要素，请选择后再绑定 AOI。`);
+    } catch (e) {
+      setAoiError(formatBridgeError(e));
+    } finally {
+      setAoiBusy(false);
+    }
   }
 
   async function onApplyAoiFile(path = aoiFile) {
@@ -1763,17 +2090,18 @@ export function Workbench({
       setAoiError("请选择 shp/kml/kmz/geojson 边界文件。");
       return;
     }
-    if (!ctx?.region) {
-      setAoiError("请先创建或选择研究区，再上传边界作为 AOI。");
-      return;
-    }
     setAoiBusy(true);
     setAoiError(null);
     setAoiNote(null);
     try {
-      const res = await setRegionAoiFile(path);
+      const selectedIds = Array.from(selectedAoiFeatureIds);
+      const res =
+        aoiFeaturePreview && selectedIds.length > 0
+          ? await setRegionAoiFileFeatures(path, selectedIds, displayedAoiFeatureField, aoiDownloadMode)
+          : await setRegionAoiFile(path);
       if (res.ok) {
         setDrawActive(false);
+        setAoiFeaturePickerOpen(false);
         setAoiPreviewGeometry(res.aoi_geojson ?? null);
         const nextBbox = (res.aoi as { bbox?: Bbox | null }).bbox ?? null;
         if (nextBbox) {
@@ -1783,7 +2111,13 @@ export function Workbench({
           setDemSouth(String(nextBbox.south));
           setDemNorth(String(nextBbox.north));
         }
-        setAoiNote(`已从边界文件绑定 AOI：${res.region_name}`);
+        const featureCount = Number(res.aoi_feature_count ?? selectedIds.length ?? 0);
+        setBoundAoiFeatureCount(featureCount > 1 ? featureCount : 0);
+        setAoiNote(
+          typeof res.aoi_feature_count === "number" && res.aoi_feature_count > 1
+            ? `已导入 ${res.aoi_feature_count} 个边界要素，${aoiDownloadMode === "split" ? "后续任务按拆分模式组织输出" : "已合并绑定为 AOI"}：${res.region_name}`
+            : `已从边界文件绑定 AOI：${res.region_name}`,
+        );
         await refresh();
         await refreshTree();
       } else {
@@ -1824,6 +2158,32 @@ export function Workbench({
     }
   }
 
+  async function handleOrbitSceneImport(action: () => Promise<ReturnType<typeof importScenesText> extends Promise<infer T> ? T : never>) {
+    setSceneBusy(true);
+    setSceneError(null);
+    setSceneNote(null);
+    setMetadataStatus({ ok: true, state: "running", done: 0, total: 1, percent: 0, message: "正在解析用于精密轨道匹配的 SAR 影像" });
+    try {
+      const res = await action();
+      if (res.ok) {
+        setOrbitScenes(res.scenes);
+        setSelectedOrbitSceneIds(new Set(res.scenes.map((scene) => scene.scene_id).filter(Boolean)));
+        setOrbitWorkspaceQuery("");
+        const bits = [`精密轨道候选 ${res.scenes.length} 景`];
+        if (res.duplicates.length) bits.push(`去重 ${res.duplicates.length}`);
+        if (res.errors.length) bits.push(`跳过 ${res.errors.length} 行`);
+        setSceneNote(bits.join(" / "));
+        setMetadataStatus(await getMetadataStatus());
+      } else {
+        setSceneError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+      }
+    } catch (e) {
+      setSceneError(formatBridgeError(e));
+    } finally {
+      setSceneBusy(false);
+    }
+  }
+
   async function onBrowseSceneFile() {
     const pick = await pickOpenFile("选择 ASF 文件", [
       "ASF cart (*.py;*.metalink;*.csv;*.geojson;*.json;*.txt;*.metadata;*.meta;*.met)",
@@ -1832,9 +2192,22 @@ export function Workbench({
     if (pick.ok && pick.path) setSceneFile(pick.path);
   }
 
+  async function onBrowseOrbitSceneFile() {
+    const pick = await pickOpenFile("选择用于轨道匹配的 ASF/SAR 文件", [
+      "ASF cart (*.py;*.metalink;*.csv;*.geojson;*.json;*.txt;*.metadata;*.meta;*.met)",
+      "All files (*.*)",
+    ]);
+    if (pick.ok && pick.path) setOrbitSceneFile(pick.path);
+  }
+
   async function onBrowseSceneDir() {
     const pick = await pickDirectory("选择已有 Sentinel-1 数据目录");
     if (pick.ok && pick.path) setSceneDir(pick.path);
+  }
+
+  async function onBrowseOrbitSceneDir() {
+    const pick = await pickDirectory("选择用于轨道匹配的 SAR 影像目录");
+    if (pick.ok && pick.path) setOrbitSceneDir(pick.path);
   }
 
   async function onRunCheck() {
@@ -1912,6 +2285,10 @@ export function Workbench({
       setScenes([]);
       setSelectedSceneId(null);
       setSelectedDownloadSceneIds(new Set());
+      if (!orbitUsesManualSource) {
+        setSelectedOrbitSceneIds(new Set());
+        setOrbitWorkspaceOpen(false);
+      }
       setHoveredSceneId(null);
       setSceneWorkspaceOpen(false);
       setCheckReport(null);
@@ -1938,10 +2315,13 @@ export function Workbench({
         return;
       }
       setScenes([]);
+      setOrbitScenes([]);
       setSelectedSceneId(null);
       setSelectedDownloadSceneIds(new Set());
+      setSelectedOrbitSceneIds(new Set());
       setHoveredSceneId(null);
       setSceneWorkspaceOpen(false);
+      setOrbitWorkspaceOpen(false);
       setCheckReport(null);
       setAsfPlan(null);
       setAsfSearchSummary(null);
@@ -2006,6 +2386,120 @@ export function Workbench({
       setAsfError(formatBridgeError(e));
     } finally {
       setAsfStartBusy(false);
+    }
+  }
+
+  async function onAppendAsf() {
+    setAsfStartBusy(true);
+    setAsfError(null);
+    try {
+      if (!earthdataCanDownload) {
+        setAsfError(
+          earthdataInvalid
+            ? "Earthdata/ASF 凭据已过期或失效，请在设置里重新保存 Token 或账号密码。"
+            : "追加 Sentinel-1 下载前，请先在设置里保存 Earthdata Token 或账号密码。",
+        );
+        setPanel("settings");
+        return;
+      }
+      if (selectedDownloadSceneIdList.length === 0) {
+        setAsfError("请先在“所选 SAR 数据”中勾选要追加下载的影像。");
+        return;
+      }
+      const out = dlStatus?.output_dir || outputDir || resolvedOutputDir;
+      const extraWorkers = Math.max(1, selectedDownloadSceneIdList.length);
+      const res = await appendAsfDownload(out, extraWorkers, selectedDownloadSceneIdList);
+      if (res.ok) {
+        const next = await getDownloadStatus();
+        setDlStatus(next);
+        if (typeof res.appended === "number") {
+          setAsfSearchNote(res.appended > 0 ? `已追加 ${res.appended} 景到当前下载任务。` : "所选影像已在当前下载任务中。");
+        }
+      } else {
+        setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+      }
+    } catch (e) {
+      setAsfError(formatBridgeError(e));
+    } finally {
+      setAsfStartBusy(false);
+    }
+  }
+
+  async function onDownloadAsfScenes(sceneIds: string[]) {
+    const ids = sceneIds.filter(Boolean);
+    if (ids.length === 0) return;
+    setAsfStartBusy(true);
+    setAsfError(null);
+    try {
+      if (!earthdataCanDownload) {
+        setAsfError(
+          earthdataInvalid
+            ? "Earthdata/ASF 凭据已过期或失效，请在设置里重新保存 Token 或账号密码。"
+            : "开始 Sentinel-1 下载前，请先在设置里保存 Earthdata Token 或账号密码。",
+        );
+        setPanel("settings");
+        return;
+      }
+      if (dlActive) {
+        const out = dlStatus?.output_dir || outputDir || resolvedOutputDir;
+        const res = await appendAsfDownload(out, Math.max(1, ids.length), ids);
+        if (!res.ok) {
+          setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+          return;
+        }
+        if (typeof res.appended === "number") {
+          setAsfSearchNote(res.appended > 0 ? `已追加 ${res.appended} 景到当前下载任务。` : "所选影像已在当前下载任务中。");
+        }
+      } else {
+        const out = await ensureTaskOutput();
+        if (!out) {
+          setAsfError("开始下载前需要确认一个输出目录。");
+          return;
+        }
+        setOutputDir(out);
+        const res = await startAsfDownload(out, "auto", Number(asfConcurrency) || 1, ids);
+        if (!res.ok) {
+          setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+          return;
+        }
+      }
+      setDlStatus(await getDownloadStatus());
+    } catch (e) {
+      setAsfError(formatBridgeError(e));
+    } finally {
+      setAsfStartBusy(false);
+    }
+  }
+
+  async function onPauseAsfScenes(sceneIds: string[]) {
+    const ids = sceneIds.filter(Boolean);
+    if (ids.length === 0) return;
+    setAsfError(null);
+    try {
+      const res = await pauseAsfScenes(ids);
+      if (!res.ok) {
+        setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+        return;
+      }
+      setDlStatus(await getDownloadStatus());
+    } catch (e) {
+      setAsfError(formatBridgeError(e));
+    }
+  }
+
+  async function onResumeAsfScenes(sceneIds: string[]) {
+    const ids = sceneIds.filter(Boolean);
+    if (ids.length === 0) return;
+    setAsfError(null);
+    try {
+      const res = await resumeAsfScenes(ids);
+      if (!res.ok) {
+        setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+        return;
+      }
+      setDlStatus(await getDownloadStatus());
+    } catch (e) {
+      setAsfError(formatBridgeError(e));
     }
   }
 
@@ -2110,26 +2604,23 @@ export function Workbench({
     }
   }
 
-  async function onBrowseOrbitDir() {
-    const pick = await pickDirectory("选择 Sentinel-1 精密轨道 EOF 目录");
-    if (pick.ok && pick.path) setOrbitDir(pick.path);
-  }
-
-  async function onOrbitMatch() {
-    setOrbitBusy(true);
-    setOrbitError(null);
+  async function onDeleteArchivedTask(task: DownloadArchiveItem) {
+    const key = archiveTaskKey(task);
+    setDownloadArchive((prev) => prev.filter((item) => archiveTaskKey(item) !== key));
+    setExpandedHistoryIds((prev) => {
+      const next = new Set(prev);
+      next.delete(task.id);
+      return next;
+    });
     try {
-      const res = await matchOrbitsDirectory(orbitDir);
-      if (res.ok) setOrbitMatch(res);
-      else setOrbitError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
-    } catch (e) {
-      setOrbitError(formatBridgeError(e));
-    } finally {
-      setOrbitBusy(false);
+      await deleteDownloadArchiveItem(task);
+    } catch {
+      // Local deletion still prevents the stale row from staying visible.
     }
   }
 
-  async function onStartOrbit() {
+  async function onStartOrbitScenes(sceneIds: string[]) {
+    const ids = sceneIds.filter(Boolean);
     setOrbitStartBusy(true);
     setOrbitError(null);
     try {
@@ -2138,7 +2629,11 @@ export function Workbench({
         setOrbitError("开始下载轨道前需要确认一个输出目录。");
         return;
       }
-      const res = await startOrbitDownload(out);
+      if (ids.length === 0) {
+        setOrbitError("请先在精密轨道工作台中勾选需要下载轨道的 SAR 影像。");
+        return;
+      }
+      const res = await startOrbitDownload(out, ids);
       if (res.ok) setOrbitStatus(await getOrbitDownloadStatus());
       else setOrbitError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
@@ -2148,7 +2643,11 @@ export function Workbench({
     }
   }
 
-  async function onRunDemDownload() {
+  async function onStartOrbit() {
+    await onStartOrbitScenes(selectedOrbitSceneIdList);
+  }
+
+  async function onRunDemDownload(convert = true) {
     setDemDownloadBusy(true);
     setDemError(null);
     setDemRun(null);
@@ -2169,7 +2668,7 @@ export function Workbench({
         return;
       }
       const res = ctx?.region?.bbox
-        ? await runDemDownload(out, dataset)
+        ? await runDemDownload(out, dataset, "auto", convert)
         : await runDemDownloadBbox(
             manualDemBbox.west,
             manualDemBbox.east,
@@ -2177,9 +2676,11 @@ export function Workbench({
             manualDemBbox.north,
             out,
             dataset,
+            "auto",
+            convert,
           );
       if (res.ok) {
-        setDemRunSource("download");
+        setDemRunSource(convert ? "download" : "download-only");
         setDemRun(res);
       }
       else setDemError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
@@ -2201,7 +2702,7 @@ export function Workbench({
     }
   }
 
-  async function onRunLocalDem() {
+  async function onRunLocalDem(outputMode: "ellipsoid" | "sarscape") {
     setLocalDemBusy(true);
     setDemError(null);
     setDemRun(null);
@@ -2212,9 +2713,9 @@ export function Workbench({
         setDemError("转换本地 DEM 前需要确认一个输出目录。");
         return;
       }
-      const res = await runLocalDemConversion(localDem, out, localDatum);
+      const res = await runLocalDemConversion(localDem, out, localDatum, outputMode);
       if (res.ok) {
-        setDemRunSource("local");
+        setDemRunSource(outputMode === "ellipsoid" ? "local-ellipsoid" : "local-sarscape");
         setDemRun(res);
       }
       else setDemError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
@@ -2321,6 +2822,81 @@ export function Workbench({
     }
   }
 
+  async function onCheckUpdateNow() {
+    setUpdateBusy(true);
+    setUpdateNote(null);
+    try {
+      const res = await checkForUpdate(true);
+      if (res.ok) {
+        setUpdateInfo(res);
+        setUpdateNote(res.message ?? "更新检查完成。");
+      } else {
+        setUpdateNote(formatBridgeError(res));
+      }
+    } catch (e) {
+      setUpdateNote(formatBridgeError(e));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function onDownloadUpdatePackage() {
+    if (!updateInfo?.download_url) {
+      setUpdateNote("当前没有可直接下载的更新包。");
+      return;
+    }
+    setUpdateBusy(true);
+    setUpdateNote(null);
+    try {
+      const res = await downloadAppUpdate(updateInfo.download_url, updateInfo.asset_name ?? "");
+      if (res.ok) {
+        setUpdateNote(`${res.message ?? "更新包已下载。"} 位置：${res.path}`);
+      } else {
+        setUpdateNote(formatBridgeError(res));
+      }
+    } catch (e) {
+      setUpdateNote(formatBridgeError(e));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function onInstallComponent(componentId: string) {
+    setComponentBusy(componentId);
+    setComponentNote(null);
+    try {
+      const res = await installComponent(componentId);
+      if (res.ok) {
+        setComponentStatus(res);
+        setComponentNote("组件安装完成。");
+      } else {
+        setComponentNote(formatBridgeError(res));
+      }
+    } catch (e) {
+      setComponentNote(formatBridgeError(e));
+    } finally {
+      setComponentBusy(null);
+    }
+  }
+
+  async function onRemoveComponent(componentId: string) {
+    setComponentBusy(componentId);
+    setComponentNote(null);
+    try {
+      const res = await removeComponent(componentId);
+      if (res.ok) {
+        setComponentStatus(res);
+        setComponentNote("组件已移除。");
+      } else {
+        setComponentNote(formatBridgeError(res));
+      }
+    } catch (e) {
+      setComponentNote(formatBridgeError(e));
+    } finally {
+      setComponentBusy(null);
+    }
+  }
+
 function renderOutputParameters(
   desc = "任务开始前确认输出根目录；留空时使用当前项目或研究区目录。",
   options?: {
@@ -2329,28 +2905,31 @@ function renderOutputParameters(
     onBrowse?: () => Promise<string>;
     placeholder?: string;
     title?: string;
+    showAoiDownloadMode?: boolean;
   },
 ) {
     const value = options?.value ?? outputDir;
     const onChange = options?.onChange ?? setOutputDir;
     const placeholder = options?.placeholder ?? (value.trim() || "开始任务时选择输出目录");
+    const showAoiDownloadMode = options?.showAoiDownloadMode ?? true;
     return (
-      <div className="space-y-2 rounded-2xl border border-white/45 bg-white/40 p-2.5 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
-        <div className="flex items-center gap-2 text-xs font-medium">
-          <HardDrive className="h-3.5 w-3.5 text-primary" />
-          输出参数
-        </div>
-        <div className="grid grid-cols-[1fr_auto] gap-2">
+      <div className="space-y-2 rounded-2xl border border-white/45 bg-white/40 p-2 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium">
+            <HardDrive className="h-3.5 w-3.5 text-primary" />
+            输出参数
+          </div>
           <Input
             value={value}
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
-            className="font-mono text-xs"
+            className="h-8 min-w-0 font-mono text-xs"
             spellCheck={false}
           />
           <Button
             variant="outline"
             size="icon"
+            className="h-8 w-8"
             onClick={() => void (options?.onBrowse ?? onBrowseOutput)()}
             title={options?.title ?? "浏览输出目录"}
           >
@@ -2358,6 +2937,37 @@ function renderOutputParameters(
           </Button>
         </div>
         <div className="text-[11px] leading-4 text-muted-foreground">{desc}</div>
+        {showAoiDownloadMode && activeAoiFeatureCount > 1 && (
+          <div className="rounded-xl border border-white/55 bg-white/45 px-2 py-1.5 text-xs dark:border-white/10 dark:bg-white/10">
+            <div className="mb-1 font-medium">多要素输出（{activeAoiFeatureCount} 个要素）</div>
+            <div className="grid gap-1 sm:grid-cols-2">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="radio"
+                  checked={aoiDownloadMode === "merge"}
+                  onChange={() => setAoiDownloadMode("merge")}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <span>
+                  <span className="font-medium">合并下载</span>
+                  <span className="ml-1 text-muted-foreground">写入一个目录。</span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="radio"
+                  checked={aoiDownloadMode === "split"}
+                  onChange={() => setAoiDownloadMode("split")}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <span>
+                  <span className="font-medium">拆分下载</span>
+                  <span className="ml-1 text-muted-foreground">按要素建目录。</span>
+                </span>
+              </label>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -2572,8 +3182,8 @@ function renderOutputParameters(
           {aoiFile && (
             <div className="grid grid-cols-[1fr_auto] gap-2">
               <Input value={aoiFile} readOnly className="font-mono text-xs" />
-              <Button variant="outline" onClick={() => void onApplyAoiFile()} disabled={aoiBusy}>
-                绑定
+              <Button variant="outline" onClick={() => void onPreviewAoiFile()} disabled={aoiBusy}>
+                选择要素
               </Button>
             </div>
           )}
@@ -2614,7 +3224,7 @@ function renderOutputParameters(
               onClick={() => setManualAoiOpen((value) => !value)}
               className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-xs"
             >
-              <span className="font-medium">经纬度范围（矩形 AOI / WGS-84）</span>
+              <span className="min-w-0 truncate font-medium">经纬度范围</span>
               <span className="flex items-center gap-2">
                 <Badge variant="neutral">
                   {manualBboxReady ? `面积 ${roughBboxAreaKm2(manualDemBbox)} km²` : "待输入"}
@@ -2647,8 +3257,8 @@ function renderOutputParameters(
               </div>
             )}
           </div>
-          <div className="rounded-2xl border border-white/45 bg-white/35 px-3 py-2 text-[11px] leading-4 text-muted-foreground shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
-            优先使用天地图行政区划服务（需在设置中填写 Token）；未配置或接口不可达时会临时使用备用开放地名源。正式项目建议上传本地权威边界文件。
+          <div className="truncate rounded-xl border border-white/45 bg-white/32 px-3 py-1.5 text-[11px] leading-4 text-muted-foreground shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
+            正式项目建议上传权威边界文件：内置行政区适合快速筛选和预览。
           </div>
           <ErrorLine text={aoiError} />
           <NoteLine text={aoiNote} />
@@ -2657,14 +3267,200 @@ function renderOutputParameters(
     );
   }
 
+  function renderAoiFeaturePickerOverlay() {
+    if (!aoiFeaturePickerOpen || !aoiFeaturePreview) return null;
+    const filteredIds = new Set(filteredAoiFeatures.map((feature) => feature.id));
+    const visibleSelected = filteredAoiFeatures.filter((feature) => selectedAoiFeatureIds.has(feature.id)).length;
+    const toggleFeature = (feature: AoiFeaturePreview, checked: boolean) => {
+      setSelectedAoiFeatureIds((prev) => {
+        const next = new Set(prev);
+        if (checked) next.add(feature.id);
+        else next.delete(feature.id);
+        return next;
+      });
+    };
+    return (
+      <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/24 p-4 backdrop-blur-sm">
+        <div className="flex max-h-[86vh] w-[min(920px,calc(100vw-32px))] flex-col overflow-hidden rounded-[24px] border border-white/70 bg-white/94 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/94">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border/60 px-5 py-4">
+            <div className="min-w-0">
+              <div className="truncate text-lg font-semibold">
+                导入区域 - {aoiFeaturePreview.file_name}（{aoiFeaturePreview.total_features} 个要素）
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                已选 {selectedAoiFeatureIds.size} / {aoiFeaturePreview.total_features}
+                {selectedAoiAreaKm2 > 0 ? ` · 约 ${selectedAoiAreaKm2.toLocaleString(undefined, { maximumFractionDigits: 2 })} km²` : ""}
+              </div>
+            </div>
+            <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full" onClick={() => setAoiFeaturePickerOpen(false)}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="shrink-0 space-y-3 border-b border-border/60 px-5 py-3">
+            <div className="grid gap-2 md:grid-cols-[minmax(180px,260px)_minmax(0,1fr)_auto_auto_auto_auto]">
+              <select
+                value={displayedAoiFeatureField}
+                onChange={(event) => setAoiFeatureNameField(event.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-card px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                title="显示名称字段"
+              >
+                {aoiFeaturePreview.fields.length ? (
+                  aoiFeaturePreview.fields.map((field) => (
+                    <option key={field} value={field}>
+                      {field}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">无属性字段</option>
+                )}
+              </select>
+              <Input
+                value={aoiFeatureFilter}
+                onChange={(event) => setAoiFeatureFilter(event.target.value)}
+                placeholder="按名称、编号或字段值筛选要素"
+              />
+              <Button
+                variant="outline"
+                onClick={() => setSelectedAoiFeatureIds(new Set(aoiFeaturePreview.features.map((feature) => feature.id)))}
+              >
+                全选
+              </Button>
+              <Button variant="outline" onClick={() => setSelectedAoiFeatureIds(new Set())}>
+                清空
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  setSelectedAoiFeatureIds((prev) => {
+                    const next = new Set(prev);
+                    aoiFeaturePreview.features.forEach((feature) => {
+                      if (next.has(feature.id)) next.delete(feature.id);
+                      else next.add(feature.id);
+                    });
+                    return next;
+                  })
+                }
+              >
+                反选
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  setSelectedAoiFeatureIds((prev) => {
+                    const next = new Set(prev);
+                    filteredAoiFeatures.forEach((feature) => next.add(feature.id));
+                    return next;
+                  })
+                }
+              >
+                选筛选
+              </Button>
+            </div>
+
+            <div className="rounded-2xl border border-white/60 bg-white/55 p-2 text-xs dark:border-white/10 dark:bg-white/10">
+              <div className="mb-1 font-medium">多要素下载方式</div>
+              <div className="grid gap-2 md:grid-cols-2">
+                <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-primary/25 bg-primary/8 px-3 py-2">
+                  <input
+                    type="radio"
+                    checked={aoiDownloadMode === "merge"}
+                    onChange={() => setAoiDownloadMode("merge")}
+                    className="mt-0.5 h-4 w-4 accent-primary"
+                  />
+                  <span>
+                    <span className="block font-medium">合并下载</span>
+                    <span className="text-muted-foreground">默认：所有要素合并为一个 AOI，SLC/DEM/Orbit 输出到同一任务目录。</span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-white/60 bg-white/45 px-3 py-2 dark:border-white/10 dark:bg-white/10">
+                  <input
+                    type="radio"
+                    checked={aoiDownloadMode === "split"}
+                    onChange={() => setAoiDownloadMode("split")}
+                    className="mt-0.5 h-4 w-4 accent-primary"
+                  />
+                  <span>
+                    <span className="block font-medium">拆分下载</span>
+                    <span className="text-muted-foreground">按要素名分别组织目录；后续 SLC、DEM、Orbit 将复用这个配置。</span>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+            <div className="overflow-hidden rounded-2xl border">
+              <div className="grid grid-cols-[42px_64px_minmax(0,1fr)_120px] border-b bg-muted/45 px-3 py-2 text-xs font-medium">
+                <span>选</span>
+                <span>#</span>
+                <span>名称</span>
+                <span className="text-right">面积 km²</span>
+              </div>
+              {filteredAoiFeatures.length ? (
+                filteredAoiFeatures.map((feature) => {
+                  const fieldValue = displayedAoiFeatureField
+                    ? String(feature.properties?.[displayedAoiFeatureField] ?? "")
+                    : "";
+                  const title = fieldValue && fieldValue !== feature.name ? `${feature.name} · ${fieldValue}` : feature.name;
+                  return (
+                    <label
+                      key={feature.id}
+                      className="grid cursor-pointer grid-cols-[42px_64px_minmax(0,1fr)_120px] items-center border-b px-3 py-2 text-xs last:border-b-0 hover:bg-muted/35"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedAoiFeatureIds.has(feature.id)}
+                        onChange={(event) => toggleFeature(feature, event.currentTarget.checked)}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      <span className="text-muted-foreground">{feature.index}</span>
+                      <span className="truncate" title={title}>
+                        {fieldValue || feature.name}
+                      </span>
+                      <span className="text-right font-mono text-muted-foreground">
+                        {Number(feature.area_km2 || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </span>
+                    </label>
+                  );
+                })
+              ) : (
+                <div className="px-3 py-8 text-center text-sm text-muted-foreground">没有匹配的要素。</div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border/60 px-5 py-4">
+            <div className="text-xs text-muted-foreground">
+              当前筛选 {filteredAoiFeatures.length} 个，已选其中 {visibleSelected} 个。
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => setAoiFeaturePickerOpen(false)}>
+                取消
+              </Button>
+              <Button
+                onClick={() => void onApplyAoiFile(aoiFeaturePreview.path)}
+                disabled={aoiBusy || selectedAoiFeatureIds.size === 0}
+              >
+                {aoiBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MapPinned className="h-4 w-4" />}
+                导入选中的 {selectedAoiFeatureIds.size} 个要素
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderAsfSearchSection() {
     return (
-      <Section
-        title="ASF 筛选"
-        desc="按当前 AOI、日期、产品类型、轨道、束模式和极化筛选；没有 AOI 也可检索。"
-        icon={Search}
-      >
-        <div className="space-y-3">
+      <div data-tour="asf-filter">
+        <Section
+          title="ASF 筛选"
+          desc="按当前 AOI、日期、产品类型、轨道、束模式和极化筛选；没有 AOI 也可检索。"
+          icon={Search}
+        >
+          <div className="space-y-3">
           <div className="grid grid-cols-2 gap-2">
             <select
               value={asfSearchProduct}
@@ -2796,49 +3592,91 @@ function renderOutputParameters(
           </div>
           <ErrorLine text={asfSearchError} />
           <NoteLine text={asfSearchNote} />
-        </div>
-      </Section>
+          </div>
+        </Section>
+      </div>
     );
   }
 
-  function renderSceneSourceControls(desc: string) {
+  function renderSceneSourceControls(desc: string, target: "download" | "orbit" = "download") {
+    const isOrbitTarget = target === "orbit";
+    const sourceScenes = isOrbitTarget ? orbitCandidateScenes : scenes;
+    const sourceFile = isOrbitTarget ? orbitSceneFile : sceneFile;
+    const sourceDir = isOrbitTarget ? orbitSceneDir : sceneDir;
+    const setSourceFile = isOrbitTarget ? setOrbitSceneFile : setSceneFile;
+    const setSourceDir = isOrbitTarget ? setOrbitSceneDir : setSceneDir;
+    const sourceStats = {
+      total: sourceScenes.length,
+      withFootprint: sourceScenes.filter((scene) => scene.footprint_bbox || scene.footprint_geojson).length,
+      withCore: sourceScenes.filter(
+        (scene) =>
+          (scene.path || scene.relative_orbit) &&
+          scene.frame &&
+          scene.orbit_direction &&
+          scene.polarization,
+      ).length,
+    };
+    const sourceReady =
+      sourceStats.total > 0 &&
+      sourceStats.withFootprint === sourceStats.total &&
+      sourceStats.withCore === sourceStats.total;
+    const importFile = isOrbitTarget
+      ? () => handleOrbitSceneImport(() => previewScenesFile(sourceFile))
+      : () => handleSceneImport(() => importScenesFile(sourceFile));
+    const importDir = isOrbitTarget
+      ? () => handleOrbitSceneImport(() => previewScenesDirectory(sourceDir))
+      : () => handleSceneImport(() => importScenesDirectory(sourceDir));
     return (
-      <Section title="SAR 影像来源" desc={desc} icon={Satellite}>
+      <Section title={isOrbitTarget ? "精密轨道匹配" : "SAR 影像来源"} desc={desc} icon={isOrbitTarget ? Orbit : Satellite}>
         <div className="space-y-3">
           <div className="grid grid-cols-[1fr_auto_auto] gap-2">
             <Input
-              value={sceneFile}
-              onChange={(e) => setSceneFile(e.target.value)}
+              value={sourceFile}
+              onChange={(e) => setSourceFile(e.target.value)}
               placeholder="ASF 官方 py / metalink / metadata / CSV / GeoJSON"
               className="font-mono text-xs"
               spellCheck={false}
             />
-            <Button variant="outline" size="icon" onClick={onBrowseSceneFile} title="选择 ASF 官方文件">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={isOrbitTarget ? onBrowseOrbitSceneFile : onBrowseSceneFile}
+              title={isOrbitTarget ? "选择用于轨道匹配的 ASF 官方文件" : "选择 ASF 官方文件"}
+            >
               <FolderOpen className="h-4 w-4" />
             </Button>
             <Button
               variant="outline"
-              onClick={() => void handleSceneImport(() => importScenesFile(sceneFile))}
-              disabled={sceneBusy || !sceneFile.trim()}
+              onClick={() => void importFile()}
+              disabled={sceneBusy || !sourceFile.trim()}
             >
               导入
             </Button>
           </div>
           <div className="grid grid-cols-[1fr_auto_auto] gap-2">
             <Input
-              value={sceneDir}
-              onChange={(e) => setSceneDir(e.target.value)}
-              placeholder="SAR 影像目录（.SAFE / .zip，支持 SLC、GRD、RAW、OCN 文件名识别）"
+              value={sourceDir}
+              onChange={(e) => setSourceDir(e.target.value)}
+              placeholder={
+                isOrbitTarget
+                  ? "SAR 影像目录（用于解析采集日期和轨道号，不是 EOF 目录）"
+                  : "SAR 影像目录（.SAFE / .zip，支持 SLC、GRD、RAW、OCN 文件名识别）"
+              }
               className="font-mono text-xs"
               spellCheck={false}
             />
-            <Button variant="outline" size="icon" onClick={onBrowseSceneDir} title="选择 SAR 影像目录">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={isOrbitTarget ? onBrowseOrbitSceneDir : onBrowseSceneDir}
+              title={isOrbitTarget ? "选择用于轨道匹配的 SAR 影像目录" : "选择 SAR 影像目录"}
+            >
               <FolderOpen className="h-4 w-4" />
             </Button>
             <Button
               variant="outline"
-              onClick={() => void handleSceneImport(() => importScenesDirectory(sceneDir))}
-              disabled={sceneBusy || !sceneDir.trim()}
+              onClick={() => void importDir()}
+              disabled={sceneBusy || !sourceDir.trim()}
             >
               识别
             </Button>
@@ -2858,23 +3696,55 @@ function renderOutputParameters(
           <div
             className={cn(
               "rounded-2xl border p-3 text-xs shadow-sm backdrop-blur-xl",
-              sceneMetadataStats.ready
+              sourceReady
                 ? "border-success/35 bg-success/10"
-                : sceneMetadataStats.withFootprint > 0 || sceneMetadataStats.withCore > 0
+                : sourceStats.withFootprint > 0 || sourceStats.withCore > 0
                   ? "border-primary/30 bg-primary/10"
                   : "border-white/45 bg-white/35 dark:border-white/10 dark:bg-white/10",
             )}
           >
-            {kv("当前场景", scenes.length ? `${scenes.length} 景` : "未导入")}
+            {kv(isOrbitTarget ? "轨道候选" : "当前场景", sourceScenes.length ? `${sourceScenes.length} 景` : "未导入")}
+            {isOrbitTarget &&
+              kv("候选来源", orbitUsesManualSource ? "手动导入的轨道匹配影像" : scenes.length ? "沿用 Sentinel-1 检索结果" : "等待 Sentinel-1 检索或手动导入")}
             {kv(
               "元数据",
-              sceneMetadataStats.total
-                ? sceneMetadataStats.ready
+              sourceStats.total
+                ? sourceReady
                   ? "已补全 SAR 范围、Path、Frame、升降轨、极化"
-                  : `已补全范围 ${sceneMetadataStats.withFootprint}/${sceneMetadataStats.total}，核心字段 ${sceneMetadataStats.withCore}/${sceneMetadataStats.total}`
+                  : `已补全范围 ${sourceStats.withFootprint}/${sourceStats.total}，核心字段 ${sourceStats.withCore}/${sourceStats.total}`
                 : "导入后会尝试补全",
             )}
           </div>
+          {isOrbitTarget && orbitUsesManualSource && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setOrbitScenes([]);
+                setOrbitSceneFile("");
+                setOrbitSceneDir("");
+                setSceneNote("已恢复沿用 Sentinel-1 检索/导入结果作为精密轨道候选。");
+                void clearOrbitCandidateScenes();
+              }}
+            >
+              恢复使用 Sentinel-1 检索结果
+            </Button>
+          )}
+          {sourceScenes.length > 0 && (
+            <div className="grid grid-cols-3 gap-2">
+              <Button size="sm" variant="outline" onClick={isOrbitTarget ? selectAllOrbitScenes : selectAllDownloadScenes}>
+                全选
+              </Button>
+              <Button size="sm" variant="outline" onClick={isOrbitTarget ? clearOrbitSceneSelection : clearDownloadSceneSelection}>
+                清空选择
+              </Button>
+              <Button size="sm" onClick={() => (isOrbitTarget ? setOrbitWorkspaceOpen(true) : setSceneWorkspaceOpen(true))}>
+                <Maximize2 className="h-3.5 w-3.5" />
+                打开工作台
+              </Button>
+            </div>
+          )}
           <ErrorLine text={sceneError} />
           <NoteLine text={sceneNote} />
         </div>
@@ -2894,7 +3764,7 @@ function renderOutputParameters(
       >
         <div className="space-y-3">
           {scenes.length > 0 && (
-            <div className="relative rounded-md border bg-muted/30" onMouseLeave={() => setHoveredSceneId(null)}>
+            <div className="relative rounded-md border bg-muted/30" onMouseLeave={hideSceneMetaCard}>
               <div className="flex items-center justify-between border-b px-3 py-2 text-xs">
                 <span className="font-medium">
                   {selectedDownloadSceneIdList.length} / {scenes.length} 景加入下载 · 点击场景只高亮边框
@@ -2943,8 +3813,9 @@ function renderOutputParameters(
                       </div>
                       <span
                         className="rounded-full p-1 text-muted-foreground transition-colors hover:bg-white/60 hover:text-foreground dark:hover:bg-white/10"
-                        onMouseEnter={() => setHoveredSceneId(scene.scene_id)}
-                        onMouseLeave={() => setHoveredSceneId(null)}
+                        onMouseEnter={(event) => showSceneMetaCard(scene.scene_id, event)}
+                        onMouseMove={(event) => showSceneMetaCard(scene.scene_id, event)}
+                        onMouseLeave={hideSceneMetaCard}
                         title="查看元数据"
                       >
                         <Info className="h-3.5 w-3.5 shrink-0" />
@@ -2964,6 +3835,7 @@ function renderOutputParameters(
                         {scene.footprint_bbox ? "有范围" : "无范围"}
                       </Badge>
                       <Badge
+                        className="px-2 py-0.5 text-[11px]"
                         variant={
                           (scene.footprint_bbox || scene.footprint_geojson) &&
                           (scene.path || scene.relative_orbit) &&
@@ -2984,8 +3856,11 @@ function renderOutputParameters(
                   </div>
                 ))}
               </div>
-              {hoveredScene && (
-                <div className="pointer-events-none absolute right-2 top-12 z-[80]">
+              {hoveredScene && sceneMetaCardPos && (
+                <div
+                  className="pointer-events-none fixed z-[900]"
+                  style={{ left: sceneMetaCardPos.x, top: sceneMetaCardPos.y }}
+                >
                   <SceneMetaCard scene={hoveredScene} />
                 </div>
               )}
@@ -3011,11 +3886,8 @@ function renderOutputParameters(
     );
   }
 
-  function renderSentinel1Panel() {
+  function renderManualSceneImportSection() {
     return (
-      <div className="space-y-3">
-        {renderAsfSearchSection()}
-        {renderSceneResultSection()}
         <Section
           title="ASF 文件 / URL 手动导入"
           desc="已有 ASF 官方 py、metalink、metadata、CSV、GeoJSON、下载 URL 或颗粒名时，从这里导入并补全元数据。"
@@ -3071,6 +3943,15 @@ function renderOutputParameters(
             <NoteLine text={sceneNote} />
           </div>
         </Section>
+    );
+  }
+
+  function renderSentinel1Panel() {
+    return (
+      <div className="space-y-3">
+        {renderAsfSearchSection()}
+        {renderManualSceneImportSection()}
+        {renderSceneResultSection()}
         <Section
           title="Sentinel-1 下载"
           desc="开始下载时才确认输出目录；支持暂停、继续、结束和 .part 断点续传。"
@@ -3173,7 +4054,14 @@ function renderOutputParameters(
   function renderDemResultCard() {
     if (!demRun) return null;
     const logs = demRunLogLines(demRun);
-    const title = demRunSource === "local" ? "本地 DEM 转换结果" : "DEM 下载与转换结果";
+    const title =
+      demRunSource === "local-ellipsoid"
+        ? "本地 DEM 椭球高转换结果"
+        : demRunSource === "local-sarscape"
+          ? "本地 DEM SARscape 格式转换结果"
+        : demRunSource === "download-only"
+          ? "DEM 仅下载结果"
+          : "DEM 下载并转换椭球高结果";
     const skipped = Number(demRun.skipped ?? 0);
     const demPaths = demRunDisplayPaths(demRun);
     return (
@@ -3199,8 +4087,12 @@ function renderOutputParameters(
         <div className="mt-3 space-y-2">
           {[
             { label: "原始 DEM", path: demPaths.raw },
-            { label: "椭球高 DEM", path: demPaths.ellipsoid },
-            { label: "SARscape DEM", path: demPaths.sarscape },
+            ...(demRunSource === "download-only"
+              ? []
+              : [
+                  { label: "椭球高 DEM", path: demPaths.ellipsoid },
+                  ...(demRunSource === "local-ellipsoid" ? [] : [{ label: "SARscape DEM", path: demPaths.sarscape }]),
+                ]),
           ].map(({ label, path }) => (
             <div key={label} className="rounded-md border bg-muted/20 p-2">
               <div className="flex items-center justify-between gap-2">
@@ -3245,8 +4137,8 @@ function renderOutputParameters(
     return (
       <div className="space-y-3">
         <Section
-          title="DEM 下载并转换"
-          desc="下载后自动保留原始 tif，同时输出椭球高 tif 和 SARscape 所需 _dem 后缀文件。"
+          title="DEM 下载"
+          desc="可仅下载原始 GeoTIFF，也可下载后转换为椭球高并导出 SARscape 所需 _dem 后缀文件。"
           icon={Mountain}
         >
           <div className="space-y-3">
@@ -3292,7 +4184,7 @@ function renderOutputParameters(
                 {kv("SARscape 头文件", `${previewStem}_dem.hdr`)}
               </div>
               <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
-                OpenTopography 在线接口返回原始 GeoTIFF；软件会先生成椭球高 GeoTIFF，再导出 SARscape 常用的 ENVI _dem + .hdr。
+                仅下载时只保存原始 GeoTIFF；下载并转换时会生成椭球高 GeoTIFF，并导出 SARscape 常用的 ENVI _dem + .hdr。
               </div>
             </div>
             {renderOutputParameters("保存原始 GeoTIFF、椭球高 GeoTIFF 和 SARscape *_dem + *.hdr。", {
@@ -3316,15 +4208,27 @@ function renderOutputParameters(
                 </div>
               </div>
             )}
-            <Button
-              onClick={onRunDemDownload}
-              disabled={demDownloadBusy || !opentopoConfigured}
-              className="w-full"
-              title={!opentopoConfigured ? "请先在设置里保存 OpenTopography API Key" : undefined}
-            >
-              {demDownloadBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
-              下载并转换 DEM
-            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                variant="outline"
+                onClick={() => void onRunDemDownload(false)}
+                disabled={demDownloadBusy || !opentopoConfigured}
+                className="w-full"
+                title={!opentopoConfigured ? "请先在设置里保存 OpenTopography API Key" : "仅下载原始 GeoTIFF，不执行椭球高/SARscape 转换"}
+              >
+                {demDownloadBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+                仅下载DEM
+              </Button>
+              <Button
+                onClick={() => void onRunDemDownload(true)}
+                disabled={demDownloadBusy || !opentopoConfigured}
+                className="w-full"
+                title={!opentopoConfigured ? "请先在设置里保存 OpenTopography API Key" : undefined}
+              >
+                {demDownloadBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+                下载并转换椭球高
+              </Button>
+            </div>
             <ErrorLine text={demError} />
           </div>
         </Section>
@@ -3356,11 +4260,28 @@ function renderOutputParameters(
               onBrowse: onBrowseLocalDemOutput,
               placeholder: localPreviewOutputRoot,
               title: "浏览本地 DEM 转换输出目录",
+              showAoiDownloadMode: false,
             })}
-            <Button variant="outline" onClick={onRunLocalDem} disabled={localDemBusy || !localDem} className="w-full">
-              {localDemBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              转换为 SARscape DEM
-            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                variant="outline"
+                onClick={() => void onRunLocalDem("ellipsoid")}
+                disabled={localDemBusy || !localDem}
+                className="w-full"
+              >
+                {localDemBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                转换椭球高
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => void onRunLocalDem("sarscape")}
+                disabled={localDemBusy || !localDem}
+                className="w-full"
+              >
+                {localDemBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                转换SARscape格式
+              </Button>
+            </div>
           </div>
         </Section>
         {renderDemResultCard()}
@@ -3372,48 +4293,39 @@ function renderOutputParameters(
     return (
       <div className="space-y-3">
         {renderSceneSourceControls(
-          "精密轨道根据 SAR 影像名解析平台、采集日期和轨道号；可导入 ASF 官方 py、metalink、metadata，或扫描本地 SAR 影像目录。",
+          "从 SAR 影像文件名或 ASF 官方文件中解析平台、采集日期和轨道号，用于匹配或下载对应 POEORB/EOF。",
+          "orbit",
         )}
         <Section
-          title="精密轨道"
-          desc="根据已导入的 SAR 影像匹配或下载 POEORB；太新的影像可能因精密轨道尚未发布而显示不可用原因。"
+          title="精密轨道下载"
+          desc="按上方候选 SAR 影像下载配套 POEORB；太新的影像会显示精密轨道尚未发布等不可用原因。"
           icon={Orbit}
         >
           <div className="space-y-3">
-            <div className="grid grid-cols-[1fr_auto] gap-2">
-              <Input
-                value={orbitDir}
-                onChange={(e) => setOrbitDir(e.target.value)}
-                placeholder="已有轨道 EOF 目录（可选，仅用于扫描匹配）"
-                className="font-mono text-xs"
-                spellCheck={false}
-              />
-              <Button variant="outline" size="icon" onClick={onBrowseOrbitDir}>
-                <FolderOpen className="h-4 w-4" />
-              </Button>
+            <div className="rounded-2xl border border-white/50 bg-white/45 p-3 text-xs shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-medium">精密轨道候选</div>
+                  <div className="mt-1 text-muted-foreground">
+                    已勾选 {selectedOrbitSceneIdList.length} / {orbitCandidateScenes.length} 景 SAR 影像；默认沿用 Sentinel-1 检索结果，也可单独导入文件匹配轨道。
+                  </div>
+                </div>
+                <Button size="sm" variant="outline" onClick={() => setOrbitWorkspaceOpen(true)} disabled={orbitCandidateScenes.length === 0}>
+                  <Maximize2 className="h-3.5 w-3.5" />
+                  轨道工作台
+                </Button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <Button variant="outline" onClick={onOrbitMatch} disabled={orbitBusy || !orbitDir.trim() || scenes.length === 0}>
-                {orbitBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                扫描匹配
-              </Button>
-              <Button onClick={onStartOrbit} disabled={orbitStartBusy || orbitActive || scenes.length === 0}>
-                {orbitStartBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
-                下载 POEORB
-              </Button>
-            </div>
+            <Button onClick={onStartOrbit} disabled={orbitStartBusy || orbitActive || selectedOrbitSceneIdList.length === 0} className="w-full">
+              {orbitStartBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+              下载所选轨道
+            </Button>
             {renderOutputParameters("轨道下载会自动写入 输出根目录\\Sentinel_Orbit\\AUX_POEORB。")}
             <div className="rounded-md border bg-muted/30 p-3 text-xs">
               {kv("自动目录", "Sentinel_Orbit\\AUX_POEORB")}
               {kv("控制说明", "暂停/结束会在当前 EOF 请求结束后生效")}
             </div>
             <ErrorLine text={orbitError} />
-            {orbitMatch && (
-              <div className="rounded-md border bg-muted/30 p-3 text-xs">
-                {kv("EOF 文件", orbitMatch.orbit_files)}
-                {kv("匹配", `${String(orbitMatch.report.matched_scenes ?? 0)} / ${String(orbitMatch.report.total_scenes ?? 0)} 景`)}
-              </div>
-            )}
           </div>
         </Section>
       </div>
@@ -3546,7 +4458,7 @@ function renderOutputParameters(
       dlStatus && dlVisible
         ? {
             id: "asf-active",
-            name: "ASF Sentinel-1 数据下载",
+            name: "Sentinel-1 数据下载",
             status: dlStatus.state,
             progress: dlPct,
             count: `${dlStatus.done}/${dlStatus.total}`,
@@ -3618,7 +4530,7 @@ function renderOutputParameters(
                 打开下载工作台
               </Button>
             ),
-            log: dlStatus.log?.map((line) => line.detail) ?? [],
+            log: dlStatus.log?.map(formatDownloadLogEntry) ?? [],
           }
         : null,
       orbitStatus && orbitActive
@@ -3676,7 +4588,20 @@ function renderOutputParameters(
                 </Button>
               </div>
             ),
-            log: orbitStatus.log?.map((line) => line.detail) ?? [],
+            workspaceAction: (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="w-full justify-center"
+                disabled={orbitCandidateScenes.length === 0}
+                onClick={() => setOrbitWorkspaceOpen(true)}
+              >
+                <Orbit className="h-4 w-4" />
+                打开轨道工作台
+              </Button>
+            ),
+            log: orbitStatus.log?.map(formatDownloadLogEntry) ?? [],
           }
         : null,
     ].filter(Boolean) as {
@@ -3717,22 +4642,28 @@ function renderOutputParameters(
             : "上次未完成的任务已保留；点击继续会重新进入队列并跳过已完成文件。",
         activeDownloads: [],
         workspaceAction:
-          kind === "asf" ? (
+          kind === "asf" || kind === "orbit" ? (
             <Button
               type="button"
               variant="secondary"
               size="sm"
               className="w-full justify-center"
-              disabled={scenes.length === 0}
-              title={scenes.length === 0 ? "请先完成 ASF 检索或导入，才能打开每景影像工作台。" : undefined}
-              onClick={() => setSceneWorkspaceOpen(true)}
+              disabled={kind === "orbit" ? orbitCandidateScenes.length === 0 : scenes.length === 0}
+              title={
+                (kind === "orbit" ? orbitCandidateScenes.length === 0 : scenes.length === 0)
+                  ? kind === "orbit"
+                    ? "请先在精密轨道匹配中导入 SAR 影像，才能选择需要下载轨道的影像。"
+                    : "请先完成 ASF 检索或导入，才能打开每景影像工作台。"
+                  : undefined
+              }
+              onClick={() => (kind === "orbit" ? setOrbitWorkspaceOpen(true) : setSceneWorkspaceOpen(true))}
             >
-              <Satellite className="h-4 w-4" />
-              打开下载工作台
+              {kind === "orbit" ? <Orbit className="h-4 w-4" /> : <Satellite className="h-4 w-4" />}
+              {kind === "orbit" ? "打开轨道工作台" : "打开下载工作台"}
             </Button>
           ) : null,
         metrics: [
-          ["类型", kind === "asf" ? "ASF Sentinel-1" : "精密轨道"],
+          ["类型", kind === "asf" ? "Sentinel-1" : "精密轨道"],
           ["输出目录", out ? pathBaseName(out) : "-"],
           ["上次状态", statusLabel(task.status)],
           ["记录时间", task.ts ? new Date(task.ts).toLocaleString() : "-"],
@@ -3755,12 +4686,13 @@ function renderOutputParameters(
                 setDownloadArchive((prev) =>
                   prev.map((item) =>
                     archiveTaskKey(item) === archiveTaskKey(task)
-                      ? {
-                          ...item,
-                          status: "cancelled",
-                          detail: "用户已结束该保留任务。",
-                          logs: [...(item.logs ?? []), "用户已结束该保留任务。"].slice(-120),
-                        }
+                        ? {
+                            ...item,
+                            status: "cancelled",
+                            detail: "用户已结束该保留任务。",
+                            ts: Date.now(),
+                            logs: [...(item.logs ?? []), `[${formatLogTime(Date.now())}] 用户已结束该保留任务。`].slice(-120),
+                          }
                       : item,
                   ),
                 )
@@ -3775,7 +4707,7 @@ function renderOutputParameters(
       };
     });
     const queueTasks = [...activeTasks, ...archivedQueueItems];
-    const historyTasks = archiveItems.filter((task) => !isRestorableArchiveTask(task));
+    const historyTasks = archiveItems.filter((task) => task.status !== "deleted" && !isRestorableArchiveTask(task));
 
     return (
       <div className="space-y-3">
@@ -3877,7 +4809,7 @@ function renderOutputParameters(
           </div>
         </Section>
 
-        <Section title="历史记录" desc="完成、失败、结束和已删除的任务会归档到这里。" icon={Database}>
+        <Section title="历史记录" desc="完成、失败和结束的任务会归档到这里；删除后不再显示。" icon={Database}>
           <div className="space-y-2">
             {historyTasks.length === 0 ? (
               <div className="rounded-md border border-dashed py-8 text-center text-xs text-muted-foreground">
@@ -3885,11 +4817,11 @@ function renderOutputParameters(
               </div>
             ) : (
               historyTasks.map((task) => (
-                <div key={task.id} className="rounded-lg border bg-card p-3">
-                  <div className="flex items-start justify-between gap-3">
+                <div key={task.id} className="rounded-lg border bg-card px-3 py-2.5">
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      className="min-w-0 flex-1 text-left"
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
                       onClick={() =>
                         setExpandedHistoryIds((prev) => {
                           const next = new Set(prev);
@@ -3899,20 +4831,14 @@ function renderOutputParameters(
                         })
                       }
                     >
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        {expandedHistoryIds.has(task.id) ? (
-                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        ) : (
-                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        )}
-                        <div className="truncate text-sm font-semibold">{task.name}</div>
-                      </div>
-                      <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{task.detail}</div>
-                      <div className="mt-1 text-[11px] text-muted-foreground">
-                        {new Date(task.ts).toLocaleString()}
-                      </div>
+                      {expandedHistoryIds.has(task.id) ? (
+                        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="truncate text-sm font-semibold">{archiveTaskDisplayTitle(task)}</span>
                     </button>
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-1.5">
                       <Badge
                         variant={
                           task.status === "finished"
@@ -3928,7 +4854,7 @@ function renderOutputParameters(
                         <Button
                           variant="outline"
                           size="sm"
-                          className="h-8 px-2"
+                          className="h-7 px-2 text-xs"
                           disabled={restoringTaskKeys.has(archiveTaskKey(task))}
                           onClick={() => void onResumeArchivedTask(task)}
                           title="使用原输出目录重新进入队列；完整文件会跳过，.part 文件会断点续传"
@@ -3945,22 +4871,34 @@ function renderOutputParameters(
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                          onClick={() => {
-                            const key = archiveTaskKey(task);
-                            setDownloadArchive((prev) => prev.filter((item) => archiveTaskKey(item) !== key));
-                            setExpandedHistoryIds((prev) => {
-                              const next = new Set(prev);
-                              next.delete(task.id);
-                              return next;
-                            });
-                          }}
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => void onDeleteArchivedTask(task)}
                           title="删除历史记录"
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       )}
                     </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="mt-1.5 grid w-full grid-cols-[minmax(0,1fr)_auto] gap-2 text-left text-xs text-muted-foreground"
+                    onClick={() =>
+                      setExpandedHistoryIds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(task.id)) next.delete(task.id);
+                        else next.add(task.id);
+                        return next;
+                      })
+                    }
+                  >
+                    <span className="truncate">{task.detail}</span>
+                    <span className="shrink-0 font-mono text-[11px]">
+                      {formatLogTime(task.ts) || new Date(task.ts).toLocaleString()}
+                    </span>
+                  </button>
+                  <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                    {archiveTaskInlineMeta(task)}
                   </div>
                   {expandedHistoryIds.has(task.id) && (
                     <div className="mt-3 max-h-52 overflow-y-auto rounded-md border bg-muted/20 p-2 font-mono text-[11px] leading-5">
@@ -4001,6 +4939,9 @@ function renderOutputParameters(
         detail: `${fmtBytes(active.bytes)}${active.expected_size ? ` / ${fmtBytes(active.expected_size)}` : ""}`,
       };
     }
+    if (pausedAsfSceneIds.has(scene.scene_id)) {
+      return { label: "已暂停", variant: "warning" as const, detail: "已保留 .part，可继续下载" };
+    }
     const lastLog = [...(dlStatus?.log ?? [])].reverse().find((line) => line.scene_id === scene.scene_id);
     const outcome = (lastLog?.outcome || "").toLowerCase();
     if (outcome.includes("success") || outcome.includes("downloaded") || outcome.includes("copied")) {
@@ -4016,8 +4957,169 @@ function renderOutputParameters(
     return { label: "未勾选", variant: "neutral" as const, detail: "" };
   }
 
+  function orbitRuntimeStatus(scene: SceneRow) {
+    const current = orbitStatus?.current_scene === scene.scene_id;
+    if (current) {
+      return { label: "正在下载轨道", variant: "success" as const, detail: "正在获取该景对应的 POEORB/EOF 文件" };
+    }
+    const result = (orbitStatus?.results ?? []).find((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+      return String((item as Record<string, unknown>).scene_id || "") === scene.scene_id;
+    }) as Record<string, unknown> | undefined;
+    if (result) {
+      const outcome = String(result.outcome || "");
+      const orbitFile = String(result.orbit_file || "");
+      const message = String(result.message || "");
+      if (outcome === "success") {
+        return { label: "轨道已下载", variant: "success" as const, detail: orbitFile || message };
+      }
+      if (outcome === "skipped") {
+        return { label: "已存在/复用", variant: "neutral" as const, detail: orbitFile || message };
+      }
+      if (outcome === "unavailable") {
+        return { label: "POEORB 未发布", variant: "warning" as const, detail: message || "太新的影像可能暂时没有精密轨道" };
+      }
+      if (outcome === "failed") {
+        return { label: "轨道失败", variant: "warning" as const, detail: message || "轨道文件下载失败" };
+      }
+    }
+    if (selectedOrbitSceneIds.has(scene.scene_id)) {
+      return { label: "待下载轨道", variant: "success" as const, detail: "" };
+    }
+    return { label: "未勾选", variant: "neutral" as const, detail: "" };
+  }
+
+  function renderOrbitWorkspaceOverlay() {
+    if (!orbitWorkspaceOpen || orbitCandidateScenes.length === 0) return null;
+    const workspaceScenes = filteredOrbitWorkspaceScenes;
+    return (
+      <div className="absolute inset-4 z-[760] flex min-h-0 flex-col overflow-hidden rounded-[26px] border border-white/65 bg-white/88 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-zinc-950/88">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border/60 px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-base font-semibold">
+              <Orbit className="h-4 w-4 text-primary" />
+              精密轨道下载工作台
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              勾选需要配套轨道文件的 SAR 影像；{orbitUsesManualSource ? "当前使用手动导入候选。" : "当前沿用 Sentinel-1 检索结果。"}下载内容为 Sentinel_Orbit\AUX_POEORB 下的 POEORB/EOF 文件。
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              title={orbitWorkspaceQuery.trim() ? "选中当前筛选结果" : "选中全部候选"}
+              onClick={() =>
+                setSelectedOrbitSceneIds(new Set(workspaceScenes.map((scene) => scene.scene_id).filter(Boolean)))
+              }
+            >
+              全选
+            </Button>
+            <Button size="sm" variant="outline" onClick={clearOrbitSceneSelection}>
+              清空
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => void onStartOrbitScenes(selectedOrbitSceneIdList)}
+              disabled={orbitStartBusy || orbitActive || selectedOrbitSceneIdList.length === 0}
+            >
+              {orbitStartBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+              下载所选轨道
+            </Button>
+            <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full" onClick={() => setOrbitWorkspaceOpen(false)}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid shrink-0 grid-cols-4 gap-2 border-b border-border/60 px-4 py-3 text-xs">
+          {kv("SAR 候选", orbitCandidateScenes.length)}
+          {kv("当前显示", workspaceScenes.length)}
+          {kv("已勾选", selectedOrbitSceneIdList.length)}
+          {kv("轨道进度", orbitStatus ? `${orbitStatus.done}/${orbitStatus.total}` : "未开始")}
+        </div>
+
+        <div className="shrink-0 border-b border-border/60 px-4 py-3">
+          <Input
+            value={orbitWorkspaceQuery}
+            onChange={(event) => setOrbitWorkspaceQuery(event.target.value)}
+            placeholder="搜索日期 / 场景名 / Path / Frame / 极化，例如 0608"
+            className="h-9 bg-white/65 text-xs dark:bg-white/10"
+          />
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="space-y-2">
+            {workspaceScenes.map((scene) => {
+              const runtime = orbitRuntimeStatus(scene);
+              return (
+                <div
+                  key={scene.scene_id}
+                  className={cn(
+                    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-2xl border bg-white/55 px-3 py-2 text-xs shadow-sm transition-colors hover:bg-white/80 dark:bg-white/5 dark:hover:bg-white/10",
+                    selectedSceneId === scene.scene_id && "border-primary bg-primary/10 ring-1 ring-primary/30",
+                  )}
+                  onClick={() => highlightScene(scene.scene_id)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedOrbitSceneIds.has(scene.scene_id)}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => toggleOrbitScene(scene.scene_id, event.currentTarget.checked)}
+                    className="h-4 w-4 rounded border-border accent-primary"
+                    title="为该 SAR 影像下载配套轨道"
+                  />
+                  <div className="min-w-0">
+                    <div className="truncate font-mono" title={scene.scene_id}>
+                      {scene.scene_id}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      <Badge variant="neutral">{scene.platform || "S1"}</Badge>
+                      <Badge variant="neutral">{scene.product_type || "-"}</Badge>
+                      <Badge variant="neutral">{orbitLabel(scene.orbit_direction)}</Badge>
+                      <Badge variant={scene.path || scene.relative_orbit ? "success" : "warning"}>
+                        Path {scene.path ?? scene.relative_orbit ?? "-"}
+                      </Badge>
+                      {selectedSceneId === scene.scene_id && <Badge variant="success">地图高亮</Badge>}
+                    </div>
+                    {runtime.detail && <div className="mt-1 truncate text-[11px] text-muted-foreground">{runtime.detail}</div>}
+                  </div>
+                  <Badge variant={runtime.variant}>{runtime.label}</Badge>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-2"
+                    disabled={orbitStartBusy || orbitActive}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void onStartOrbitScenes([scene.scene_id]);
+                    }}
+                  >
+                    <CloudDownload className="h-3.5 w-3.5" />
+                    此景轨道
+                  </Button>
+                </div>
+              );
+            })}
+            {!workspaceScenes.length && (
+              <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                没有匹配的 SAR 影像。
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderSceneWorkspaceOverlay() {
     if (!sceneWorkspaceOpen || scenes.length === 0) return null;
+    const workspaceScenes = filteredSceneWorkspaceScenes;
+    const selectedActiveSceneIds = selectedDownloadSceneIdList.filter((id) => activeAsfSceneIds.has(id));
+    const selectedPausedSceneIds = selectedDownloadSceneIdList.filter((id) => pausedAsfSceneIds.has(id));
+    const selectedDownloadableSceneIds = selectedDownloadSceneIdList.filter(
+      (id) => !activeAsfSceneIds.has(id) && !pausedAsfSceneIds.has(id),
+    );
     return (
       <div className="absolute inset-4 z-[760] flex min-h-0 flex-col overflow-hidden rounded-[26px] border border-white/65 bg-white/88 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-zinc-950/88">
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border/60 px-4 py-3">
@@ -4030,31 +5132,57 @@ function renderOutputParameters(
               {selectedDownloadSceneIdList.length} / {scenes.length} 景加入下载；点击行只高亮地图边框，不改变地图视图。
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button size="sm" variant="outline" onClick={selectAllDownloadScenes}>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              title={sceneWorkspaceQuery.trim() ? "选中当前筛选结果" : "选中全部候选"}
+              onClick={() =>
+                setSelectedDownloadSceneIds(new Set(workspaceScenes.map((scene) => scene.scene_id).filter(Boolean)))
+              }
+            >
               全选
             </Button>
             <Button size="sm" variant="outline" onClick={clearDownloadSceneSelection}>
               清空
             </Button>
-            {dlStatus?.state === "running" && (
-              <Button size="sm" variant="outline" onClick={() => void pauseAsfDownload().then(() => getDownloadStatus().then(setDlStatus))}>
-                <Pause className="h-4 w-4" />
-                暂停任务
-              </Button>
-            )}
-            {dlStatus?.state === "paused" && (
-              <Button size="sm" variant="outline" onClick={() => void resumeAsfDownload().then(() => getDownloadStatus().then(setDlStatus))}>
-                <Play className="h-4 w-4" />
-                继续任务
-              </Button>
-            )}
-            {dlActive && (
-              <Button size="sm" variant="destructive" onClick={() => void stopAsfDownload().then(() => getDownloadStatus().then(setDlStatus))}>
-                <Square className="h-4 w-4" />
-                结束任务
-              </Button>
-            )}
+            <Button
+              size="sm"
+              onClick={() => void onDownloadAsfScenes(selectedDownloadableSceneIds)}
+              disabled={asfStartBusy || selectedDownloadableSceneIds.length === 0 || !earthdataCanDownload}
+              title={
+                !earthdataCanDownload
+                  ? "请先确认 Earthdata/ASF 凭据正常"
+                  : selectedDownloadableSceneIds.length === 0
+                    ? "所选影像已在下载中或已暂停"
+                    : dlActive
+                      ? "立即追加并开始下载所选影像"
+                      : "开始下载所选影像"
+              }
+            >
+              {asfStartBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+              {dlActive ? "下载/追加所选" : "下载所选"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void onPauseAsfScenes(selectedActiveSceneIds)}
+              disabled={selectedActiveSceneIds.length === 0}
+              title={selectedActiveSceneIds.length ? "只暂停勾选的正在下载影像" : "勾选正在下载的影像后可暂停"}
+            >
+              <Pause className="h-4 w-4" />
+              暂停所选
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void onResumeAsfScenes(selectedPausedSceneIds)}
+              disabled={selectedPausedSceneIds.length === 0}
+              title={selectedPausedSceneIds.length ? "继续勾选的已暂停影像" : "勾选已暂停影像后可继续"}
+            >
+              <Play className="h-4 w-4" />
+              继续所选
+            </Button>
             <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full" onClick={() => setSceneWorkspaceOpen(false)}>
               <X className="h-4 w-4" />
             </Button>
@@ -4063,20 +5191,31 @@ function renderOutputParameters(
 
         <div className="grid shrink-0 grid-cols-4 gap-2 border-b border-border/60 px-4 py-3 text-xs">
           {kv("候选影像", scenes.length)}
+          {kv("当前显示", workspaceScenes.length)}
           {kv("加入下载", selectedDownloadSceneIdList.length)}
-          {kv("任务状态", dlStatus ? statusLabel(dlStatus.state) : "未开始")}
-          {kv("并发", dlStatus?.concurrency ?? asfConcurrency)}
+          {kv("正在下载", activeAsfDownloads.length)}
+        </div>
+
+        <div className="shrink-0 border-b border-border/60 px-4 py-3">
+          <Input
+            value={sceneWorkspaceQuery}
+            onChange={(event) => setSceneWorkspaceQuery(event.target.value)}
+            placeholder="搜索日期 / 场景名 / Path / Frame / 极化，例如 0608"
+            className="h-9 bg-white/65 text-xs dark:bg-white/10"
+          />
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           <div className="space-y-2">
-            {scenes.map((scene) => {
+            {workspaceScenes.map((scene) => {
               const runtime = sceneRuntimeStatus(scene);
+              const isActive = activeAsfSceneIds.has(scene.scene_id);
+              const isPaused = pausedAsfSceneIds.has(scene.scene_id);
               return (
                 <div
                   key={scene.scene_id}
                   className={cn(
-                    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border bg-white/55 px-3 py-2 text-xs shadow-sm transition-colors hover:bg-white/80 dark:bg-white/5 dark:hover:bg-white/10",
+                    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-2xl border bg-white/55 px-3 py-2 text-xs shadow-sm transition-colors hover:bg-white/80 dark:bg-white/5 dark:hover:bg-white/10",
                     selectedSceneId === scene.scene_id && "border-primary bg-primary/10 ring-1 ring-primary/30",
                   )}
                   onClick={() => highlightScene(scene.scene_id)}
@@ -4105,9 +5244,55 @@ function renderOutputParameters(
                     {runtime.detail && <div className="mt-1 truncate text-[11px] text-muted-foreground">{runtime.detail}</div>}
                   </div>
                   <Badge variant={runtime.variant}>{runtime.label}</Badge>
+                  {isActive ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 px-2"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onPauseAsfScenes([scene.scene_id]);
+                      }}
+                    >
+                      <Pause className="h-3.5 w-3.5" />
+                      暂停
+                    </Button>
+                  ) : isPaused ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 px-2"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onResumeAsfScenes([scene.scene_id]);
+                      }}
+                    >
+                      <Play className="h-3.5 w-3.5" />
+                      继续
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 px-2"
+                      disabled={asfStartBusy || !earthdataCanDownload}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onDownloadAsfScenes([scene.scene_id]);
+                      }}
+                    >
+                      <CloudDownload className="h-3.5 w-3.5" />
+                      下载
+                    </Button>
+                  )}
                 </div>
               );
             })}
+            {!workspaceScenes.length && (
+              <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                没有匹配的 SAR 影像。
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -4118,6 +5303,30 @@ function renderOutputParameters(
     const earth = creds?.earthdata ?? "none";
     const dem = creds?.opentopography ?? "none";
     const gacos = creds?.gacos ?? "none";
+    const demComponent = componentStatus?.components.find((item) => item.id === "dem-gdal");
+    const demComponentLabel =
+      demComponent?.state === "installed"
+        ? "已安装"
+        : demComponent?.state === "bundled"
+          ? "当前版本内置"
+          : demComponent?.state === "available"
+            ? "可在线安装"
+            : "在线包未发布";
+    const demComponentBadge =
+      demComponent?.runtime_available || demComponent?.installed
+        ? "success"
+        : demComponent?.can_install
+          ? "warning"
+          : "neutral";
+    const demComponentHint =
+      demComponent?.runtime_available || demComponent?.installed
+        ? "组件运行库已可用，DEM 椭球高转换和 SARscape DEM 输出可直接使用。"
+        : demComponent?.can_install
+          ? "可从在线组件库安装；安装后无需重新下载主程序。"
+          : "在线组件包尚未发布或当前网络无法读取清单；需要在 GitHub Release 上传组件清单和 DEM/GDAL 压缩包后才能一键安装。";
+    const updateAssetSize = updateInfo?.asset_size
+      ? `${(updateInfo.asset_size / 1024 / 1024).toFixed(1)} MB`
+      : "";
     return (
       <div className="space-y-3">
         <Section
@@ -4379,6 +5588,111 @@ function renderOutputParameters(
           </div>
         </Section>
 
+        <Section
+          title="更新与组件"
+          desc="检查 GitHub Release，后续大体积 DEM 转换库会以组件方式按需下载。"
+          icon={HardDrive}
+          defaultOpen={false}
+          storageKey="settings-updates-components"
+        >
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-white/45 bg-white/35 p-3 text-xs leading-5 dark:border-white/10 dark:bg-white/10">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold">软件更新</div>
+                  <div className="text-muted-foreground">
+                    当前版本 {updateInfo?.current_version ?? appInfo?.version ?? "-"}
+                    {updateInfo?.checked && `，最新版本 ${updateInfo.latest_version}`}
+                  </div>
+                </div>
+                <Badge variant={updateInfo?.update_available ? "warning" : "neutral"}>
+                  {updateInfo?.update_available ? "发现新版" : "未发现新版"}
+                </Badge>
+              </div>
+              {updateInfo?.asset_name && (
+                <div className="mt-2 rounded-xl border border-white/45 bg-white/35 px-2 py-1.5 font-mono text-[11px] text-muted-foreground dark:border-white/10 dark:bg-white/10">
+                  {updateInfo.asset_name}
+                  {updateAssetSize && ` · ${updateAssetSize}`}
+                </div>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={onCheckUpdateNow} disabled={updateBusy}>
+                  {updateBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                  检查更新
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={updateBusy || !updateInfo?.update_available || !updateInfo?.download_url}
+                  onClick={onDownloadUpdatePackage}
+                >
+                  <CloudDownload className="h-4 w-4" />
+                  {updateInfo?.install_mode === "installer" ? "下载并安装更新" : "在线下载更新包"}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => void openUrl(updateInfo?.html_url || LINKS.github)}>
+                  <ExternalLink className="h-4 w-4" />
+                  Release 页面
+                </Button>
+              </div>
+              <NoteLine text={updateNote || updateInfo?.message || null} />
+            </div>
+
+            <div className="rounded-2xl border border-white/45 bg-white/35 p-3 text-xs leading-5 dark:border-white/10 dark:bg-white/10">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold">DEM 高级转换组件</div>
+                  <div className="text-muted-foreground">
+                    GDAL/rasterio/numpy 运行库，用于 DEM 椭球高转换与 SARscape DEM 适配输出。
+                  </div>
+                </div>
+                <Badge variant={demComponentBadge}>{demComponentLabel}</Badge>
+              </div>
+              <div className="mt-2 grid gap-1 rounded-xl border border-white/45 bg-white/35 px-2 py-1.5 font-mono text-[11px] text-muted-foreground dark:border-white/10 dark:bg-white/10">
+                <div>组件目录：{componentStatus?.root ?? "正在读取..."}</div>
+                <div>清单：{componentStatus?.manifest_url ?? "未读取"}</div>
+                {demComponent?.installed_path && <div>已安装：{demComponent.installed_path}</div>}
+              </div>
+              <div className="mt-2 rounded-xl border border-white/45 bg-white/28 px-2 py-1.5 text-[11px] text-muted-foreground dark:border-white/10 dark:bg-white/10">
+                {demComponentHint}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={componentBusy === "refresh"}
+                  onClick={() => {
+                    setComponentBusy("refresh");
+                    setComponentNote(null);
+                    void refreshComponents(true).finally(() => setComponentBusy(null));
+                  }}
+                >
+                  {componentBusy === "refresh" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                  刷新组件
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!demComponent?.can_install || componentBusy === "dem-gdal"}
+                  onClick={() => void onInstallComponent("dem-gdal")}
+                >
+                  {componentBusy === "dem-gdal" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+                  安装组件
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!demComponent?.installed || componentBusy === "dem-gdal"}
+                  onClick={() => void onRemoveComponent("dem-gdal")}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  移除
+                </Button>
+              </div>
+              <NoteLine text={componentNote} />
+            </div>
+          </div>
+        </Section>
+
         {renderProjectContext()}
 
         <Section
@@ -4537,17 +5851,16 @@ function renderOutputParameters(
 
         <div className="min-w-0 flex-1" />
 
-        {updateInfo && (
+        {updateInfo?.update_available && (
           <button
             type="button"
             onMouseDown={stopWindowDrag}
-            onClick={() => void openUrl(updateInfo.html_url)}
+            onClick={() => setPanel("settings")}
             className="hidden h-8 shrink-0 items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 text-xs font-medium text-primary shadow-sm backdrop-blur-xl transition-colors hover:bg-primary/15 lg:flex"
-            title={`发现新版 ${updateInfo.latest_version}`}
+            title={`发现新版 ${updateInfo.latest_version}，到设置中下载更新包`}
           >
             <CloudDownload className="h-3.5 w-3.5" />
-            <span className="max-w-[120px] truncate">新版 {updateInfo.latest_version}</span>
-            <ExternalLink className="h-3 w-3 opacity-70" />
+            <span className="max-w-[120px] truncate">下载新版 {updateInfo.latest_version}</span>
           </button>
         )}
 
@@ -4655,6 +5968,11 @@ function renderOutputParameters(
                 >
                   <Icon className="h-3.5 w-3.5" />
                   <span className="font-medium">{item.label}</span>
+                  {item.key === "downloads" && activeDownloadTaskCount > 0 && (
+                    <span className="absolute right-7 top-1.5 min-w-4 rounded-full bg-primary px-1 text-[10px] font-semibold leading-4 text-primary-foreground shadow-sm">
+                      {activeDownloadTaskCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -4676,7 +5994,7 @@ function renderOutputParameters(
             aoiBbox={ctx?.region?.bbox ?? null}
             aoiGeometry={mapAoiGeometry}
             sceneBbox={ctx?.region?.scene_footprint_bbox ?? null}
-            scenes={scenes}
+            scenes={visibleMapScenes}
             selectedSceneId={selectedSceneId}
             layerKey={layerKey}
             tiandituToken={tiandituToken}
@@ -4692,8 +6010,10 @@ function renderOutputParameters(
             onPointDraw={bindPoint}
           />
           {renderSceneWorkspaceOverlay()}
+          {renderOrbitWorkspaceOverlay()}
         </main>
       </div>
+      {renderAoiFeaturePickerOverlay()}
       {communityOpen && (
         <div
           className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/28 p-5 backdrop-blur-sm"
@@ -4768,6 +6088,7 @@ function renderOutputParameters(
         version={WORKBENCH_TOUR_VERSION}
         runSignal={tourSignal}
         autoStart={false}
+        onStepChange={handleTourStepChange}
       />
     </div>
   );

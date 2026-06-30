@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from shapely import wkt as shapely_wkt
 from shapely.errors import ShapelyError
 from shapely.geometry import shape
-from shapely.ops import unary_union
+from shapely.ops import polygonize, unary_union
 
 from insar_prep.core.enums import AoiRole, AoiSource
 from insar_prep.core.error_codes import ErrorCode
@@ -35,8 +35,17 @@ if TYPE_CHECKING:
 
 logger = get_logger("processing.aoi_import")
 
-# Only areal geometries make sense as an AOI; lines/points are rejected.
+# Only areal geometries are stored as an AOI. Some authoritative boundary files
+# ship closed boundaries as linework, so we accept line geometries at import time
+# and polygonize them before validation.
 SUPPORTED_GEOMETRY_TYPES = ("Polygon", "MultiPolygon")
+IMPORTABLE_GEOMETRY_TYPES = (
+    "Polygon",
+    "MultiPolygon",
+    "LineString",
+    "MultiLineString",
+    "GeometryCollection",
+)
 
 
 def load_aoi_from_geojson(path: str | Path, *, name: str | None = None) -> Aoi:
@@ -122,18 +131,14 @@ def _geometry_from_geojson(data: dict[str, Any]) -> BaseGeometry:
                 code=ErrorCode.AOI001,
             )
         geometries = [_geometry_from_feature(feature) for feature in features]
-        return unary_union(geometries)
+        return _coerce_to_areal_geometry(unary_union(geometries))
     if obj_type == "Feature":
-        return _geometry_from_feature(data)
-    if obj_type == "GeometryCollection":
-        raise InputValidationError(
-            "GeoJSON GeometryCollection is not supported; provide a Polygon or MultiPolygon",
-            code=ErrorCode.AOI001,
-        )
-    if obj_type in SUPPORTED_GEOMETRY_TYPES:
-        return _shape_from_mapping(data)
+        return _coerce_to_areal_geometry(_geometry_from_feature(data))
+    if obj_type in IMPORTABLE_GEOMETRY_TYPES:
+        return _coerce_to_areal_geometry(_shape_from_mapping(data))
     raise InputValidationError(
-        f"unsupported GeoJSON geometry type {obj_type!r}; expected Polygon or MultiPolygon",
+        f"不支持的 GeoJSON 几何类型 {obj_type!r}；请提供 Polygon/MultiPolygon，"
+        "或闭合的 LineString/MultiLineString 行政边界",
         code=ErrorCode.AOI001,
     )
 
@@ -147,14 +152,10 @@ def _geometry_from_feature(feature: Any) -> BaseGeometry:
             "invalid GeoJSON Feature: missing 'geometry' object", code=ErrorCode.AOI001
         )
     geom_type = geometry.get("type")
-    if geom_type == "GeometryCollection":
+    if geom_type not in IMPORTABLE_GEOMETRY_TYPES:
         raise InputValidationError(
-            "GeoJSON GeometryCollection is not supported; provide a Polygon or MultiPolygon",
-            code=ErrorCode.AOI001,
-        )
-    if geom_type not in SUPPORTED_GEOMETRY_TYPES:
-        raise InputValidationError(
-            f"unsupported GeoJSON geometry type {geom_type!r}; expected Polygon or MultiPolygon",
+            f"不支持的 GeoJSON 几何类型 {geom_type!r}；请提供 Polygon/MultiPolygon，"
+            "或闭合的 LineString/MultiLineString 行政边界",
             code=ErrorCode.AOI001,
         )
     return _shape_from_mapping(geometry)
@@ -179,6 +180,35 @@ def _validate_geometry(geometry: BaseGeometry) -> None:
         )
     if not geometry.is_valid:
         raise InputValidationError("AOI geometry is not valid", code=ErrorCode.AOI001)
+
+
+def _coerce_to_areal_geometry(geometry: BaseGeometry) -> BaseGeometry:
+    """Return a Polygon/MultiPolygon, polygonizing closed line boundaries if needed."""
+    if geometry is None or geometry.is_empty:
+        return geometry
+    if geometry.geom_type in SUPPORTED_GEOMETRY_TYPES:
+        return geometry
+    if geometry.geom_type in {"LineString", "MultiLineString", "LinearRing"}:
+        polygons = list(polygonize(geometry))
+        if polygons:
+            return unary_union(polygons)
+    if geometry.geom_type == "GeometryCollection":
+        areal_parts: list[BaseGeometry] = []
+        line_parts: list[BaseGeometry] = []
+        for part in getattr(geometry, "geoms", []):
+            if part.geom_type in SUPPORTED_GEOMETRY_TYPES:
+                areal_parts.append(part)
+            elif part.geom_type in {"LineString", "MultiLineString", "LinearRing"}:
+                line_parts.append(part)
+        polygons = list(polygonize(line_parts)) if line_parts else []
+        merged = [*areal_parts, *polygons]
+        if merged:
+            return unary_union(merged)
+    raise InputValidationError(
+        f"无法从 {geometry.geom_type!r} 生成 AOI 面；如果这是行政边界线，请确认线闭合，"
+        "或提供 Polygon/MultiPolygon 文件",
+        code=ErrorCode.AOI001,
+    )
 
 
 def _bbox_from_geometry(geometry: BaseGeometry) -> BBox:

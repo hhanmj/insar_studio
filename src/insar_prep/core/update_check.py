@@ -28,7 +28,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from insar_prep import __version__
 from insar_prep.core.logging import get_logger
@@ -53,6 +53,16 @@ _VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 
 
 @dataclass(frozen=True)
+class ReleaseAsset:
+    """A downloadable GitHub Release asset."""
+
+    name: str
+    download_url: str
+    size: int = 0
+    content_type: str = ""
+
+
+@dataclass(frozen=True)
 class UpdateInfo:
     """Result of a (successful) update check."""
 
@@ -60,6 +70,7 @@ class UpdateInfo:
     latest_version: str
     html_url: str
     update_available: bool
+    assets: tuple[ReleaseAsset, ...] = ()
 
 
 def release_api_url(repo: str = GITHUB_REPO) -> str:
@@ -124,6 +135,57 @@ def _http_get_json(url: str, timeout: float) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _parse_release_assets(payload: dict[str, Any]) -> tuple[ReleaseAsset, ...]:
+    """Extract downloadable assets from a GitHub Release payload."""
+    raw_assets = payload.get("assets")
+    if not isinstance(raw_assets, list):
+        return ()
+    assets: list[ReleaseAsset] = []
+    for item in raw_assets:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        url = str(item.get("browser_download_url") or "").strip()
+        if not name or not url:
+            continue
+        try:
+            size = int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        assets.append(
+            ReleaseAsset(
+                name=name,
+                download_url=url,
+                size=max(0, size),
+                content_type=str(item.get("content_type") or ""),
+            )
+        )
+    return tuple(assets)
+
+
+def preferred_release_asset(info: UpdateInfo) -> ReleaseAsset | None:
+    """Pick the most useful Windows desktop asset for in-app downloading."""
+    if not info.assets:
+        return None
+    candidates = list(info.assets)
+
+    def score(asset: ReleaseAsset) -> tuple[int, int]:
+        name = asset.name.lower()
+        if name.endswith(".exe") and ("setup" in name or "installer" in name):
+            return (0, -asset.size)
+        if name.endswith(".msi"):
+            return (1, -asset.size)
+        if name.endswith(".zip") and ("portable" in name or "insar-studio" in name):
+            return (2, -asset.size)
+        if name.endswith(".exe") and "insar-studio" in name:
+            return (3, -asset.size)
+        if name.endswith((".zip", ".exe")):
+            return (4, -asset.size)
+        return (9, -asset.size)
+
+    return sorted(candidates, key=score)[0]
+
+
 def check_for_update(
     current_version: str = __version__,
     *,
@@ -148,6 +210,7 @@ def check_for_update(
         latest_version=str(tag),
         html_url=str(html_url),
         update_available=is_newer(tag, current_version),
+        assets=_parse_release_assets(payload),
     )
 
 
@@ -200,11 +263,23 @@ def _cached_update(cache: dict, current_version: str, repo: str) -> UpdateInfo |
     """Build an UpdateInfo from a cached latest tag, if it is newer."""
     cached_tag = cache.get("latest_version")
     if cached_tag and is_newer(cached_tag, current_version):
+        assets: list[ReleaseAsset] = []
+        for item in cache.get("assets") or []:
+            if isinstance(item, dict):
+                asset = ReleaseAsset(
+                    name=str(item.get("name") or ""),
+                    download_url=str(item.get("download_url") or ""),
+                    size=int(item.get("size") or 0),
+                    content_type=str(item.get("content_type") or ""),
+                )
+                if asset.name and asset.download_url:
+                    assets.append(asset)
         return UpdateInfo(
             current_version=current_version,
             latest_version=str(cached_tag),
             html_url=str(cache.get("html_url") or releases_page_url(repo)),
             update_available=True,
+            assets=tuple(assets),
         )
     return None
 
@@ -244,6 +319,15 @@ def maybe_check_for_update(
     if info is not None:
         new_cache["latest_version"] = info.latest_version
         new_cache["html_url"] = info.html_url
+        new_cache["assets"] = [
+            {
+                "name": asset.name,
+                "download_url": asset.download_url,
+                "size": asset.size,
+                "content_type": asset.content_type,
+            }
+            for asset in info.assets
+        ]
     elif cache.get("latest_version"):
         new_cache["latest_version"] = cache["latest_version"]
         new_cache["html_url"] = cache.get("html_url", "")

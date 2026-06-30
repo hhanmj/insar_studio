@@ -146,11 +146,18 @@ class FakeDemConverter:
 def _import_rasterio() -> object:
     """Import rasterio lazily; raise a clear DemProcessingError if it is missing."""
     try:
+        from insar_prep.core.component_manager import activate_component
+
+        activate_component()
+    except Exception:
+        pass
+    try:
         import rasterio  # noqa: PLC0415 - optional dependency, imported lazily
     except ImportError as exc:  # pragma: no cover - exercised via CLI guard
         raise DemProcessingError(
-            "real DEM vertical-datum conversion needs the optional 'convert' extra; "
-            "install it with 'uv sync --extra convert' (or pip install rasterio)",
+            "real DEM vertical-datum conversion needs rasterio/GDAL; "
+            "install the DEM advanced component in the desktop app, or install "
+            "the optional 'convert' extra with 'uv sync --extra convert'",
             code=ErrorCode.DEM003,
         ) from exc
     return rasterio
@@ -170,10 +177,12 @@ class RealDemConverter:
         geoid: GeoidGrid | None = None,
         geoid_grid_path: Path | str | None = None,
         block_rows: int = _BLOCK_ROWS,
+        write_sarscape_ready: bool = True,
     ) -> None:
         self._geoid = geoid
         self._geoid_grid_path = Path(geoid_grid_path) if geoid_grid_path else None
         self.block_rows = max(1, block_rows)
+        self.write_sarscape_ready = write_sarscape_ready
 
     def _load_geoid(self, model_hint: str | None) -> GeoidGrid:
         if self._geoid is not None:
@@ -190,7 +199,7 @@ class RealDemConverter:
         """Convert one DEM, returning a :class:`DemConversionResult` (never raises)."""
         source = plan.source_vertical_datum
         target = plan.target_vertical_datum
-        dest = plan.sarscape_ready_dem_path
+        dest = plan.sarscape_ready_dem_path if self.write_sarscape_ready else plan.ellipsoid_dem_path
 
         def failed(message: str, code: ErrorCode = ErrorCode.DEM003) -> DemConversionResult:
             return DemConversionResult(
@@ -225,15 +234,17 @@ class RealDemConverter:
             )
 
         # No vertical conversion needed: keep a checkable ellipsoid GeoTIFF, then
-        # export the SARscape-facing ENVI _dem raster.
+        # optionally export the SARscape-facing ENVI _dem raster.
         if source == target:
             try:
                 plan.ellipsoid_dem_path.parent.mkdir(parents=True, exist_ok=True)
                 if plan.raw_dem_path != plan.ellipsoid_dem_path:
                     shutil.copyfile(plan.raw_dem_path, plan.ellipsoid_dem_path)
-                self._write_sarscape_ready(plan.ellipsoid_dem_path, dest)
+                if self.write_sarscape_ready:
+                    self._write_sarscape_ready(plan.ellipsoid_dem_path, dest)
             except (OSError, DemProcessingError) as exc:
-                return failed(f"could not export SARscape DEM: {exc}")
+                action = "export SARscape DEM" if self.write_sarscape_ready else "write ellipsoid GeoTIFF"
+                return failed(f"could not {action}: {exc}")
             return DemConversionResult(
                 region_safe_name=plan.region_safe_name,
                 dataset=plan.dataset,
@@ -241,7 +252,11 @@ class RealDemConverter:
                 source_vertical_datum=source,
                 target_vertical_datum=target,
                 path=dest,
-                message="dataset already ellipsoidal; exported SARscape ENVI _dem",
+                message=(
+                    "dataset already ellipsoidal; exported SARscape ENVI _dem"
+                    if self.write_sarscape_ready
+                    else "dataset already ellipsoidal; wrote ellipsoid GeoTIFF"
+                ),
             )
 
         if target is not VerticalDatum.WGS84_ELLIPSOID or source not in _GEOID_SOURCES:
@@ -262,6 +277,8 @@ class RealDemConverter:
             return failed(f"{type(exc).__name__}: {exc}")
 
         message = f"converted {source.value} -> {target.value} using {geoid.model}"
+        if not self.write_sarscape_ready:
+            message += "; wrote ellipsoid GeoTIFF"
         if approximated:
             message += " (EGM96 used as an approximation for an EGM2008 source)"
             logger.warning(
@@ -304,9 +321,12 @@ class RealDemConverter:
             self._apply_block_offsets(rasterio, src, profile, part, transform, nodata, geoid)
 
         os.replace(part, ellipsoid_path)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        self._write_sarscape_ready(ellipsoid_path, dest)
-        logger.info("converted DEM %s -> %s", plan.region_safe_name, dest)
+        if self.write_sarscape_ready:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sarscape_ready(ellipsoid_path, dest)
+            logger.info("converted DEM %s -> %s", plan.region_safe_name, dest)
+        else:
+            logger.info("converted DEM %s -> %s", plan.region_safe_name, ellipsoid_path)
 
     def _write_sarscape_ready(self, source_path: Path, dest: Path) -> None:
         """Export an ellipsoid GeoTIFF to SARscape's ENVI ``*_dem`` raster."""

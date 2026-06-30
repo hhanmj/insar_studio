@@ -52,12 +52,14 @@ export function OnboardingTour({
   version,
   runSignal = 0,
   autoStart = true,
+  onStepChange,
 }: {
   steps: TourStep[];
   storageKey: string;
   version: number;
   runSignal?: number;
   autoStart?: boolean;
+  onStepChange?: (index: number, step: TourStep) => void;
 }) {
   const [index, setIndex] = useState<number | null>(null);
   const [rect, setRect] = useState<Rect | null>(null);
@@ -85,6 +87,11 @@ export function OnboardingTour({
   useEffect(() => {
     if (runSignal > 0) start();
   }, [runSignal, start]);
+
+  useEffect(() => {
+    if (index === null || !step) return;
+    onStepChange?.(index, step);
+  }, [index, step, onStepChange]);
 
   useEffect(() => {
     if (!step) return;

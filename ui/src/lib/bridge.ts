@@ -24,10 +24,48 @@ export type UpdateInfo = {
   current_version: string;
   latest_version: string;
   html_url: string;
+  download_url?: string;
+  asset_name?: string;
+  asset_size?: number;
+  online_update_supported?: boolean;
+  install_mode?: "manual" | "download" | "installer" | string;
   message?: string;
 };
 export type ApiError = { ok: false; error: string; code: string | null };
 export type Json = Record<string, unknown>;
+export type AppUpdateDownloadOk = {
+  ok: true;
+  path: string;
+  folder: string;
+  size: number;
+  can_run: boolean;
+  launched?: boolean;
+  install_mode?: "download" | "installer" | string;
+  message?: string;
+};
+export type ComponentSummary = {
+  id: string;
+  name: string;
+  version: string;
+  size_mb?: number | null;
+  url?: string;
+  sha256?: string;
+  entry?: string;
+  description?: string;
+  installed: boolean;
+  installed_version?: string;
+  installed_path?: string;
+  runtime_available: boolean;
+  state: "installed" | "bundled" | "available" | "not_configured" | string;
+  can_install: boolean;
+};
+export type ComponentStatusOk = {
+  ok: true;
+  root: string;
+  manifest_url: string;
+  manifest_checked_at?: number | null;
+  components: ComponentSummary[];
+};
 
 export type ProjectOk = {
   ok: true;
@@ -171,11 +209,12 @@ export type DownloadStatus = {
   failed?: number;
   interrupted?: number;
   has_failures?: boolean;
+  paused_scene_ids?: string[];
   resume_supported?: boolean;
   resume_hint?: string;
   retry_supported?: boolean;
   retry_hint?: string;
-  log: { scene_id: string; outcome: string; bytes_written: number; message?: string; detail: string }[];
+  log: { scene_id: string; outcome: string; bytes_written: number; message?: string; detail: string; ts?: number }[];
 };
 export type WorkflowStage = {
   id: string;
@@ -209,9 +248,31 @@ export type AoiOk = {
   ok: true;
   aoi: Json;
   aoi_geojson?: Json | null;
+  aoi_feature_count?: number | null;
+  aoi_total_feature_count?: number | null;
+  download_mode?: "merge" | "split" | string;
   region_id: string;
   region_name: string;
 };
+export type AoiFeaturePreview = {
+  id: string;
+  index: number;
+  source_index?: number;
+  name: string;
+  area_km2?: number | null;
+  bbox?: Bbox | null;
+  properties: Json;
+};
+export type AoiPreviewOk = {
+  ok: true;
+  path: string;
+  file_name: string;
+  total_features: number;
+  fields: string[];
+  display_field?: string;
+  features: AoiFeaturePreview[];
+};
+export type AoiPreviewResult = AoiPreviewOk | ApiError;
 export type AdminBoundary = {
   label: string;
   bbox: Bbox;
@@ -310,7 +371,7 @@ export type OrbitDownloadStatus = {
   failed: number;
   has_failures: boolean;
   results: Json[];
-  log: { scene_id: string; outcome: string; detail: string }[];
+  log: { scene_id: string; outcome: string; detail: string; ts?: number }[];
   report?: Json | null;
   pause_hint?: string;
 };
@@ -400,6 +461,10 @@ export type ReportResult = ReportOk | ApiError;
 type PyApi = {
   get_app_info: () => Promise<AppInfo>;
   check_for_update?: (force?: boolean) => Promise<UpdateInfo | ApiError>;
+  download_app_update?: (downloadUrl?: string, assetName?: string) => Promise<AppUpdateDownloadOk | ApiError>;
+  get_component_status?: (refresh?: boolean) => Promise<ComponentStatusOk | ApiError>;
+  install_component?: (componentId: string) => Promise<ComponentStatusOk | ApiError>;
+  remove_component?: (componentId: string) => Promise<ComponentStatusOk | ApiError>;
   get_context: () => Promise<Context>;
   get_tree: () => Promise<Tree>;
   get_workflow_status: () => Promise<WorkflowStatus>;
@@ -434,6 +499,13 @@ type PyApi = {
     north: number,
   ) => Promise<AoiResult>;
   set_region_aoi_file: (path: string) => Promise<AoiResult>;
+  preview_aoi_file: (path: string) => Promise<AoiPreviewResult>;
+  set_region_aoi_file_features: (
+    path: string,
+    featureIds?: string[],
+    nameField?: string,
+    downloadMode?: "merge" | "split",
+  ) => Promise<AoiResult>;
   set_region_aoi_geojson: (geojson: Json) => Promise<AoiResult>;
   search_admin_boundaries: (
     query?: string,
@@ -446,6 +518,9 @@ type PyApi = {
   import_scenes_text: (text: string) => Promise<ScenesResult>;
   import_scenes_file: (path: string) => Promise<ScenesResult>;
   import_scenes_directory: (path: string) => Promise<ScenesResult>;
+  preview_scenes_file?: (path: string) => Promise<ScenesResult>;
+  preview_scenes_directory?: (path: string) => Promise<ScenesResult>;
+  clear_orbit_candidate_scenes?: () => Promise<SimpleOk>;
   search_asf_scenes: (params: AsfSearchParams) => Promise<ScenesResult>;
   list_scenes: () => Promise<ScenesOk | ApiError>;
   clear_scenes: () => Promise<SimpleOk>;
@@ -453,8 +528,8 @@ type PyApi = {
   get_metadata_status: () => Promise<MetadataStatus>;
   check_scenes: () => Promise<CheckResult>;
   match_orbits_directory: (orbitDir: string) => Promise<OrbitMatchResult>;
-  download_orbits: (outputDir?: string) => Promise<OrbitDownloadResult>;
-  start_orbit_download: (outputDir?: string) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  download_orbits: (outputDir?: string, sceneIds?: string[]) => Promise<OrbitDownloadResult>;
+  start_orbit_download: (outputDir?: string, sceneIds?: string[]) => Promise<{ ok: boolean; error?: string; code?: string }>;
   pause_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   resume_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   stop_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
@@ -466,6 +541,13 @@ type PyApi = {
     maxConcurrent?: number,
     sceneIds?: string[],
   ) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  append_asf_download: (
+    outputDir?: string,
+    maxExtraWorkers?: number,
+    sceneIds?: string[],
+  ) => Promise<{ ok: boolean; error?: string; code?: string; appended?: number; skipped?: number; concurrency?: number }>;
+  pause_asf_scenes: (sceneIds?: string[]) => Promise<{ ok: boolean; error?: string; code?: string; paused?: number }>;
+  resume_asf_scenes: (sceneIds?: string[]) => Promise<{ ok: boolean; error?: string; code?: string; resumed?: number }>;
   pause_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   resume_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   stop_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
@@ -499,6 +581,7 @@ type PyApi = {
     outputDir?: string,
     dataset?: string,
     keySource?: string,
+    convert?: boolean,
   ) => Promise<RunSummaryResult>;
   run_dem_download_bbox: (
     west: number,
@@ -508,12 +591,14 @@ type PyApi = {
     outputDir?: string,
     dataset?: string,
     keySource?: string,
+    convert?: boolean,
   ) => Promise<RunSummaryResult>;
   run_dem_conversion: (outputDir?: string) => Promise<RunSummaryResult>;
   run_local_dem_conversion: (
     inputPath: string,
     outputDir?: string,
     sourceVerticalDatum?: string,
+    outputMode?: "ellipsoid" | "sarscape",
   ) => Promise<RunSummaryResult>;
   run_dem_conversion_bbox: (
     west: number,
@@ -526,6 +611,7 @@ type PyApi = {
   set_dem_dataset: (dataset: string) => Promise<{ ok: boolean; dataset?: string; error?: string; code?: string }>;
   get_download_archive: () => Promise<DownloadArchiveResult | ApiError>;
   save_download_archive: (items: DownloadArchiveItem[]) => Promise<DownloadArchiveResult | ApiError>;
+  delete_download_archive_item: (item: DownloadArchiveItem) => Promise<DownloadArchiveResult | ApiError>;
   get_credential_status: () => Promise<CredentialStatus>;
   check_earthdata_auth: () => Promise<EarthdataAuthCheck | ApiError>;
   save_earthdata_token: (token: string) => Promise<SimpleOk>;
@@ -861,6 +947,62 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
   };
 }
 
+export async function downloadAppUpdate(
+  downloadUrl = "",
+  assetName = "",
+): Promise<AppUpdateDownloadOk | ApiError> {
+  if (hasBridge()) {
+    const downloader = api().download_app_update;
+    if (typeof downloader === "function") return downloader(downloadUrl, assetName);
+  }
+  return {
+    ok: false,
+    error: "在线下载更新包只在桌面版中可用。",
+    code: "GUI003",
+  };
+}
+
+export async function getComponentStatus(refresh = false): Promise<ComponentStatusOk | ApiError> {
+  if (hasBridge()) {
+    const getter = api().get_component_status;
+    if (typeof getter === "function") return getter(refresh);
+  }
+  return {
+    ok: true,
+    root: "C:\\Users\\You\\AppData\\Local\\InSAR Assistant\\components",
+    manifest_url: "https://github.com/hhanmj/insar_studio/releases/latest/download/components-manifest.json",
+    components: [
+      {
+        id: "dem-gdal",
+        name: "DEM 高级转换组件",
+        version: "2.1",
+        size_mb: 180,
+        description: "GDAL/rasterio 等 DEM 椭球高转换运行库。",
+        installed: false,
+        runtime_available: true,
+        state: "bundled",
+        can_install: false,
+      },
+    ],
+  };
+}
+
+export async function installComponent(componentId: string): Promise<ComponentStatusOk | ApiError> {
+  if (hasBridge()) {
+    const installer = api().install_component;
+    if (typeof installer === "function") return installer(componentId);
+  }
+  return { ok: false, error: "组件安装只在桌面版中可用。", code: "GUI003" };
+}
+
+export async function removeComponent(componentId: string): Promise<ComponentStatusOk | ApiError> {
+  if (hasBridge()) {
+    const remover = api().remove_component;
+    if (typeof remover === "function") return remover(componentId);
+  }
+  return { ok: false, error: "组件移除只在桌面版中可用。", code: "GUI003" };
+}
+
 export async function getContext(): Promise<Context> {
   if (hasBridge()) return api().get_context();
   return {
@@ -1010,7 +1152,7 @@ export async function getWorkflowStatus(): Promise<WorkflowStatus> {
     sources: [
       {
         id: "asf",
-        label: "ASF Sentinel-1",
+        label: "Sentinel-1",
         credential: creds.earthdata,
         status: ["none", "unavailable"].includes(creds.earthdata) ? "needs_config" : "configured",
         capabilities: ["cart import", "consistency check", "real download"],
@@ -1069,6 +1211,18 @@ export async function saveDownloadArchive(
 ): Promise<DownloadArchiveResult | ApiError> {
   if (hasBridge()) return api().save_download_archive(items);
   mockDownloadArchive = items.slice(0, 40);
+  return { ok: true, items: mockDownloadArchive };
+}
+
+export async function deleteDownloadArchiveItem(
+  item: DownloadArchiveItem,
+): Promise<DownloadArchiveResult | ApiError> {
+  if (hasBridge()) return api().delete_download_archive_item(item);
+  const key = `${item.kind || ""}:${(item.output_dir || item.id).replace(/[\\/]+$/, "").toLowerCase()}`;
+  mockDownloadArchive = mockDownloadArchive.filter((row) => {
+    const rowKey = `${row.kind || ""}:${(row.output_dir || row.id).replace(/[\\/]+$/, "").toLowerCase()}`;
+    return row.id !== item.id && rowKey !== key;
+  });
   return { ok: true, items: mockDownloadArchive };
 }
 
@@ -1314,6 +1468,51 @@ export async function setRegionAoiFile(path: string): Promise<AoiResult> {
     ok: true,
     aoi: { source: "VECTOR_FILE", role: "PROCESSING_AOI", bbox: MOCK_BBOX, geometry_path: path },
     aoi_geojson: polygonFromBbox(MOCK_BBOX),
+    aoi_feature_count: 1,
+    region_id: mock.region.region_id,
+    region_name: mock.region.name,
+  };
+}
+
+export async function previewAoiFile(path: string): Promise<AoiPreviewResult> {
+  if (hasBridge()) return api().preview_aoi_file(path);
+  if (!path.trim()) return { ok: false, error: "请提供矢量文件路径", code: "AOI001" };
+  return {
+    ok: true,
+    path,
+    file_name: path.split(/[\\/]/).pop() || "boundary.geojson",
+    total_features: 3,
+    fields: ["name", "type"],
+    display_field: "name",
+    features: [
+      { id: "0", index: 1, name: "示例边界 A", area_km2: 120.5, bbox: MOCK_BBOX, properties: { name: "示例边界 A", type: "county" } },
+      { id: "1", index: 2, name: "示例边界 B", area_km2: 86.2, bbox: MOCK_BBOX, properties: { name: "示例边界 B", type: "county" } },
+      { id: "2", index: 3, name: "示例边界 C", area_km2: 214.8, bbox: MOCK_BBOX, properties: { name: "示例边界 C", type: "county" } },
+    ],
+  };
+}
+
+export async function setRegionAoiFileFeatures(
+  path: string,
+  featureIds: string[],
+  nameField = "",
+  downloadMode: "merge" | "split" = "merge",
+): Promise<AoiResult> {
+  if (hasBridge()) {
+    const res = await api().set_region_aoi_file_features(path, featureIds, nameField, downloadMode);
+    if (res.ok) notifyContextChanged();
+    return res;
+  }
+  const region = ensureMockRegion();
+  mock.region = { ...region, has_aoi: true, bbox: MOCK_BBOX, aoi_geojson: polygonFromBbox(MOCK_BBOX) };
+  notifyContextChanged();
+  return {
+    ok: true,
+    aoi: { source: "VECTOR_FILE", role: "PROCESSING_AOI", bbox: MOCK_BBOX, geometry_path: path },
+    aoi_geojson: polygonFromBbox(MOCK_BBOX),
+    aoi_feature_count: featureIds.length || 3,
+    aoi_total_feature_count: 3,
+    download_mode: downloadMode,
     region_id: mock.region.region_id,
     region_name: mock.region.name,
   };
@@ -1488,6 +1687,17 @@ export async function importScenesFile(path: string): Promise<ScenesResult> {
   };
 }
 
+export async function previewScenesFile(path: string): Promise<ScenesResult> {
+  if (hasBridge()) {
+    const previewer = api().preview_scenes_file;
+    if (typeof previewer === "function") return previewer(path);
+    return api().import_scenes_file(path);
+  }
+  if (!path.trim()) return { ok: false, error: "请提供购物车文件路径", code: "ASF001" };
+  const scenes = [mockScene(0), mockScene(1), mockScene(2)];
+  return { ok: true, scenes, duplicates: [], errors: [] };
+}
+
 export async function importScenesDirectory(path: string): Promise<ScenesResult> {
   if (hasBridge()) {
     const res = await api().import_scenes_directory(path);
@@ -1500,6 +1710,25 @@ export async function importScenesDirectory(path: string): Promise<ScenesResult>
   else mock.standaloneSceneCount = scenes.length;
   notifyContextChanged();
   return { ok: true, scenes, duplicates: [], errors: [] };
+}
+
+export async function previewScenesDirectory(path: string): Promise<ScenesResult> {
+  if (hasBridge()) {
+    const previewer = api().preview_scenes_directory;
+    if (typeof previewer === "function") return previewer(path);
+    return api().import_scenes_directory(path);
+  }
+  if (!path.trim()) return { ok: false, error: "请提供 Sentinel-1 数据目录", code: "ASF001" };
+  const scenes = [mockScene(0), mockScene(1)];
+  return { ok: true, scenes, duplicates: [], errors: [] };
+}
+
+export async function clearOrbitCandidateScenes(): Promise<SimpleOk> {
+  if (hasBridge()) {
+    const clearer = api().clear_orbit_candidate_scenes;
+    if (typeof clearer === "function") return clearer();
+  }
+  return { ok: true };
 }
 
 export async function searchAsfScenes(params: AsfSearchParams): Promise<ScenesResult> {
@@ -1652,9 +1881,10 @@ export async function matchOrbitsDirectory(orbitDir: string): Promise<OrbitMatch
   };
 }
 
-export async function downloadOrbits(outputDir = ""): Promise<OrbitDownloadResult> {
-  if (hasBridge()) return api().download_orbits(outputDir);
-  const n = mockActiveSceneCount();
+export async function downloadOrbits(outputDir = "", sceneIds: string[] = []): Promise<OrbitDownloadResult> {
+  if (hasBridge()) return api().download_orbits(outputDir, sceneIds);
+  const selectedIds = sceneIds.filter(Boolean);
+  const n = selectedIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入 ASF 场景或本地 SLC 目录", code: "ASF001" };
   const root = outputDir || mock.workspace?.root || "C:\\InSAR";
   return {
@@ -1668,7 +1898,7 @@ export async function downloadOrbits(outputDir = ""): Promise<OrbitDownloadResul
     failed: 0,
     has_failures: false,
     results: Array.from({ length: n }, (_, i) => ({
-      scene_id: mockScene(i).scene_id,
+      scene_id: selectedIds[i] ?? mockScene(i).scene_id,
       outcome: "success",
       orbit_file: `S1A_OPER_AUX_POEORB_OPOD_202403${13 + i}T120000_V202403${12 + i}T000000_202403${13 + i}T000000.EOF`,
       orbit_type: "POEORB",
@@ -1705,13 +1935,15 @@ let mockOrbitState: OrbitDownloadStatus = {
 
 export async function startOrbitDownload(
   outputDir = "",
+  sceneIds: string[] = [],
 ): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().start_orbit_download(outputDir);
-  const n = mockActiveSceneCount();
+  if (hasBridge()) return api().start_orbit_download(outputDir, sceneIds);
+  const selectedIds = sceneIds.filter(Boolean);
+  const n = selectedIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入 ASF 场景或本地 SLC 目录", code: "ASF001" };
   const root = outputDir || mock.region?.root || mock.project?.root || mock.workspace?.root || "C:\\InSAR";
   const results = Array.from({ length: n }, (_, i) => ({
-    scene_id: mockScene(i).scene_id,
+    scene_id: selectedIds[i] ?? mockScene(i).scene_id,
     outcome: "success",
     orbit_file: `S1A_OPER_AUX_POEORB_OPOD_202403${13 + i}T120000_V202403${12 + i}T000000_202403${13 + i}T000000.EOF`,
     orbit_type: "POEORB",
@@ -1817,9 +2049,9 @@ function mockDemPlan(
     buffer_degrees: 0.05,
     source_vertical_datum: "EGM2008",
     target_vertical_datum: "WGS84_ELLIPSOID",
-    raw_dem_path: `${root}\\${safe}\\DEM\\${demSourceStem(dataset)}.tif`,
-    ellipsoid_dem_path: `${root}\\${safe}\\DEM\\${demSourceStem(dataset)}_ellipsoid.tif`,
-    sarscape_ready_dem_path: `${root}\\${safe}\\DEM\\${demSourceStem(dataset)}_dem`,
+    raw_dem_path: `${root}\\${demSourceStem(dataset)}.tif`,
+    ellipsoid_dem_path: `${root}\\${demSourceStem(dataset)}_ellipsoid.tif`,
+    sarscape_ready_dem_path: `${root}\\${demSourceStem(dataset)}_dem`,
   };
 }
 
@@ -1863,6 +2095,7 @@ let mockDlState: DownloadStatus = {
     failed: 0,
     interrupted: 0,
     has_failures: false,
+    paused_scene_ids: [],
     resume_supported: true,
     resume_hint: "暂停或强制结束会保留 .part；再次开始同一输出目录会断点续传。",
     retry_supported: false,
@@ -1916,6 +2149,42 @@ export async function startAsfDownload(
     log: [],
   };
   return { ok: true };
+}
+
+export async function appendAsfDownload(
+  outputDir = "",
+  maxExtraWorkers = 1,
+  sceneIds: string[] = [],
+): Promise<{ ok: boolean; error?: string; code?: string; appended?: number; skipped?: number; concurrency?: number }> {
+  if (hasBridge()) return api().append_asf_download(outputDir, maxExtraWorkers, sceneIds);
+  const n = sceneIds.length || 0;
+  if (!n) return { ok: false, error: "请先勾选要追加下载的 SAR 影像", code: "ASF001" };
+  mockDlState = {
+    ...mockDlState,
+    state: mockDlState.state === "idle" ? "running" : mockDlState.state,
+    total: mockDlState.total + n,
+    concurrency: Math.max(mockDlState.concurrency ?? 1, (mockDlState.concurrency ?? 1) + Math.min(n, maxExtraWorkers)),
+  };
+  return { ok: true, appended: n, skipped: 0, concurrency: mockDlState.concurrency };
+}
+
+export async function pauseAsfScenes(sceneIds: string[] = []): Promise<{ ok: boolean; error?: string; code?: string; paused?: number }> {
+  if (hasBridge()) return api().pause_asf_scenes(sceneIds);
+  const paused = new Set([...(mockDlState.paused_scene_ids ?? []), ...sceneIds]);
+  mockDlState = { ...mockDlState, paused_scene_ids: Array.from(paused), state: "paused", paused: true };
+  return { ok: true, paused: sceneIds.length };
+}
+
+export async function resumeAsfScenes(sceneIds: string[] = []): Promise<{ ok: boolean; error?: string; code?: string; resumed?: number }> {
+  if (hasBridge()) return api().resume_asf_scenes(sceneIds);
+  const targets = new Set(sceneIds);
+  mockDlState = {
+    ...mockDlState,
+    paused_scene_ids: (mockDlState.paused_scene_ids ?? []).filter((id) => !targets.has(id)),
+    state: "running",
+    paused: false,
+  };
+  return { ok: true, resumed: sceneIds.length };
 }
 
 export async function pauseAsfDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
@@ -1989,10 +2258,36 @@ export async function runDemDownload(
   outputDir = "",
   dataset = "COP30",
   keySource = "auto",
+  convert = true,
 ): Promise<RunSummaryResult> {
-  if (hasBridge()) return api().run_dem_download(outputDir, dataset, keySource);
+  if (hasBridge()) return api().run_dem_download(outputDir, dataset, keySource, convert);
   const plan = await planDemDownload(outputDir, dataset);
   if (!plan.ok) return plan;
+  if (!convert) {
+    return {
+      ok: true,
+      summary_line: "1 downloaded, 0 skipped, 0 failed, 0 interrupted",
+      total: 1,
+      succeeded: 1,
+      skipped: 0,
+      failed: 0,
+      interrupted: 0,
+      has_failures: false,
+      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
+      results: [
+        {
+          region_safe_name: mock.region?.safe_name ?? "region",
+          dataset,
+          outcome: "success",
+          bytes_written: 1024,
+          message: "mock DEM ok",
+        },
+      ],
+      raw_dem_path: String(plan.plan.raw_dem_path ?? ""),
+      ellipsoid_dem_path: "",
+      sarscape_ready_dem_path: "",
+    };
+  }
   const conversion = await runDemConversion(outputDir);
   return {
     ok: true,
@@ -2005,7 +2300,7 @@ export async function runDemDownload(
     failed: 0,
     interrupted: 0,
     has_failures: conversion.ok ? conversion.has_failures : true,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\DEM\\dem_download_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
     results: [
       {
         region_safe_name: mock.region?.safe_name ?? "region",
@@ -2017,7 +2312,7 @@ export async function runDemDownload(
     ],
     download: {
       summary_line: "1 downloaded, 0 skipped, 0 failed, 0 interrupted",
-      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\DEM\\dem_download_results.csv`,
+      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
     },
     conversion: conversion.ok ? conversion : null,
     conversion_results_path: conversion.ok ? conversion.results_path : "",
@@ -2035,12 +2330,38 @@ export async function runDemDownloadBbox(
   outputDir = "",
   dataset = "COP30",
   keySource = "auto",
+  convert = true,
 ): Promise<RunSummaryResult> {
   if (hasBridge()) {
-    return api().run_dem_download_bbox(west, east, south, north, outputDir, dataset, keySource);
+    return api().run_dem_download_bbox(west, east, south, north, outputDir, dataset, keySource, convert);
   }
   const plan = await planDemDownloadBbox(west, east, south, north, outputDir, dataset);
   if (!plan.ok) return plan;
+  if (!convert) {
+    return {
+      ok: true,
+      summary_line: "1 downloaded, 0 skipped, 0 failed, 0 interrupted",
+      total: 1,
+      succeeded: 1,
+      skipped: 0,
+      failed: 0,
+      interrupted: 0,
+      has_failures: false,
+      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
+      results: [
+        {
+          region_safe_name: "standalone_dem",
+          dataset,
+          outcome: "success",
+          bytes_written: 1024,
+          message: "mock DEM ok",
+        },
+      ],
+      raw_dem_path: String(plan.plan.raw_dem_path ?? ""),
+      ellipsoid_dem_path: "",
+      sarscape_ready_dem_path: "",
+    };
+  }
   const conversion = await runDemConversionBbox(west, east, south, north, outputDir, dataset);
   return {
     ok: true,
@@ -2053,7 +2374,7 @@ export async function runDemDownloadBbox(
     failed: 0,
     interrupted: 0,
     has_failures: conversion.ok ? conversion.has_failures : true,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\DEM\\dem_download_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
     results: [
       {
         region_safe_name: "standalone_dem",
@@ -2065,7 +2386,7 @@ export async function runDemDownloadBbox(
     ],
     download: {
       summary_line: "1 downloaded, 0 skipped, 0 failed, 0 interrupted",
-      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\DEM\\dem_download_results.csv`,
+      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
     },
     conversion: conversion.ok ? conversion : null,
     conversion_results_path: conversion.ok ? conversion.results_path : "",
@@ -2148,9 +2469,9 @@ export async function planDemConversion(outputDir = ""): Promise<ConvertResult> 
       target_vertical_datum: "WGS84_ELLIPSOID",
       requires_conversion: requires,
       requires_geoid: requires,
-      raw_dem_path: `${root}\\${safe}\\DEM\\${demSourceStem(dataset)}.tif`,
-      ellipsoid_dem_path: `${root}\\${safe}\\DEM\\${demSourceStem(dataset)}_ellipsoid.tif`,
-      sarscape_ready_dem_path: `${root}\\${safe}\\DEM\\${demSourceStem(dataset)}_dem`,
+      raw_dem_path: `${root}\\${demSourceStem(dataset)}.tif`,
+      ellipsoid_dem_path: `${root}\\${demSourceStem(dataset)}_ellipsoid.tif`,
+      sarscape_ready_dem_path: `${root}\\${demSourceStem(dataset)}_dem`,
       steps,
     },
     report: mockReport(),
@@ -2199,8 +2520,8 @@ export async function planLocalDemConversion(
     plan: {
       dataset: "USER_LOCAL",
       raw_dem_path: inputPath,
-      ellipsoid_dem_path: `${root}\\DEM\\${safe}_ellipsoid.tif`,
-      sarscape_ready_dem_path: `${root}\\DEM\\${safe}_dem`,
+      ellipsoid_dem_path: `${root}\\${safe}_ellipsoid.tif`,
+      sarscape_ready_dem_path: `${root}\\${safe}_dem`,
       steps: requires
         ? [
             {
@@ -2291,7 +2612,7 @@ export async function runDemConversion(outputDir = ""): Promise<RunSummaryResult
     skipped: 0,
     failed: 0,
     has_failures: false,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert\\dem_convert_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.csv`,
     results: [
       {
         region_safe_name: mock.region?.safe_name ?? "region",
@@ -2308,9 +2629,10 @@ export async function runLocalDemConversion(
   inputPath: string,
   outputDir = "",
   sourceVerticalDatum = "auto",
+  outputMode: "ellipsoid" | "sarscape" = "sarscape",
 ): Promise<RunSummaryResult> {
   if (hasBridge()) {
-    return api().run_local_dem_conversion(inputPath, outputDir, sourceVerticalDatum);
+    return api().run_local_dem_conversion(inputPath, outputDir, sourceVerticalDatum, outputMode);
   }
   const plan = await planLocalDemConversion(inputPath, outputDir, sourceVerticalDatum);
   if (!plan.ok) return plan;
@@ -2325,13 +2647,19 @@ export async function runLocalDemConversion(
     skipped: 0,
     failed: 0,
     has_failures: false,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert\\dem_convert_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.csv`,
+    raw_dem_path: String(plan.plan.raw_dem_path ?? inputPath),
+    ellipsoid_dem_path: String(plan.plan.ellipsoid_dem_path ?? ""),
+    sarscape_ready_dem_path: outputMode === "ellipsoid" ? "" : String(plan.plan.sarscape_ready_dem_path ?? ""),
     results: [
       {
         region_safe_name: mock.region?.safe_name ?? "local_dem",
         dataset: "USER_LOCAL",
         outcome: plan.auto.requires_conversion ? "success" : "copied",
-        output_path: String(plan.plan.sarscape_ready_dem_path ?? ""),
+        output_path:
+          outputMode === "ellipsoid"
+            ? String(plan.plan.ellipsoid_dem_path ?? "")
+            : String(plan.plan.sarscape_ready_dem_path ?? ""),
         message: "mock local DEM conversion ok",
       },
     ],
@@ -2362,7 +2690,7 @@ export async function runDemConversionBbox(
     skipped: 0,
     failed: 0,
     has_failures: false,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert\\dem_convert_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.csv`,
     results: [
       {
         region_safe_name: "standalone_dem",

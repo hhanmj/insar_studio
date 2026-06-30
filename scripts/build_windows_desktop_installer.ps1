@@ -10,7 +10,7 @@
     Version string embedded in the installer.
 #>
 param(
-    [string]$Version = "2.0.2"
+    [string]$Version = "2.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +27,8 @@ $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {
     foreach ($candidate in @(
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe")) {
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe")) {
         if (Test-Path $candidate) { $iscc = $candidate; break }
     }
 }

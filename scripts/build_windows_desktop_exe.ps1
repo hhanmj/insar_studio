@@ -11,7 +11,8 @@
       * the built web UI (ui\dist -> insar_prep\desktop\web),
       * pywebview + pythonnet/clr_loader (the WebView2 backend) + bottle/proxy_tools,
       * shapely (AOI geometry), pydantic, the download extra (requests/certifi/
-        keyring) and the convert extra (rasterio/GDAL) + the bundled EGM96 geoid,
+        keyring), and optionally the convert extra (rasterio/GDAL) + the bundled
+        EGM96 geoid,
     so every panel (AOI / scenes / download plan / DEM convert / report) works in
     the frozen build. The build itself stays offline and downloads no SAR/DEM data.
 
@@ -22,6 +23,18 @@
 .PARAMETER SkipUi
     Skip the `npm run build` step and reuse the existing ui\dist.
 
+.PARAMETER ExternalDemComponent
+    Build a lean desktop exe that excludes rasterio/GDAL. DEM ellipsoid
+    conversion will then require the optional DEM/GDAL component.
+
+.PARAMETER SkipSelfTest
+    Skip launching the frozen exe with --selftest. Useful on local machines where
+    Windows Application Control blocks freshly built test executables.
+
+.PARAMETER BoundaryDir
+    Optional local administrative boundary directory to bundle. It may contain
+    either 中国_省/市/县.geojson or normalized china_province/city/county.geojson.
+
 .NOTES
     Run from anywhere; resolves the repo root from its own location. Requires the
     `desktop`, `download`, and `convert` extras installed in the active env
@@ -30,7 +43,10 @@
 #>
 
 param(
-    [switch]$SkipUi
+    [switch]$SkipUi,
+    [switch]$ExternalDemComponent,
+    [switch]$SkipSelfTest,
+    [string]$BoundaryDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,6 +120,9 @@ function Invoke-DesktopSelfTest {
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 Write-Host "Repo root: $RepoRoot"
+if ($ExternalDemComponent) {
+    Write-Host "DEM/GDAL will be externalized into the optional component." -ForegroundColor Yellow
+}
 
 # 1. Build the web frontend (ui\dist) unless explicitly skipped.
 $uiDist = Join-Path $RepoRoot "ui\dist\index.html"
@@ -120,10 +139,34 @@ $chinaName = "$([char]0x4E2D)$([char]0x56FD)"
 $provinceName = "$([char]0x7701)"
 $cityName = "$([char]0x5E02)"
 $countyName = "$([char]0x53BF)"
-$boundarySource = Join-Path $RepoRoot $boundaryDirName
+$boundaryCandidates = @()
+if (-not [string]::IsNullOrWhiteSpace($BoundaryDir)) {
+    $boundaryCandidates += $BoundaryDir
+}
+$boundaryCandidates += @(
+    (Join-Path $RepoRoot $boundaryDirName),
+    (Join-Path (Split-Path $RepoRoot -Parent) $boundaryDirName),
+    (Join-Path $RepoRoot "src\insar_prep\desktop\boundaries")
+)
+$boundarySource = $null
+foreach ($candidateRaw in $boundaryCandidates) {
+    if ([string]::IsNullOrWhiteSpace([string]$candidateRaw)) { continue }
+    try {
+        $candidate = (Resolve-Path -LiteralPath $candidateRaw -ErrorAction Stop).Path
+    } catch {
+        $candidate = [string]$candidateRaw
+    }
+    if (Test-Path -LiteralPath $candidate -PathType Container) {
+        $boundarySource = $candidate
+        break
+    }
+}
 $boundaryStage = Join-Path $RepoRoot ".build_boundaries"
-if (-not (Test-Path $boundarySource)) {
-    Write-Host "Local boundary directory not found; building without bundled offline administrative boundaries: $boundarySource" -ForegroundColor Yellow
+if ($boundarySource) {
+    Write-Host "Using local boundary directory: $boundarySource" -ForegroundColor Green
+} else {
+    Write-Host "Local boundary directory not found; building without bundled offline administrative boundaries." -ForegroundColor Yellow
+    Write-Host "Tried: $($boundaryCandidates -join '; ')" -ForegroundColor DarkYellow
 }
 
 # 2. Clean previous desktop build artifacts (leave other dist\ files in place).
@@ -137,17 +180,24 @@ Remove-Item -Force (Join-Path $RepoRoot "dist\insar-prep-desktop.exe") -ErrorAct
 
 New-Item -ItemType Directory -Force -Path $boundaryStage | Out-Null
 $boundaryCopies = @(
-    @{ Source = "$chinaName`_$provinceName.geojson"; Target = "china_province.geojson" },
-    @{ Source = "$chinaName`_$cityName.geojson"; Target = "china_city.geojson" },
-    @{ Source = "$chinaName`_$countyName.geojson"; Target = "china_county.geojson" }
+    @{ Sources = @("$chinaName`_$provinceName.geojson", "china_province.geojson"); Target = "china_province.geojson" },
+    @{ Sources = @("$chinaName`_$cityName.geojson", "china_city.geojson"); Target = "china_city.geojson" },
+    @{ Sources = @("$chinaName`_$countyName.geojson", "china_county.geojson"); Target = "china_county.geojson" }
 )
 $copiedBoundaryCount = 0
-if (Test-Path $boundarySource) {
+if ($boundarySource -and (Test-Path -LiteralPath $boundarySource)) {
     foreach ($item in $boundaryCopies) {
-        $src = Join-Path $boundarySource $item.Source
+        $src = $null
+        foreach ($sourceName in $item.Sources) {
+            $candidate = Join-Path $boundarySource $sourceName
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $src = $candidate
+                break
+            }
+        }
         $dst = Join-Path $boundaryStage $item.Target
-        if (-not (Test-Path $src)) {
-            Write-Host "Boundary file not found; skipping: $src" -ForegroundColor Yellow
+        if (-not $src) {
+            Write-Host "Boundary file not found; skipping target $($item.Target). Expected one of: $($item.Sources -join ', ')" -ForegroundColor Yellow
             continue
         }
         Copy-Item -LiteralPath $src -Destination $dst -Force
@@ -190,7 +240,6 @@ $pyArgs = @(
     "--hidden-import", "socks",
     "--collect-all", "certifi",
     "--collect-all", "keyring",
-    "--collect-all", "rasterio",
     "--collect-data", "insar_prep",
     "--copy-metadata", "keyring",
     "--copy-metadata", "asf-search",
@@ -202,9 +251,22 @@ $pyArgs = @(
     "--exclude-module", "IPython",
     "--exclude-module", "matplotlib",
     "--exclude-module", "shapely.tests",
-    "--exclude-module", "rasterio.rio",
     "packaging/insar_prep_desktop_entry.py"
 )
+
+if ($ExternalDemComponent) {
+    $entry = $pyArgs[-1]
+    $pyArgs = $pyArgs[0..($pyArgs.Length - 2)] + @(
+        "--exclude-module", "rasterio",
+        "--exclude-module", "rasterio.rio"
+    ) + @($entry)
+} else {
+    $entry = $pyArgs[-1]
+    $pyArgs = $pyArgs[0..($pyArgs.Length - 2)] + @(
+        "--collect-all", "rasterio",
+        "--exclude-module", "rasterio.rio"
+    ) + @($entry)
+}
 
 Invoke-Step "PyInstaller desktop build" {
     & $py @pyArgs
@@ -215,20 +277,29 @@ if (-not (Test-Path $exe)) { throw "Expected exe not found: $exe" }
 $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 Write-Host "Built: $exe ($sizeMb MB)" -ForegroundColor Green
 
-Write-Host ""
-Write-Host "== Desktop exe off-screen self-test ==" -ForegroundColor Cyan
-$log = Join-Path $env:TEMP "insar_desktop_selftest.log"
-Remove-Item -Force $log -ErrorAction SilentlyContinue
-$proc = Invoke-DesktopSelfTest -Path $exe
-if ($proc.ExitCode -ne 0) {
-    if (Test-Path $log) {
-        Write-Host "--- selftest log ---" -ForegroundColor Red
-        Get-Content $log | Write-Host
+if ($SkipSelfTest) {
+    Write-Host ""
+    Write-Host "== Desktop exe off-screen self-test skipped ==" -ForegroundColor Yellow
+} else {
+    Write-Host ""
+    Write-Host "== Desktop exe off-screen self-test ==" -ForegroundColor Cyan
+    $log = Join-Path $env:TEMP "insar_desktop_selftest.log"
+    Remove-Item -Force $log -ErrorAction SilentlyContinue
+    $proc = Invoke-DesktopSelfTest -Path $exe
+    if ($proc.ExitCode -ne 0) {
+        if (Test-Path $log) {
+            Write-Host "--- selftest log ---" -ForegroundColor Red
+            Get-Content $log | Write-Host
+        }
+        throw "Desktop exe self-test failed (exit code $($proc.ExitCode))"
     }
-    throw "Desktop exe self-test failed (exit code $($proc.ExitCode))"
+    Write-Host "Desktop exe self-test OK (core exercised end-to-end, exit 0)" -ForegroundColor Green
 }
-Write-Host "Desktop exe self-test OK (core exercised end-to-end, exit 0)" -ForegroundColor Green
 Remove-Item -Recurse -Force $boundaryStage -ErrorAction SilentlyContinue
 
 Write-Host ""
-Write-Host "== DONE: dist\insar-prep-desktop.exe built and smoke-tested ==" -ForegroundColor Green
+if ($SkipSelfTest) {
+    Write-Host "== DONE: dist\insar-prep-desktop.exe built (self-test skipped) ==" -ForegroundColor Green
+} else {
+    Write-Host "== DONE: dist\insar-prep-desktop.exe built and smoke-tested ==" -ForegroundColor Green
+}

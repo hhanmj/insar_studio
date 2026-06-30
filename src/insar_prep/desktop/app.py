@@ -12,9 +12,29 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 from insar_prep.desktop.api import Api
+
+
+def _schedule_force_exit(delay: float = 0.8) -> None:
+    """Force the desktop process down after normal shutdown has had a moment.
+
+    WebView2 / pythonnet can occasionally keep helper threads alive after the
+    native window is gone.  The desktop app has no useful background mode, so
+    after the API saves state and stops jobs we terminate the current process as
+    a final guard against invisible leftovers.
+    """
+    if os.environ.get("INSAR_DESKTOP_NO_FORCE_EXIT"):
+        return
+
+    def exit_now() -> None:
+        os._exit(0)  # noqa: SLF001 - deliberate last-resort desktop cleanup
+
+    timer = threading.Timer(delay, exit_now)
+    timer.daemon = True
+    timer.start()
 
 
 def resolve_url() -> str:
@@ -48,7 +68,7 @@ def run() -> int:
     import webview  # noqa: PLC0415 - optional dependency, imported lazily
 
     api = Api()
-    webview.create_window(
+    window = webview.create_window(
         "InSAR Studio",
         url=resolve_url(),
         js_api=api,
@@ -59,5 +79,19 @@ def run() -> int:
         frameless=True,
         easy_drag=False,
     )
-    webview.start()
+
+    def shutdown_api(*_args: object, **_kwargs: object) -> None:
+        api.shutdown()
+
+    for event_name in ("closing", "closed"):
+        try:
+            event = getattr(window.events, event_name)
+            event += shutdown_api
+        except Exception:
+            pass
+    try:
+        webview.start()
+    finally:
+        api.shutdown()
+        _schedule_force_exit()
     return 0

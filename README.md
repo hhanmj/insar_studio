@@ -16,7 +16,7 @@ InSAR Studio 是一个面向 InSAR 与遥感数据准备流程的桌面助手，
 
 ## 下载与使用
 
-请在 GitHub Releases 中下载最新版本的 Windows 便携包或 exe。
+请在 GitHub Releases 中下载最新版本的 Windows 便携包或安装包。
 
 首次使用建议先进入“设置”：
 
@@ -55,8 +55,22 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_exe.ps1
 构建安装包需要额外安装 Inno Setup 6：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer.ps1 -Version 2.0.2
+powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer.ps1 -Version 2.1
 ```
+
+安装包构建流程已接入；正式代码签名证书、发布信誉和静默覆盖更新策略仍需在后续版本继续完善。
+
+## v2.1 更新要点
+
+- 修复软件关闭后后台进程偶发残留的问题。
+- 强化下载任务持久化，暂停、失败、结束和已删除记录在重启后保持正确状态。
+- 优化 Sentinel-1 / ASF 检索、下载队列、断点续传、失败重试和详细日志。
+- 增加 SAR 下载工作台，支持搜索、勾选、全选当前列表、高亮影像和单景操作。
+- 精密轨道默认承接 Sentinel-1 检索结果，也支持单独导入 SAR 文件或目录生成轨道候选。
+- 移除精密轨道中的本地轨道库入口，简化为下载所选影像对应的 POEORB/EOF。
+- 优化 AOI 与行政区边界，多要素边界可预览、筛选、选择和绑定。
+- 调整 DEM 下载/转换入口，支持 DEM/GDAL 高级转换组件外置。
+- 改进 iOS 风格界面、顶部资源区、下载中心角标、新手引导和地图交互。
 
 ## 仓库边界
 
@@ -69,12 +83,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows_desktop_installer
 
 ## 体积说明
 
-当前 Windows 单文件版本体积主要来自 Python 运行环境、PyInstaller 引导器、pywebview/WebView2 桥接依赖，以及 rasterio/GDAL、numpy、shapely 等 DEM 与几何处理依赖。在线地图瓦片、ASF 元数据、SAR 影像、DEM 和 GACOS 数据不会塞进软件本体，应作为用户本地缓存或下载成果保存。
+发行版默认采用“轻量主程序 + 按需组件”的策略：主程序保留界面、ASF 检索下载、轨道下载、AOI 与任务队列；rasterio/GDAL/numpy 等 DEM 高级转换运行库会作为可选组件从 Release 下载，不默认塞进主程序。在线地图瓦片、行政区缓存、ASF 元数据、SAR 影像、DEM 和 GACOS 数据不会进入软件本体，应作为用户本地缓存或下载成果保存。
 
 ## 后续计划
 
-- 制作正式 Windows 安装包版本。
+- 完善正式 Windows 安装包与软件内覆盖更新。
 - 接入 Sentinel-2、Landsat、HLS 等免费遥感数据源。
+- 学习 GeoDownloader 的批量缓存判断、多要素任务拆分、下载工作台和轻量安装逻辑。
 - 优化多数据源任务队列、缓存机制和更新提醒。
 - 继续完善 AOI、下载日志、DEM 转换和新手引导体验。
 

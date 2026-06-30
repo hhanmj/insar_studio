@@ -133,7 +133,7 @@ const MAP_LAYERS: Record<
   },
   googleSatellite: {
     label: "Google 卫星",
-    desc: "GeoDownloader 同类图源",
+    desc: "部分网络不可达，需系统代理",
     url: "https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
     attribution: "&copy; Google",
     subdomains: "0123",
@@ -142,7 +142,7 @@ const MAP_LAYERS: Record<
   },
   googleMap: {
     label: "Google 地图",
-    desc: "道路底图，部分网络可能不可达",
+    desc: "部分网络不可达，需系统代理",
     url: "https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
     attribution: "&copy; Google",
     subdomains: "0123",
@@ -151,7 +151,7 @@ const MAP_LAYERS: Record<
   },
   googleHybrid: {
     label: "Google 混合",
-    desc: "卫星 + 注记",
+    desc: "部分网络不可达，需系统代理",
     url: "https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
     attribution: "&copy; Google",
     subdomains: "0123",
@@ -769,6 +769,7 @@ export function WorkbenchMap({
   const [tilesReady, setTilesReady] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [mapApi, setMapApi] = useState<LeafletMap | null>(null);
+  const [scenePopup, setScenePopup] = useState<{ sceneId: string; position: LatLngExpression } | null>(null);
   const layerBackdropRef = useRef<HTMLDivElement | null>(null);
   const layerPanelRef = useRef<HTMLDivElement | null>(null);
   const visibleScenes = useMemo(
@@ -788,6 +789,13 @@ export function WorkbenchMap({
   const token = tiandituToken.trim();
   const layer = MAP_LAYERS[layerKey].requiresToken && !token ? MAP_LAYERS.cartoLight : MAP_LAYERS[layerKey];
   const layerUrl = layer.url.replace("{token}", encodeURIComponent(token));
+  const popupScene = useMemo(() => {
+    if (!scenePopup?.sceneId) return null;
+    const scene = scenes.find((item) => item.scene_id === scenePopup.sceneId);
+    if (!scene) return null;
+    const index = Math.max(0, scenes.findIndex((item) => item.scene_id === scenePopup.sceneId));
+    return { scene, index };
+  }, [scenePopup?.sceneId, scenes]);
 
   useEffect(() => setTilesReady(false), [layerKey]);
 
@@ -854,6 +862,7 @@ export function WorkbenchMap({
             event.originalEvent.preventDefault();
             event.originalEvent.stopPropagation();
             onSceneSelect?.(scene.scene_id);
+            setScenePopup({ sceneId: scene.scene_id, position: event.latlng });
           };
           const options = {
             color: selected ? "#ff2d55" : orbitColor,
@@ -877,11 +886,7 @@ export function WorkbenchMap({
                   pathOptions={options}
                   interactive={!drawActive}
                   eventHandlers={{ click: handleSceneClick }}
-                >
-                  <Popup>
-                    <ScenePopup scene={scene} index={index} />
-                  </Popup>
-                </Polygon>
+                />
                 {selected && scene.footprint_bbox && (
                   <CircleMarker
                     center={centerFromBbox(scene.footprint_bbox)}
@@ -907,11 +912,7 @@ export function WorkbenchMap({
                 pathOptions={options}
                 interactive={!drawActive}
                 eventHandlers={{ click: handleSceneClick }}
-              >
-                <Popup>
-                  <ScenePopup scene={scene} index={index} />
-                </Popup>
-              </Rectangle>
+              />
               {selected && scene.footprint_bbox && (
                 <CircleMarker
                   center={centerFromBbox(scene.footprint_bbox)}
@@ -923,6 +924,16 @@ export function WorkbenchMap({
             </Fragment>
           );
         })}
+        {popupScene && scenePopup && !drawActive && (
+          <Popup
+            position={scenePopup.position}
+            eventHandlers={{
+              remove: () => setScenePopup(null),
+            }}
+          >
+            <ScenePopup scene={popupScene.scene} index={popupScene.index} />
+          </Popup>
+        )}
         <DrawLayer
           mode={drawMode}
           active={drawActive}
@@ -974,12 +985,6 @@ export function WorkbenchMap({
           </div>
         )}
       </div>
-
-      {selectedSceneId && (
-        <div className="pointer-events-none absolute bottom-4 left-4 z-[500] max-w-[460px] truncate rounded-2xl border border-white/55 bg-white/72 px-3 py-2 font-mono text-[11px] text-[#be123c] shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/72" title={selectedSceneId}>
-          高亮：{selectedSceneId}
-        </div>
-      )}
 
       {layersOpen && (
         <div

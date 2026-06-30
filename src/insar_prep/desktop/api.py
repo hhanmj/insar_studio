@@ -48,6 +48,48 @@ def _normalise_proxy_url(value: object) -> str:
     return proxy_url
 
 
+def _format_status_log_entry(entry: dict[str, Any]) -> str:
+    detail = str(entry.get("detail") or "").strip()
+    if not detail:
+        return ""
+    try:
+        ts = float(entry.get("ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return detail
+    if ts > 10_000_000_000:
+        ts = ts / 1000
+    return f"[{time.strftime('%Y/%m/%d %H:%M:%S', time.localtime(ts))}] {detail}"
+
+
+def _is_update_installer(path: Path) -> bool:
+    """Return True when a downloaded release asset can be used as an installer."""
+    name = path.name.lower()
+    return name.endswith(".msi") or (
+        name.endswith(".exe") and ("setup" in name or "installer" in name)
+    )
+
+
+def _launch_update_installer(path: Path) -> None:
+    """Start the downloaded installer with quiet per-user update arguments."""
+    import subprocess  # noqa: PLC0415
+
+    name = path.name.lower()
+    if name.endswith(".msi"):
+        args = ["msiexec.exe", "/i", str(path), "/qn", "/norestart"]
+    else:
+        args = [
+            str(path),
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/CLOSEAPPLICATIONS",
+            "/RESTARTAPPLICATIONS",
+        ]
+    subprocess.Popen(args, close_fds=True)  # noqa: S603 - path is a downloaded release asset.
+
+
 def _detect_system_proxy() -> str:
     """Return the OS/browser proxy, if one is configured."""
     try:
@@ -107,9 +149,19 @@ def _asf_network_candidates(settings: dict) -> list[dict[str, Any]]:
 
 def _missing_dep(feature: str, exc: Exception) -> dict:
     """Friendly envelope when an optional dependency is not installed."""
+    text = str(exc)
+    if "DEM" in feature and ("rasterio" in text.lower() or "convert" in text.lower()):
+        return {
+            "ok": False,
+            "error": (
+                f"{feature}需要 DEM 高级转换组件。请到“设置 → 更新与组件”安装该组件后重试。"
+                f" 原因：{text}"
+            ),
+            "code": "DEP000",
+        }
     return {
         "ok": False,
-        "error": f"{feature}需要可选依赖，但当前环境未安装：{exc}",
+        "error": f"{feature}需要可选依赖，但当前环境未安装：{text}",
         "code": "DEP000",
     }
 
@@ -136,6 +188,8 @@ def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
         name = str(item.get("name") or "").strip()
         status = str(item.get("status") or "").strip()
         detail = str(item.get("detail") or "").strip()
+        if status == "deleted":
+            continue
         if not task_id or not name or not status:
             continue
         try:
@@ -195,6 +249,55 @@ def _download_archive_identity(item: dict[str, Any]) -> str:
     return task_id
 
 
+def _clean_download_archive_deleted_keys(value: Any) -> set[str]:
+    """Return persisted archive tombstones."""
+    if not isinstance(value, list):
+        return set()
+    out: set[str] = set()
+    for item in value[:240]:
+        key = str(item or "").strip()
+        if key:
+            out.add(key[:600])
+    return out
+
+
+def _deleted_download_archive_keys_from_items(value: Any) -> set[str]:
+    """Extract tombstones from old archive rows saved with status=deleted."""
+    if not isinstance(value, list):
+        return set()
+    out: set[str] = set()
+    for item in value[:120]:
+        if not isinstance(item, dict) or str(item.get("status") or "") != "deleted":
+            continue
+        candidate = {**item, "status": "cancelled"}
+        cleaned = _clean_download_archive([candidate])
+        if cleaned:
+            out.add(_download_archive_identity(cleaned[0]))
+    return out
+
+
+def _filter_deleted_download_archive(
+    items: list[dict[str, Any]],
+    deleted_keys: set[str],
+) -> list[dict[str, Any]]:
+    """Remove records the user explicitly deleted from history."""
+    if not deleted_keys:
+        return items
+    return [item for item in items if _download_archive_identity(item) not in deleted_keys]
+
+
+def _download_archive_status_rank(item: dict[str, Any]) -> int:
+    """Prefer terminal records over stale queue records when timestamps tie."""
+    status = str(item.get("status") or "")
+    if status in {"finished", "failed", "cancelled", "interrupted", "timeout"}:
+        return 4
+    if status == "paused":
+        return 3
+    if status == "running":
+        return 2
+    return 1
+
+
 def _dedupe_download_archive(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse duplicate records for the same task, keeping the newest one."""
     by_key: dict[str, dict[str, Any]] = {}
@@ -203,7 +306,16 @@ def _dedupe_download_archive(items: list[dict[str, Any]]) -> list[dict[str, Any]
         if not key:
             continue
         prev = by_key.get(key)
-        if prev is None or int(item.get("ts") or 0) >= int(prev.get("ts") or 0):
+        item_ts = int(item.get("ts") or 0)
+        prev_ts = int(prev.get("ts") or 0) if prev is not None else -1
+        if (
+            prev is None
+            or item_ts > prev_ts
+            or (
+                item_ts == prev_ts
+                and _download_archive_status_rank(item) > _download_archive_status_rank(prev)
+            )
+        ):
             by_key[key] = item
     return sorted(by_key.values(), key=lambda row: int(row.get("ts") or 0), reverse=True)[:40]
 
@@ -311,12 +423,15 @@ class Api:
         self._orbit_download = OrbitDownloadJob()
         self._activity = ActivityLog()
         self._download_archive: list[dict[str, Any]] = []
+        self._deleted_archive_keys: set[str] = set()
         self._standalone_scenes: list[Any] = []
+        self._orbit_candidate_scenes: list[Any] = []
         self._last_orbit_report: Any | None = None
         self._metadata_status: dict[str, Any] = self._idle_metadata_status()
         self._network_settings = self._default_network_settings()
         self._applied_proxy_url: str | None = None
         self._window_maximized = False
+        self._shutdown_started = False
         self._state_path = self._desktop_state_path()
         self._load_state()
         self._apply_network_settings()
@@ -380,8 +495,15 @@ class Api:
             settings = data.get("network_settings")
             if isinstance(settings, dict):
                 self._network_settings = self._normalise_network_settings(settings)
-            self._download_archive = _normalise_download_archive_for_startup(
-                data.get("download_archive")
+            self._deleted_archive_keys = _clean_download_archive_deleted_keys(
+                data.get("download_archive_deleted_keys")
+            )
+            self._deleted_archive_keys.update(
+                _deleted_download_archive_keys_from_items(data.get("download_archive"))
+            )
+            self._download_archive = _filter_deleted_download_archive(
+                _normalise_download_archive_for_startup(data.get("download_archive")),
+                self._deleted_archive_keys,
             )
         except Exception as exc:  # noqa: BLE001 - corrupt snapshots should not break startup
             self._activity.add(f"本地项目状态恢复失败：{exc}", kind="warning")
@@ -398,7 +520,11 @@ class Api:
                 "current_region_id": self._state.current_region_id,
                 "dem_dataset": self._dem_dataset,
                 "network_settings": self._network_settings,
-                "download_archive": _clean_download_archive(self._download_archive),
+                "download_archive": _filter_deleted_download_archive(
+                    _clean_download_archive(self._download_archive),
+                    self._deleted_archive_keys,
+                ),
+                "download_archive_deleted_keys": sorted(self._deleted_archive_keys)[-200:],
             }
             self._state_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
@@ -533,7 +659,15 @@ class Api:
 
     def get_download_archive(self) -> dict:
         """Return persisted download/task history across app restarts."""
-        return {"ok": True, "items": _dedupe_download_archive(_clean_download_archive(self._download_archive))}
+        return {
+            "ok": True,
+            "items": _dedupe_download_archive(
+                _filter_deleted_download_archive(
+                    _clean_download_archive(self._download_archive),
+                    self._deleted_archive_keys,
+                )
+            ),
+        }
 
     def _upsert_download_archive_item(self, item: dict[str, Any]) -> None:
         cleaned = _clean_download_archive([item])
@@ -541,6 +675,8 @@ class Api:
             return
         next_item = cleaned[0]
         next_key = _download_archive_identity(next_item)
+        if next_key in self._deleted_archive_keys:
+            return
         previous = next(
             (old for old in self._download_archive if _download_archive_identity(old) == next_key),
             None,
@@ -560,8 +696,28 @@ class Api:
         ])
         self._save_state()
 
+    def _forget_deleted_archive_key(self, kind: str, output_dir: str) -> None:
+        """Allow an explicitly started new task to reuse a previously deleted slot."""
+        cleaned = _clean_download_archive(
+            [
+                {
+                    "id": f"{kind}:{output_dir}:0",
+                    "name": kind,
+                    "status": "running",
+                    "detail": "new task",
+                    "ts": int(time.time() * 1000),
+                    "kind": kind,
+                    "output_dir": output_dir,
+                }
+            ]
+        )
+        if cleaned:
+            self._deleted_archive_keys.discard(_download_archive_identity(cleaned[0]))
+
     def _archive_asf_status(self, status: dict[str, Any]) -> None:
         state = str(status.get("state") or "")
+        if bool(status.get("cancelled")):
+            state = "cancelled"
         if state not in {"running", "paused", "finished", "failed", "cancelled", "interrupted"}:
             return
         active = status.get("active_downloads")
@@ -579,7 +735,7 @@ class Api:
             or f"{int(status.get('done') or 0)}/{int(status.get('total') or 0)}"
         )
         logs = [
-            str(entry.get("detail") or "")
+            _format_status_log_entry(entry)
             for entry in (status.get("log") or [])
             if isinstance(entry, dict) and entry.get("detail")
         ]
@@ -587,7 +743,7 @@ class Api:
         self._upsert_download_archive_item(
             {
                 "id": f"asf:{archive_key}:{int(status.get('total') or 0)}",
-                "name": "ASF Sentinel-1 数据下载",
+                "name": "Sentinel-1 下载任务",
                 "status": state,
                 "detail": detail,
                 "ts": int(time.time() * 1000),
@@ -601,6 +757,8 @@ class Api:
 
     def _archive_orbit_status(self, status: dict[str, Any]) -> None:
         state = str(status.get("state") or "")
+        if bool(status.get("cancelled")):
+            state = "cancelled"
         if state not in {"running", "paused", "finished", "failed", "cancelled", "interrupted"}:
             return
         detail = (
@@ -614,7 +772,7 @@ class Api:
             or f"{int(status.get('done') or 0)}/{int(status.get('total') or 0)}"
         )
         logs = [
-            str(entry.get("detail") or "")
+            _format_status_log_entry(entry)
             for entry in (status.get("log") or [])
             if isinstance(entry, dict) and entry.get("detail")
         ]
@@ -635,13 +793,34 @@ class Api:
 
     def save_download_archive(self, items: list[dict[str, Any]] | None = None) -> dict:
         """Persist the UI download/task history."""
-        incoming = _clean_download_archive(items or [])[:40]
+        incoming = _filter_deleted_download_archive(
+            _clean_download_archive(items or [])[:40],
+            self._deleted_archive_keys,
+        )
         if not incoming and self._download_archive:
             return self.get_download_archive()
         self._download_archive = _merge_download_archive(
             incoming,
-            _clean_download_archive(self._download_archive),
+            _filter_deleted_download_archive(
+                _clean_download_archive(self._download_archive),
+                self._deleted_archive_keys,
+            ),
         )
+        self._save_state()
+        return self.get_download_archive()
+
+    def delete_download_archive_item(self, item: dict[str, Any] | None = None) -> dict:
+        """Delete a persisted history record without touching output files."""
+        cleaned = _clean_download_archive([item] if isinstance(item, dict) else [])
+        if not cleaned:
+            return _error_msg("Missing download history item", "GUI003")
+        key = _download_archive_identity(cleaned[0])
+        if not key:
+            return _error_msg("Missing download history item identity", "GUI003")
+        self._deleted_archive_keys.add(key)
+        self._download_archive = [
+            row for row in self._download_archive if _download_archive_identity(row) != key
+        ]
         self._save_state()
         return self.get_download_archive()
 
@@ -658,9 +837,18 @@ class Api:
     def check_for_update(self, force: bool = False) -> dict:
         """Best-effort desktop update check against the public GitHub release."""
         try:
-            from insar_prep.core.update_check import maybe_check_for_update, releases_page_url
+            from insar_prep.core.update_check import (
+                check_for_update,
+                maybe_check_for_update,
+                preferred_release_asset,
+                releases_page_url,
+            )
 
-            info = maybe_check_for_update(force=bool(force), interval_seconds=60 * 60)
+            info = (
+                check_for_update(timeout=10)
+                if bool(force)
+                else maybe_check_for_update(force=False, interval_seconds=60 * 60)
+            )
             fallback_url = releases_page_url()
         except Exception as exc:  # noqa: BLE001 - update checks must never disturb startup
             return {
@@ -670,6 +858,11 @@ class Api:
                 "current_version": __version__,
                 "latest_version": __version__,
                 "html_url": "https://github.com/hhanmj/insar_studio/releases/latest",
+                "download_url": "",
+                "asset_name": "",
+                "asset_size": 0,
+                "online_update_supported": False,
+                "install_mode": "manual",
                 "message": f"暂时无法检查更新：{exc}",
             }
         if info is None:
@@ -680,8 +873,22 @@ class Api:
                 "current_version": __version__,
                 "latest_version": __version__,
                 "html_url": fallback_url,
+                "download_url": "",
+                "asset_name": "",
+                "asset_size": 0,
+                "online_update_supported": False,
+                "install_mode": "manual",
                 "message": "当前没有发现新版本，或暂时无法连接更新服务。",
             }
+        asset = preferred_release_asset(info)
+        install_mode = "manual"
+        if asset is not None:
+            name = asset.name.lower()
+            install_mode = (
+                "installer"
+                if name.endswith((".exe", ".msi")) and ("setup" in name or "installer" in name)
+                else "download"
+            )
         return {
             "ok": True,
             "checked": True,
@@ -689,8 +896,107 @@ class Api:
             "current_version": info.current_version,
             "latest_version": info.latest_version,
             "html_url": info.html_url,
-            "message": "发现新版，可打开 GitHub Releases 下载。",
+            "download_url": asset.download_url if asset else "",
+            "asset_name": asset.name if asset else "",
+            "asset_size": asset.size if asset else 0,
+            "online_update_supported": asset is not None,
+            "install_mode": install_mode,
+            "message": (
+                "发现新版本，可在软件内下载更新包；便携版仍需要关闭后替换，安装版可运行安装包覆盖升级。"
+                if info.update_available
+                else "当前已经是最新版本。"
+            ),
         }
+
+    def download_app_update(self, download_url: str = "", asset_name: str = "") -> dict:
+        """Download the selected release asset into the user's cache directory."""
+        url = str(download_url or "").strip()
+        name = str(asset_name or "").strip()
+        if not url:
+            info = self.check_for_update(True)
+            if not info.get("ok"):
+                return info
+            url = str(info.get("download_url") or "").strip()
+            name = str(info.get("asset_name") or "").strip()
+        if not url:
+            return _error_msg("当前 Release 没有可直接下载的更新包。", "GUI003")
+        try:
+            import urllib.parse  # noqa: PLC0415
+            import urllib.request  # noqa: PLC0415
+
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme.lower() != "https":
+                return _error_msg("更新包下载地址必须是 HTTPS。", "GUI003")
+            if not name:
+                name = Path(parsed.path).name or "InSAR-Studio-update.exe"
+            safe_name = Path(name).name
+            updates_dir = self._default_cache_dir() / "updates"
+            updates_dir.mkdir(parents=True, exist_ok=True)
+            dest = updates_dir / safe_name
+            part = dest.with_suffix(dest.suffix + ".part")
+            request = urllib.request.Request(  # noqa: S310 - HTTPS release asset URL.
+                url,
+                headers={"User-Agent": f"insar-prep/{__version__}"},
+            )
+            total = 0
+            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                with part.open("wb") as file:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        file.write(chunk)
+                        total += len(chunk)
+            part.replace(dest)
+            is_installer = _is_update_installer(dest)
+            launched = False
+            message = "更新包已下载。请关闭软件后运行安装包或替换便携版 exe。"
+            if is_installer:
+                _launch_update_installer(dest)
+                launched = True
+                message = "安装器已下载并启动。若当前窗口没有自动关闭，请手动关闭后等待覆盖安装完成。"
+            self._act(f"更新包已下载：{dest}", kind="settings")
+            return {
+                "ok": True,
+                "path": str(dest),
+                "folder": str(updates_dir),
+                "size": total,
+                "can_run": dest.suffix.lower() in {".exe", ".msi"},
+                "launched": launched,
+                "install_mode": "installer" if is_installer else "download",
+                "message": message,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(f"下载更新包失败：{exc}", "NET001")
+
+    def get_component_status(self, refresh: bool = False) -> dict:
+        """Return optional runtime component status."""
+        try:
+            from insar_prep.core.component_manager import get_component_status
+
+            return get_component_status(refresh=bool(refresh))
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(f"组件状态读取失败：{exc}", "GUI003")
+
+    def install_component(self, component_id: str) -> dict:
+        """Install an optional runtime component from the online manifest."""
+        try:
+            from insar_prep.core.component_manager import ComponentError, install_component
+
+            return install_component(str(component_id or "").strip())
+        except ComponentError as exc:
+            return _error_msg(str(exc), "GUI003")
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(f"组件安装失败：{exc}", "NET001")
+
+    def remove_component(self, component_id: str) -> dict:
+        """Remove an optional runtime component."""
+        try:
+            from insar_prep.core.component_manager import remove_component
+
+            return remove_component(str(component_id or "").strip())
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(f"组件移除失败：{exc}", "GUI003")
 
     def get_workflow_status(self) -> dict:
         """Return one dashboard-friendly snapshot of the current preparation flow.
@@ -810,7 +1116,7 @@ class Api:
         sources = [
             {
                 "id": "asf",
-                "label": "ASF Sentinel-1",
+                "label": "Sentinel-1",
                 "credential": creds.get("earthdata"),
                 "status": (
                     "configured"
@@ -996,12 +1302,39 @@ class Api:
         try:
             import webview  # noqa: PLC0415
 
+            self.shutdown()
             window = webview.active_window()
             if window is None:
                 return _error_msg("无可用窗口", "GUI000")
             window.destroy()
         except Exception as exc:  # noqa: BLE001
             return _missing_dep("关闭窗口", exc)
+        return {"ok": True}
+
+    def shutdown(self) -> dict:
+        """Persist state and stop background workers before the desktop exits."""
+        if self._shutdown_started:
+            return {"ok": True, "already_shutdown": True}
+        self._shutdown_started = True
+        errors: list[str] = []
+        try:
+            self._archive_asf_status(self._asf_download.get_status())
+            self._asf_download.shutdown()
+            self._archive_asf_status(self._asf_download.get_status())
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"ASF 下载收尾失败：{exc}")
+        try:
+            self._archive_orbit_status(self._orbit_download.get_status())
+            self._orbit_download.shutdown()
+            self._archive_orbit_status(self._orbit_download.get_status())
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"轨道下载收尾失败：{exc}")
+        try:
+            self._save_state()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"状态保存失败：{exc}")
+        if errors:
+            return {"ok": False, "error": "；".join(errors), "code": "GUI003"}
         return {"ok": True}
 
     def window_get_size(self) -> dict:
@@ -1322,6 +1655,7 @@ class Api:
             self._ensure_current_region()
             region = self._state.set_current_region_aoi(aoi)
             preview_geojson = _geojson_from_aoi_file(path)
+            feature_count = _geojson_feature_count_from_file(path)
             if preview_geojson is not None:
                 saved_geojson = _write_region_aoi_geojson(region, preview_geojson)
                 region.aoi.geometry_path = saved_geojson or Path(path)
@@ -1337,6 +1671,114 @@ class Api:
             "ok": True,
             "aoi": _dump(aoi),
             "aoi_geojson": _extract_geojson_geometry(preview_geojson) if preview_geojson is not None else None,
+            "aoi_feature_count": feature_count,
+            "region_id": region.region_id,
+            "region_name": region.region_name,
+        }
+
+    def preview_aoi_file(self, path: str) -> dict:
+        """Return selectable features from a local AOI vector file."""
+        try:
+            features = _read_aoi_vector_features(path)
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "AOI001")
+        fields = _aoi_feature_fields(features)
+        display_field = _suggest_aoi_name_field(fields)
+        return {
+            "ok": True,
+            "path": str(path),
+            "file_name": Path(path).name,
+            "total_features": len(features),
+            "fields": fields,
+            "display_field": display_field,
+            "features": [
+                _aoi_feature_preview_row(index, feature, display_field)
+                for index, feature in enumerate(features)
+            ],
+        }
+
+    def set_region_aoi_file_features(
+        self,
+        path: str,
+        feature_ids: list[Any] | None = None,
+        name_field: str = "",
+        download_mode: str = "merge",
+    ) -> dict:
+        """Bind selected features from a local AOI vector file as the current AOI."""
+        try:
+            from shapely.geometry import shape
+            from shapely.ops import unary_union
+
+            from insar_prep.core.enums import AoiSource
+            from insar_prep.processing.aoi_import import (
+                _coerce_to_areal_geometry,
+                geometry_to_processing_aoi,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("多要素 AOI 导入", exc)
+        try:
+            features = _read_aoi_vector_features(path)
+            selected_indices = _normalise_feature_indices(feature_ids, len(features))
+            if not selected_indices:
+                return _error_msg("请至少选择一个边界要素。", "AOI001")
+            selected = [features[index] for index in selected_indices]
+            geometries = [
+                _coerce_to_areal_geometry(shape(feature["geometry"]))
+                for feature in selected
+                if isinstance(feature.get("geometry"), dict)
+            ]
+            if not geometries:
+                return _error_msg("选中的要素没有可用面边界。", "AOI001")
+            merged_geometry = _coerce_to_areal_geometry(unary_union(geometries))
+            aoi = geometry_to_processing_aoi(merged_geometry, source=AoiSource.VECTOR_FILE)
+            self._ensure_current_region()
+            region = self._state.set_current_region_aoi(aoi)
+            field = str(name_field or "").strip()
+            selected_geojson = {
+                "type": "FeatureCollection",
+                "properties": {
+                    "source_file": str(path),
+                    "feature_count": len(selected),
+                    "download_mode": "split" if str(download_mode).strip() == "split" else "merge",
+                    "name_field": field,
+                },
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            **dict(feature.get("properties") or {}),
+                            "_insar_feature_index": selected_indices[i],
+                            "_insar_feature_name": _aoi_feature_name(feature, field),
+                        },
+                        "geometry": feature["geometry"],
+                    }
+                    for i, feature in enumerate(selected)
+                ],
+            }
+            saved_geojson = _write_region_aoi_geojson(region, selected_geojson)
+            if saved_geojson is not None:
+                region.aoi.geometry_path = saved_geojson
+            else:
+                region.aoi.geometry_path = Path(path)
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "AOI001")
+        self._save_state()
+        mode_label = "拆分下载" if str(download_mode).strip() == "split" else "合并下载"
+        self._act(
+            f"导入边界要素 {len(selected)} / {len(features)} 个并绑定 AOI：{Path(path).name}（{mode_label}）",
+            kind="aoi",
+        )
+        return {
+            "ok": True,
+            "aoi": _dump(aoi),
+            "aoi_geojson": _extract_geojson_geometry(selected_geojson),
+            "aoi_feature_count": len(selected),
+            "aoi_total_feature_count": len(features),
+            "download_mode": "split" if str(download_mode).strip() == "split" else "merge",
             "region_id": region.region_id,
             "region_name": region.region_name,
         }
@@ -1440,7 +1882,7 @@ class Api:
             if tianditu_error:
                 source_warnings.append(f"天地图未返回可用边界：{tianditu_error}")
         else:
-            source_warnings.append("未配置天地图 Token，已使用备用开放地名源。")
+            source_warnings.append("未配置天地图 Token，已尝试使用备用开放地名源。")
 
         if "中国" not in search_text and "China" not in search_text:
             search_text = f"{search_text} 中国"
@@ -1460,13 +1902,17 @@ class Api:
                     "accept-language": "zh-CN,zh,en",
                 },
                 headers={"User-Agent": "InSAR-Assistant/0.1 local desktop AOI search"},
-                timeout=20,
+                timeout=8,
             )
             response.raise_for_status()
             data = response.json()
         except Exception as exc:  # noqa: BLE001
             if source_warnings:
-                return _error_msg(f"{source_warnings[0]} 备用源也检索失败：{exc}", "AOI001")
+                return _error_msg(
+                    f"{'；'.join(source_warnings)} 备用源也检索失败：{exc}。"
+                    "请在设置填写天地图 Token，或直接上传 shp/kml/kmz/geojson 边界作为 AOI。",
+                    "AOI001",
+                )
             return _error_msg(f"行政边界搜索失败：{exc}", "AOI001")
 
         features = data.get("features", []) if isinstance(data, dict) else []
@@ -1646,6 +2092,88 @@ class Api:
             "errors": errors,
         }
 
+    def preview_scenes_file(self, path: str) -> dict:
+        """Parse an ASF cart file without replacing the current Sentinel-1 list."""
+        try:
+            from insar_prep.providers.asf.cart_parser import parse_asf_cart_file
+            from insar_prep.providers.asf.scene_parser import deduplicate_scenes
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("购物车解析", exc)
+        try:
+            scenes = parse_asf_cart_file(path)
+            unique, dups = deduplicate_scenes(scenes)
+            self._set_metadata_status("running", 0, max(1, len(unique)), "正在解析轨道匹配候选")
+            unique = _enrich_scenes_best_effort(
+                unique,
+                activity=self._activity,
+                progress=lambda done, total, msg: self._set_metadata_status("running", done, total, msg),
+            )
+            self._set_metadata_status("finished", 1, 1, "轨道匹配候选解析完成")
+        except InsarPrepError as exc:
+            return _error(exc)
+        self._act(f"预览轨道匹配候选 {len(unique)} 景：{Path(path).name}", kind="orbit")
+        self._orbit_candidate_scenes = unique
+        return {
+            "ok": True,
+            "scenes": [_scene_row(s) for s in unique],
+            "duplicates": dups,
+            "errors": [],
+        }
+
+    def preview_scenes_directory(self, path: str) -> dict:
+        """Scan a local SAR directory without replacing the current Sentinel-1 list."""
+        root = Path((path or "").strip())
+        if not root:
+            return _error_msg("请提供 Sentinel-1 数据目录", "ASF001")
+        if not root.exists() or not root.is_dir():
+            return _error_msg(f"Sentinel-1 数据目录不存在：{root}", "ASF001")
+        try:
+            from insar_prep.providers.asf.scene_parser import (
+                deduplicate_scenes,
+                parse_scene_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _missing_dep("本地 Sentinel-1 目录识别", exc)
+        scenes = []
+        errors: list[dict] = []
+        for entry in sorted(root.rglob("*")):
+            suffix = entry.suffix.lower()
+            if not (
+                (entry.is_file() and suffix == ".zip")
+                or (entry.is_dir() and suffix == ".safe")
+            ):
+                continue
+            try:
+                scene = parse_scene_name(str(entry))
+                scenes.append(scene.model_copy(update={"local_path": entry}))
+            except InsarPrepError as exc:
+                errors.append({"line": str(entry), "error": str(exc)})
+        if not scenes:
+            return _error_msg("目录内没有识别到 Sentinel-1 .zip 或 .SAFE", "ASF001")
+        unique, dups = deduplicate_scenes(scenes)
+        self._set_metadata_status("running", 0, max(1, len(unique)), "正在解析轨道匹配候选")
+        unique = _enrich_scenes_best_effort(
+            unique,
+            activity=self._activity,
+            progress=lambda done, total, msg: self._set_metadata_status("running", done, total, msg),
+        )
+        self._set_metadata_status("finished", 1, 1, "轨道匹配候选解析完成")
+        self._act(f"预览轨道匹配候选 {len(unique)} 景：{root.name}", kind="orbit")
+        self._orbit_candidate_scenes = unique
+        return {
+            "ok": True,
+            "scenes": [_scene_row(s) for s in unique],
+            "duplicates": dups,
+            "errors": errors,
+        }
+
+    def clear_orbit_candidate_scenes(self) -> dict:
+        """Clear preview-only orbit candidates so orbit tools fall back to active scenes."""
+        cleared = len(self._orbit_candidate_scenes)
+        self._orbit_candidate_scenes = []
+        self._act(f"已清除 {cleared} 景精密轨道预览候选，恢复沿用 Sentinel-1 检索结果", kind="orbit")
+        return {"ok": True, "cleared": cleared}
+
     def list_scenes(self) -> dict:
         """Return imported scenes for the current region or standalone task."""
         scenes, _, _ = self._active_scene_context()
@@ -1699,6 +2227,7 @@ class Api:
             label = region.region_name
             self._save_state()
         self._last_orbit_report = None
+        self._orbit_candidate_scenes = []
         self._metadata_status = self._idle_metadata_status()
         self._act(
             f"已清空 {label} 的地图图层：AOI {1 if cleared_aoi else 0} 个，影像 {cleared_scenes} 景",
@@ -1816,7 +2345,7 @@ class Api:
 
     def match_orbits_directory(self, orbit_dir: str) -> dict:
         """Scan a local EOF directory and match POEORB/RESORB/MOEORB to scenes."""
-        scenes, _, label = self._active_scene_context()
+        scenes, label = self._orbit_scene_context()
         if not scenes:
             return _error_msg("请先导入 ASF 场景或本地 SLC 目录", "ASF001")
         raw = (orbit_dir or "").strip()
@@ -1846,9 +2375,9 @@ class Api:
             "report": _dump(report),
         }
 
-    def download_orbits(self, output_dir: str = "") -> dict:
+    def download_orbits(self, output_dir: str = "", scene_ids: list[str] | None = None) -> dict:
         """Download POEORB companion files from ASF, then match them to scenes."""
-        scenes, _, label = self._active_scene_context()
+        scenes, label = self._orbit_scene_context(scene_ids)
         if not scenes:
             return _error_msg("请先导入 ASF 场景或本地 SLC 目录", "ASF001")
         out = output_dir.strip() or self._default_output()
@@ -1887,15 +2416,19 @@ class Api:
             "report": _dump(report),
         }
 
-    def start_orbit_download(self, output_dir: str = "") -> dict:
+    def start_orbit_download(self, output_dir: str = "", scene_ids: list[str] | None = None) -> dict:
         """Start POEORB companion downloads in the background."""
-        scenes, _, label = self._active_scene_context()
+        scenes, label = self._orbit_scene_context(scene_ids)
         if not scenes:
             return _error_msg("请先导入 ASF 场景或本地 SLC 目录", "ASF001")
         out = output_dir.strip() or self._default_output()
         if not out:
             return _error_msg("请指定输出根目录，轨道将保存到 Sentinel_Orbit\\AUX_POEORB", "GUI003")
         self._act(f"开始精密轨道下载：{label}（{len(scenes)} 景）", kind="download")
+        self._forget_deleted_archive_key(
+            "orbit",
+            str(Path(out) / "Sentinel_Orbit" / "AUX_POEORB"),
+        )
         result = self._orbit_download.start(scenes, out, activity=self._activity)
         self._archive_orbit_status(self._orbit_download.get_status())
         return result
@@ -2045,9 +2578,10 @@ class Api:
         except Exception as exc:  # noqa: BLE001 - preflight should be explicit
             return _error_msg(f"ASF 下载预检失败：{exc}", "DL005")
         self._act(
-            f"开始 ASF Sentinel-1 下载：{label}（{len(scenes)} 景，并发 {workers}）",
+            f"开始 Sentinel-1 下载：{label}（{len(scenes)} 景，并发 {workers}）",
             kind="download",
         )
+        self._forget_deleted_archive_key("asf", out)
         result = self._asf_download.start(
             scenes,
             out,
@@ -2061,6 +2595,47 @@ class Api:
         get_status = getattr(self._asf_download, "get_status", None)
         if callable(get_status):
             self._archive_asf_status(get_status())
+        return result
+
+    def append_asf_download(
+        self,
+        output_dir: str = "",
+        max_extra_workers: int = 1,
+        scene_ids: list[str] | None = None,
+    ) -> dict:
+        """Append selected ASF scenes to the currently running/paused download."""
+        scenes, _, label = self._active_scene_context()
+        selected_ids = {str(item).strip() for item in (scene_ids or []) if str(item).strip()}
+        if selected_ids:
+            scenes = [scene for scene in scenes if str(getattr(scene, "scene_id", "")) in selected_ids]
+            label = f"{label}（追加 {len(scenes)} 景）"
+        if not scenes:
+            return _error_msg("请先勾选要追加下载的 SAR 影像", "ASF001")
+        status = self._asf_download.get_status()
+        out = output_dir.strip() or str(status.get("output_dir") or "") or self._default_output()
+        result = self._asf_download.append(
+            scenes,
+            out,
+            max_extra_workers=max(1, min(int(max_extra_workers or 1), 8)),
+        )
+        if result.get("ok"):
+            self._act(
+                f"追加 Sentinel-1 下载：{label}（新增 {result.get('appended', 0)} 景）",
+                kind="download",
+            )
+        self._archive_asf_status(self._asf_download.get_status())
+        return result
+
+    def pause_asf_scenes(self, scene_ids: list[str] | None = None) -> dict:
+        """Pause only selected ASF scenes without pausing the whole task."""
+        result = self._asf_download.pause_scenes(scene_ids or [])
+        self._archive_asf_status(self._asf_download.get_status())
+        return result
+
+    def resume_asf_scenes(self, scene_ids: list[str] | None = None) -> dict:
+        """Resume selected scene-level pauses."""
+        result = self._asf_download.resume_scenes(scene_ids or [])
+        self._archive_asf_status(self._asf_download.get_status())
         return result
 
     def pause_asf_download(self) -> dict:
@@ -2198,6 +2773,7 @@ class Api:
         output_dir: str = "",
         dataset: str = "COP30",
         key_source: str = "auto",
+        convert: bool = True,
     ) -> dict:
         """Download the current region's DEM via OpenTopography."""
         region = self._state.current_region()
@@ -2224,6 +2800,8 @@ class Api:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(_format_validation(exc), "DEM004")
+        if not bool(convert):
+            return self._run_dem_download_plan(plan, output_dir, key_source)
         return self._run_dem_download_and_conversion_plan(plan, output_dir, key_source)
 
     def run_dem_download_bbox(
@@ -2235,6 +2813,7 @@ class Api:
         output_dir: str = "",
         dataset: str = "COP30",
         key_source: str = "auto",
+        convert: bool = True,
     ) -> dict:
         """Download a standalone DEM from a bbox via OpenTopography."""
         dataset = _normalise_downloadable_dem_dataset(dataset, fallback="")
@@ -2261,6 +2840,8 @@ class Api:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error_msg(_format_validation(exc), "DEM004")
+        if not bool(convert):
+            return self._run_dem_download_plan(plan, output_dir, key_source)
         return self._run_dem_download_and_conversion_plan(plan, output_dir, key_source)
 
     def run_dem_conversion(self, output_dir: str = "") -> dict:
@@ -2352,6 +2933,7 @@ class Api:
         input_path: str,
         output_dir: str = "",
         source_vertical_datum: str = "auto",
+        output_mode: str = "sarscape",
     ) -> dict:
         """Convert/copy a user-provided DEM into SARscape-ready outputs."""
         try:
@@ -2367,7 +2949,10 @@ class Api:
         except Exception as exc:  # noqa: BLE001
             return _error_msg(str(exc), "DEM004")
         out = (output_dir or "").strip() or self._default_output() or str(Path(input_path).parent)
-        return self._run_dem_conversion_plan(conv_plan, out)
+        mode = (output_mode or "sarscape").strip().lower()
+        if mode not in {"ellipsoid", "sarscape"}:
+            mode = "sarscape"
+        return self._run_dem_conversion_plan(conv_plan, out, output_mode=mode)
 
     def plan_gacos_request(self, output_dir: str = "") -> dict:
         """Build + validate (dry-run) the GACOS request plan for the region."""
@@ -2769,6 +3354,31 @@ class Api:
             return region.scenes, region.region_safe_name, region.region_name
         return self._standalone_scenes, "standalone_download", "独立下载任务"
 
+    def _orbit_scene_context(self, scene_ids: list[str] | None = None) -> tuple[list[Any], str]:
+        """Return orbit candidates without disturbing the Sentinel-1 download list."""
+        selected_ids = {str(item).strip() for item in (scene_ids or []) if str(item).strip()}
+        if self._orbit_candidate_scenes:
+            scenes = self._orbit_candidate_scenes
+            if selected_ids:
+                matched = [
+                    scene
+                    for scene in scenes
+                    if str(getattr(scene, "scene_id", "")) in selected_ids
+                ]
+                if matched:
+                    return matched, f"精密轨道候选 (selected {len(matched)} scenes)"
+            elif scenes:
+                return scenes, "精密轨道候选"
+        scenes, _, label = self._active_scene_context()
+        if selected_ids:
+            scenes = [
+                scene
+                for scene in scenes
+                if str(getattr(scene, "scene_id", "")) in selected_ids
+            ]
+            label = f"{label} (selected {len(scenes)} scenes)"
+        return scenes, label
+
     @staticmethod
     def _idle_metadata_status() -> dict[str, Any]:
         return {
@@ -2891,9 +3501,9 @@ class Api:
             "results_path": str(summary.results_path) if summary.results_path else "",
             "output_dir": out,
             "results": [_dump(result) for result in summary.results],
-            "raw_dem_path": str(getattr(conv_plan, "raw_dem_path", "")),
-            "ellipsoid_dem_path": str(getattr(conv_plan, "ellipsoid_dem_path", "")),
-            "sarscape_ready_dem_path": str(getattr(conv_plan, "sarscape_ready_dem_path", "")),
+            "raw_dem_path": str(getattr(plan, "raw_dem_path", "")),
+            "ellipsoid_dem_path": str(getattr(plan, "ellipsoid_dem_path", "")),
+            "sarscape_ready_dem_path": str(getattr(plan, "sarscape_ready_dem_path", "")),
         }
 
     def _run_dem_download_and_conversion_plan(
@@ -2910,10 +3520,12 @@ class Api:
         except Exception as exc:  # noqa: BLE001
             return _missing_dep("DEM 自动转换", exc)
 
+        conversion_plan: Any | None = None
         conversion: dict | None = None
         if not bool(download.get("has_failures")):
             try:
-                conversion = self._run_dem_conversion_plan(create_dem_conversion_plan(plan), out)
+                conversion_plan = create_dem_conversion_plan(plan)
+                conversion = self._run_dem_conversion_plan(conversion_plan, out)
             except Exception as exc:  # noqa: BLE001
                 conversion = _error_msg(str(exc), "DEM003")
 
@@ -2941,11 +3553,17 @@ class Api:
             if conversion and conversion.get("ok")
             else "",
             "raw_dem_path": str(getattr(plan, "raw_dem_path", "")),
-            "ellipsoid_dem_path": str(getattr(plan, "ellipsoid_dem_path", "")),
-            "sarscape_ready_dem_path": str(getattr(plan, "sarscape_ready_dem_path", "")),
+            "ellipsoid_dem_path": str(
+                getattr(conversion_plan or plan, "ellipsoid_dem_path", "")
+            ),
+            "sarscape_ready_dem_path": str(
+                getattr(conversion_plan or plan, "sarscape_ready_dem_path", "")
+            ),
         }
 
-    def _run_dem_conversion_plan(self, conv_plan: Any, output_dir: str) -> dict:
+    def _run_dem_conversion_plan(
+        self, conv_plan: Any, output_dir: str, *, output_mode: str = "sarscape"
+    ) -> dict:
         """Run one DEM conversion plan and return a JSON-safe summary."""
         try:
             from insar_prep.providers.dem.convert_runner import run_dem_conversion
@@ -2955,7 +3573,7 @@ class Api:
         if not out:
             return _error_msg("请指定 DEM 转换输出根目录", "GUI003")
         try:
-            summary = run_dem_conversion([conv_plan], out)
+            summary = run_dem_conversion([conv_plan], out, output_mode=output_mode)
         except InsarPrepError as exc:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
@@ -2973,6 +3591,11 @@ class Api:
             "results_path": str(summary.results_path) if summary.results_path else "",
             "output_dir": out,
             "results": [_dump(result) for result in summary.results],
+            "raw_dem_path": str(getattr(conv_plan, "raw_dem_path", "")),
+            "ellipsoid_dem_path": str(getattr(conv_plan, "ellipsoid_dem_path", "")),
+            "sarscape_ready_dem_path": (
+                "" if output_mode == "ellipsoid" else str(getattr(conv_plan, "sarscape_ready_dem_path", ""))
+            ),
         }
 
     def _create_local_dem_conversion_plan(
@@ -2987,6 +3610,9 @@ class Api:
         if not raw_path.exists() or not raw_path.is_file():
             raise ValueError(f"DEM 文件不存在：{raw_path}")
         try:
+            from insar_prep.core.component_manager import activate_component  # noqa: PLC0415
+
+            activate_component()
             import rasterio  # noqa: PLC0415
             from rasterio.warp import transform_bounds  # noqa: PLC0415
         except Exception as exc:  # noqa: BLE001
@@ -3046,7 +3672,7 @@ class Api:
                 safe = "local_dem"
 
         out = Path((output_dir or "").strip() or self._default_output() or raw_path.parent)
-        dem_root = out / "DEM"
+        dem_root = out
         ellipsoid_path = dem_root / f"{safe}_ellipsoid.tif"
         sarscape_path = dem_root / f"{safe}_dem"
         request_plan = DemRequestPlan(
@@ -3370,7 +3996,14 @@ def _geojson_from_aoi_file(path: str | Path) -> dict | None:
     try:
         if suffix in {".geojson", ".json"}:
             data = json.loads(source.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                return None
+            from shapely.geometry import mapping
+
+            from insar_prep.processing.aoi_import import _geometry_from_geojson
+
+            geometry = _geometry_from_geojson(data)
+            return dict(mapping(geometry))
         geometry = None
         if suffix == ".shp":
             from insar_prep.processing.aoi_vector import (
@@ -3403,6 +4036,349 @@ def _geojson_from_aoi_file(path: str | Path) -> dict | None:
         return None
 
 
+def _geojson_feature_count_from_file(path: str | Path) -> int | None:
+    source = Path(path)
+    if source.suffix.lower() not in {".geojson", ".json"}:
+        return None
+    try:
+        data = json.loads(source.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("type") == "FeatureCollection":
+        features = data.get("features")
+        return len(features) if isinstance(features, list) else None
+    if data.get("type") == "Feature":
+        return 1
+    return 1 if data.get("type") else None
+
+
+def _read_aoi_vector_features(path: str | Path) -> list[dict[str, Any]]:
+    """Read per-feature AOI geometry/properties from supported local vector files."""
+    source = Path(path)
+    suffix = source.suffix.lower()
+    if not source.is_file():
+        raise FileNotFoundError(f"边界文件不存在：{source}")
+    if suffix in {".geojson", ".json"}:
+        return _read_geojson_aoi_features(source)
+    if suffix == ".shp":
+        return _read_shapefile_aoi_features(source)
+    if suffix == ".kml":
+        return _read_kml_aoi_features(source.read_bytes(), str(source))
+    if suffix == ".kmz":
+        import zipfile
+
+        from insar_prep.processing.aoi_vector import _first_kml_name
+
+        with zipfile.ZipFile(source) as archive:
+            kml_name = _first_kml_name(archive.namelist())
+            if kml_name is None:
+                raise ValueError(f"KMZ 文件内没有 .kml：{source}")
+            return _read_kml_aoi_features(archive.read(kml_name), f"{source}!{kml_name}")
+    raise ValueError("暂不支持该边界格式；请使用 .shp、.kml、.kmz、.geojson 或 .json。")
+
+
+def _read_geojson_aoi_features(source: Path) -> list[dict[str, Any]]:
+    from shapely.geometry import mapping, shape
+
+    from insar_prep.processing.aoi_import import _coerce_to_areal_geometry, _reject_non_wgs84_crs
+
+    data = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("GeoJSON 顶层必须是对象。")
+    _reject_non_wgs84_crs(data)
+    obj_type = data.get("type")
+    if obj_type == "FeatureCollection":
+        raw_features = [feature for feature in data.get("features", []) if isinstance(feature, dict)]
+    elif obj_type == "Feature":
+        raw_features = [data]
+    elif obj_type in {"Polygon", "MultiPolygon", "LineString", "MultiLineString", "GeometryCollection"}:
+        raw_features = [{"type": "Feature", "properties": {}, "geometry": data}]
+    else:
+        raise ValueError(f"不支持的 GeoJSON 类型：{obj_type}")
+    out: list[dict[str, Any]] = []
+    for index, feature in enumerate(raw_features):
+        geometry_data = feature.get("geometry")
+        if not isinstance(geometry_data, dict):
+            continue
+        try:
+            geometry = _coerce_to_areal_geometry(shape(geometry_data))
+        except Exception:
+            continue
+        if geometry.is_empty:
+            continue
+        props = feature.get("properties")
+        out.append(
+            {
+                "properties": _clean_aoi_properties(props if isinstance(props, dict) else {}),
+                "geometry": dict(mapping(geometry)),
+                "_source_index": index,
+            }
+        )
+    if not out:
+        raise ValueError("边界文件内没有可用面要素。")
+    return out
+
+
+def _read_kml_aoi_features(raw: bytes, source: str) -> list[dict[str, Any]]:
+    import xml.etree.ElementTree as ET
+
+    from shapely.geometry import mapping
+    from shapely.ops import unary_union
+
+    from insar_prep.processing.aoi_vector import _iter_local, _kml_outer_ring, _local_name, _polygon_from_ring
+
+    try:
+        root = ET.fromstring(raw)  # noqa: S314 - local vector file only.
+    except ET.ParseError as exc:
+        raise ValueError(f"KML 解析失败：{source}: {exc}") from exc
+    out: list[dict[str, Any]] = []
+    placemarks = [elem for elem in root.iter() if _local_name(elem.tag) == "Placemark"]
+    for index, placemark in enumerate(placemarks):
+        name_elem = next((child for child in placemark if _local_name(child.tag) == "name"), None)
+        name = (name_elem.text or "").strip() if name_elem is not None else ""
+        polygons = []
+        for polygon_elem in _iter_local(placemark, "Polygon"):
+            ring = _kml_outer_ring(polygon_elem)
+            polygon = _polygon_from_ring(ring) if ring else None
+            if polygon is not None and not polygon.is_empty:
+                polygons.append(polygon)
+        if not polygons:
+            continue
+        out.append(
+            {
+                "properties": _clean_aoi_properties({"name": name or f"Placemark {index + 1}"}),
+                "geometry": dict(mapping(unary_union(polygons))),
+                "_source_index": index,
+            }
+        )
+    if out:
+        return out
+    polygons = []
+    for polygon_elem in _iter_local(root, "Polygon"):
+        ring = _kml_outer_ring(polygon_elem)
+        polygon = _polygon_from_ring(ring) if ring else None
+        if polygon is not None and not polygon.is_empty:
+            polygons.append(polygon)
+    if not polygons:
+        raise ValueError(f"KML 内没有可用面要素：{source}")
+    return [
+        {
+            "properties": _clean_aoi_properties({"name": Path(source).stem or "KML 边界"}),
+            "geometry": dict(mapping(unary_union(polygons))),
+            "_source_index": 0,
+        }
+    ]
+
+
+def _read_shapefile_aoi_features(source: Path) -> list[dict[str, Any]]:
+    import struct
+
+    from shapely.geometry import mapping
+    from shapely.ops import unary_union
+
+    from insar_prep.processing.aoi_vector import (
+        _SHP_HEADER_SIZE,
+        _SHP_NULL_TYPE,
+        _SHP_POLYGON_TYPES,
+        _check_shapefile_prj,
+        _polygons_from_shapefile_record,
+    )
+
+    _check_shapefile_prj(source)
+    data = source.read_bytes()
+    if len(data) < _SHP_HEADER_SIZE or struct.unpack(">i", data[0:4])[0] != 9994:
+        raise ValueError(f"不是有效 Shapefile：{source}")
+    file_type = struct.unpack("<i", data[32:36])[0]
+    if file_type != _SHP_NULL_TYPE and file_type not in _SHP_POLYGON_TYPES:
+        raise ValueError("Shapefile 不是面要素，不能作为 AOI。")
+    dbf_rows = _read_dbf_records(source.with_suffix(".dbf"))
+    out: list[dict[str, Any]] = []
+    offset = _SHP_HEADER_SIZE
+    size = len(data)
+    while offset + 8 <= size:
+        record_number, content_len_words = struct.unpack(">ii", data[offset : offset + 8])
+        content_start = offset + 8
+        content_end = content_start + content_len_words * 2
+        if content_end > size:
+            break
+        content = data[content_start:content_end]
+        offset = content_end
+        if len(content) < 4:
+            continue
+        shape_type = struct.unpack("<i", content[0:4])[0]
+        if shape_type == _SHP_NULL_TYPE:
+            continue
+        if shape_type not in _SHP_POLYGON_TYPES:
+            raise ValueError(f"Shapefile 记录 {record_number} 不是面要素。")
+        polygons = _polygons_from_shapefile_record(content)
+        if not polygons:
+            continue
+        row_index = max(0, int(record_number) - 1)
+        out.append(
+            {
+                "properties": _clean_aoi_properties(dbf_rows[row_index] if row_index < len(dbf_rows) else {}),
+                "geometry": dict(mapping(unary_union(polygons))),
+                "_source_index": row_index,
+            }
+        )
+    if not out:
+        raise ValueError("Shapefile 内没有可用面要素。")
+    return out
+
+
+def _read_dbf_records(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    data = path.read_bytes()
+    if len(data) < 33:
+        return []
+    try:
+        record_count = int.from_bytes(data[4:8], "little")
+        header_len = int.from_bytes(data[8:10], "little")
+        record_len = int.from_bytes(data[10:12], "little")
+    except Exception:
+        return []
+    fields: list[tuple[str, str, int, int]] = []
+    offset = 32
+    while offset + 32 <= len(data) and data[offset] != 0x0D:
+        raw_name = data[offset : offset + 11].split(b"\x00", 1)[0]
+        name = _decode_dbf_text(raw_name).strip() or f"field_{len(fields) + 1}"
+        field_type = chr(data[offset + 11]) if data[offset + 11] else "C"
+        field_len = int(data[offset + 16])
+        decimals = int(data[offset + 17])
+        fields.append((name, field_type, field_len, decimals))
+        offset += 32
+    rows: list[dict[str, Any]] = []
+    start = header_len
+    for row_index in range(record_count):
+        row_start = start + row_index * record_len
+        row = data[row_start : row_start + record_len]
+        if len(row) < record_len or row[:1] == b"*":
+            continue
+        cursor = 1
+        props: dict[str, Any] = {}
+        for name, field_type, field_len, decimals in fields:
+            raw = row[cursor : cursor + field_len]
+            cursor += field_len
+            text = _decode_dbf_text(raw).strip()
+            if not text:
+                props[name] = ""
+            elif field_type in {"N", "F"}:
+                try:
+                    props[name] = int(text) if decimals == 0 and "." not in text else float(text)
+                except ValueError:
+                    props[name] = text
+            elif field_type == "L":
+                props[name] = text.upper() in {"Y", "T", "1"}
+            else:
+                props[name] = text
+        rows.append(props)
+    return rows
+
+
+def _decode_dbf_text(raw: bytes) -> str:
+    for encoding in ("utf-8", "gb18030", "cp936", "latin1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin1", errors="replace")
+
+
+def _clean_aoi_properties(props: dict[str, Any]) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key, value in props.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if value is None or isinstance(value, (str, int, float, bool)):
+            cleaned[key.strip()] = value
+        else:
+            try:
+                cleaned[key.strip()] = json.dumps(value, ensure_ascii=False)
+            except TypeError:
+                cleaned[key.strip()] = str(value)
+    return cleaned
+
+
+def _aoi_feature_fields(features: list[dict[str, Any]]) -> list[str]:
+    fields: list[str] = []
+    for feature in features:
+        props = feature.get("properties")
+        if not isinstance(props, dict):
+            continue
+        for key in props:
+            if key not in fields:
+                fields.append(str(key))
+            if len(fields) >= 80:
+                return fields
+    return fields
+
+
+def _suggest_aoi_name_field(fields: list[str]) -> str:
+    preferred = ["name", "NAME", "Name", "名称", "NAME_CHN", "fullname", "FULLNAME", "县", "市", "省"]
+    for field in preferred:
+        if field in fields:
+            return field
+    for field in fields:
+        if "name" in field.lower() or "名" in field:
+            return field
+    return fields[0] if fields else ""
+
+
+def _aoi_feature_name(feature: dict[str, Any], field: str = "") -> str:
+    props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+    if field and field in props and str(props.get(field) or "").strip():
+        return str(props.get(field)).strip()
+    fallback_field = _suggest_aoi_name_field(list(props.keys()))
+    if fallback_field and str(props.get(fallback_field) or "").strip():
+        return str(props.get(fallback_field)).strip()
+    index = int(feature.get("_source_index") or 0) + 1
+    return f"要素 {index}"
+
+
+def _aoi_feature_preview_row(index: int, feature: dict[str, Any], field: str) -> dict[str, Any]:
+    from shapely.geometry import shape
+
+    geometry = shape(feature["geometry"])
+    minx, miny, maxx, maxy = geometry.bounds
+    return {
+        "id": str(index),
+        "index": index + 1,
+        "source_index": int(feature.get("_source_index") or index) + 1,
+        "name": _aoi_feature_name(feature, field),
+        "area_km2": round(_rough_geometry_area_km2(geometry), 2),
+        "bbox": {"west": minx, "east": maxx, "south": miny, "north": maxy, "crs": "EPSG:4326"},
+        "properties": dict(feature.get("properties") or {}),
+    }
+
+
+def _rough_geometry_area_km2(geometry: Any) -> float:
+    import math
+
+    try:
+        _, miny, _, maxy = geometry.bounds
+        lat = (float(miny) + float(maxy)) / 2
+        return abs(float(geometry.area)) * 111.32 * 111.32 * max(0.12, abs(math.cos(math.radians(lat))))
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _normalise_feature_indices(feature_ids: list[Any] | None, total: int) -> list[int]:
+    if not feature_ids:
+        return list(range(total))
+    out: list[int] = []
+    for value in feature_ids:
+        try:
+            index = int(str(value).strip())
+        except ValueError:
+            continue
+        if 0 <= index < total and index not in out:
+            out.append(index)
+    return out
+
+
 def _local_boundary_dir() -> Path | None:
     candidates: list[Path] = []
     env_path = os.environ.get("INSAR_BOUNDARY_DIR")
@@ -3412,13 +4388,21 @@ def _local_boundary_dir() -> Path | None:
     if frozen_root:
         candidates.append(Path(frozen_root) / "insar_prep" / "desktop" / "boundaries")
         candidates.append(Path(frozen_root) / "边界")
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(Path(local_appdata) / "InSAR Assistant" / "boundaries")
+        candidates.append(Path(local_appdata) / "InSAR Assistant" / "边界")
     candidates.extend(
         [
             Path(__file__).resolve().parent / "boundaries",
+            Path.cwd() / "boundaries",
             Path.cwd() / "边界",
+            Path(sys.executable).resolve().parent / "boundaries",
             Path(sys.executable).resolve().parent / "边界",
+            Path(sys.executable).resolve().parent.parent / "boundaries",
             Path(sys.executable).resolve().parent.parent / "边界",
             Path(__file__).resolve().parents[3] / "边界",
+            Path("C:/InSAR") / "边界",
         ]
     )
     for candidate in candidates:

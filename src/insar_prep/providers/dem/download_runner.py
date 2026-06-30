@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 logger = get_logger("providers.dem.download_runner")
 
-# Shared DEM output bucket for raw, ellipsoid, SARscape-ready files and CSV logs.
+# Shared DEM output bucket for batch raw, ellipsoid, SARscape-ready files and CSV logs.
 DEM_DOWNLOAD_SUBDIR = "DEM"
 
 DEM_DOWNLOAD_RESULT_COLUMNS = [
@@ -59,7 +59,7 @@ def write_dem_download_results_csv(
     output_dir: Path | str, results: Sequence[DemDownloadResult]
 ) -> Path:
     """Write a credential-masked per-region DEM results CSV; return its path."""
-    plan_dir = Path(output_dir) / DEM_DOWNLOAD_SUBDIR
+    plan_dir = Path(output_dir) if len(results) <= 1 else Path(output_dir) / DEM_DOWNLOAD_SUBDIR
     plan_dir.mkdir(parents=True, exist_ok=True)
     results_path = plan_dir / "dem_download_results.csv"
     with results_path.open("w", encoding="utf-8", newline="") as handle:

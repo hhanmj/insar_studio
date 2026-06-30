@@ -4,7 +4,7 @@
 ; dist\insar-prep-desktop.exe has been generated.
 
 #ifndef AppVersion
-  #define AppVersion "2.0.2"
+  #define AppVersion "2.1"
 #endif
 #define AppName "InSAR Studio"
 #define AppPublisher "hhanmj"
@@ -33,7 +33,6 @@ SetupIconFile=app_icon.ico
 UninstallDisplayIcon={app}\{#DesktopExeName}
 
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
