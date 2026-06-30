@@ -1,0 +1,64 @@
+name: Bug report
+description: 报告可复现的问题
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请不要上传账号、Token、Cookie、完整签名链接或私有数据。
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本
+      placeholder: 例如 2.1
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: 出问题的模块
+      options:
+        - Sentinel-1 / ASF 检索
+        - SAR 下载中心
+        - AOI / 区域选择
+        - 精密轨道
+        - DEM 下载或转换
+        - 设置 / 账号 / 代理
+        - 安装 / 更新
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请按顺序写出你做了什么。
+      placeholder: |
+        1. 打开...
+        2. 选择...
+        3. 点击...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望表现
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际表现
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: 请先确认其中没有账号、Token、Cookie、签名链接或私有数据。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      placeholder: Windows 版本、是否开启代理、数据源账号类型等。

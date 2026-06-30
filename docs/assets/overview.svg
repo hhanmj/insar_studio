@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">InSAR Studio workflow overview</title>
+  <desc id="desc">A clean product overview showing AOI, Sentinel-1 search, download queue, orbit and DEM preparation.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#edf7ff"/>
+      <stop offset="0.48" stop-color="#f8fbff"/>
+      <stop offset="1" stop-color="#eef7f0"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#f8fbff" stop-opacity="0.76"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#1f2937" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="520" rx="38" fill="url(#bg)"/>
+  <g opacity="0.56" fill="none" stroke="#8bb6d6" stroke-width="2">
+    <path d="M735 102c92 20 167 70 211 142"/>
+    <path d="M706 141c76 14 139 55 178 113"/>
+    <path d="M685 181c60 11 109 41 141 86"/>
+  </g>
+  <g opacity="0.72" fill="none" stroke="#6ea27a" stroke-width="2">
+    <path d="M680 392c42-42 76-46 112-21 44 31 88 23 127-20 35-39 74-54 123-29"/>
+    <path d="M653 430c48-54 91-61 139-28 51 36 103 29 148-21 42-46 90-63 147-34"/>
+    <path d="M622 468c57-67 109-75 167-36 59 41 120 33 172-26 49-56 106-77 174-42"/>
+  </g>
+  <rect x="58" y="58" width="1084" height="404" rx="30" fill="url(#panel)" filter="url(#shadow)" stroke="#ffffff" stroke-width="2"/>
+  <rect x="91" y="94" width="254" height="332" rx="24" fill="#ffffff" stroke="#dbeafe"/>
+  <text x="121" y="139" fill="#0f172a" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">InSAR Studio</text>
+  <text x="121" y="171" fill="#64748b" font-family="Segoe UI, Arial, sans-serif" font-size="16">处理前的数据准备助手</text>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#334155">
+    <rect x="121" y="213" width="178" height="38" rx="19" fill="#e0f2fe"/>
+    <text x="143" y="238">AOI 区域选择</text>
+    <rect x="121" y="267" width="190" height="38" rx="19" fill="#dcfce7"/>
+    <text x="143" y="292">ASF 影像检索</text>
+    <rect x="121" y="321" width="165" height="38" rx="19" fill="#fef3c7"/>
+    <text x="143" y="346">下载任务队列</text>
+    <rect x="121" y="375" width="183" height="38" rx="19" fill="#ede9fe"/>
+    <text x="143" y="400">轨道与 DEM 准备</text>
+  </g>
+  <rect x="383" y="94" width="462" height="332" rx="24" fill="#f8fafc" stroke="#dbeafe"/>
+  <path d="M415 332c66-70 108-91 165-60 71 39 120 16 174-57 23-31 44-52 70-65" fill="none" stroke="#94a3b8" stroke-width="3"/>
+  <path d="M423 367c78-88 129-111 196-74 77 43 134 18 195-65" fill="none" stroke="#cbd5e1" stroke-width="3"/>
+  <polygon points="488,168 720,137 792,298 547,333" fill="#dbeafe" fill-opacity="0.64" stroke="#2563eb" stroke-width="4"/>
+  <polygon points="530,213 766,184 812,338 571,372" fill="#fed7aa" fill-opacity="0.46" stroke="#f97316" stroke-width="4"/>
+  <circle cx="590" cy="263" r="7" fill="#0f172a"/>
+  <text x="415" y="136" fill="#0f172a" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="700">地图 + 影像范围</text>
+  <text x="415" y="397" fill="#64748b" font-family="Segoe UI, Arial, sans-serif" font-size="15">选择 AOI，检索 SAR 影像，点击边框查看元数据</text>
+  <rect x="883" y="94" width="226" height="332" rx="24" fill="#ffffff" stroke="#dbeafe"/>
+  <text x="913" y="136" fill="#0f172a" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="700">任务工作台</text>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="15">
+    <rect x="913" y="166" width="166" height="48" rx="14" fill="#eff6ff"/>
+    <text x="934" y="196" fill="#1d4ed8">SLC 下载中 62%</text>
+    <rect x="913" y="230" width="166" height="48" rx="14" fill="#f0fdf4"/>
+    <text x="934" y="260" fill="#15803d">轨道匹配完成</text>
+    <rect x="913" y="294" width="166" height="48" rx="14" fill="#fff7ed"/>
+    <text x="934" y="324" fill="#c2410c">DEM 等待转换</text>
+    <rect x="913" y="358" width="166" height="32" rx="16" fill="#f1f5f9"/>
+    <text x="947" y="380" fill="#475569">日志可追踪</text>
+  </g>
+</svg>

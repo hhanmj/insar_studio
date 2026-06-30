@@ -1,7 +1,7 @@
 [project]
 name = "insar-prep"
 version = "2.1"
-description = "SARscape-oriented InSAR data preparation and quality-checking assistant."
+description = "Desktop assistant for InSAR and remote sensing data preparation workflows."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "MIT" }
@@ -82,8 +82,7 @@ extend-exclude = [
     "参考项目",
     "sentinel2",
     "边界",
-    "docs",
-    "tests",
+    "docs/soft_copyright",
     "build",
     "dist",
     "release",
