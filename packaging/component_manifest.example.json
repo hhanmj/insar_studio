@@ -4,9 +4,9 @@
     {
       "id": "dem-gdal",
       "name": "DEM/GDAL 高程基准组件",
-      "version": "2.1.3",
+      "version": "2.1.4",
       "size_mb": 205,
-      "url": "https://github.com/hhanmj/insar_studio/releases/download/v2.1.3/insar-dem-gdal-2.1.3-win64.zip",
+      "url": "https://github.com/hhanmj/insar_studio/releases/download/v2.1.4/insar-dem-gdal-2.1.4-win64.zip",
       "sha256": "REPLACE_WITH_SHA256",
       "entry": "site-packages",
       "description": "按需安装的 GDAL/rasterio/numpy/PROJ 运行库与 EGM96、EGM2008 高程基准数据，用于本地 DEM 正高到 WGS84 椭球高转换和 SARscape DEM 适配输出。"

@@ -91,7 +91,7 @@ jobs:
           InSAR Studio $version
 
           本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。
-          它的定位是“处理前的数据准备助手”，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。
+          它的定位是处理前的数据准备助手，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。
 
           运行：双击 $exeName。
           DEM：DEM/GDAL 高程基准组件会在用户需要时从 Release 按需下载，不默认塞进主程序。

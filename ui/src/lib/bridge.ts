@@ -444,6 +444,10 @@ export type MetadataStatus = {
   percent: number;
   message: string;
 };
+export type UiFlagsOk = {
+  ok: true;
+  flags: Record<string, boolean>;
+};
 
 export type WorkspaceResult = WorkspaceOk | ApiError;
 export type ProjectResult = ProjectOk | ApiError;
@@ -472,6 +476,8 @@ type PyApi = {
   get_tree: () => Promise<Tree>;
   get_workflow_status: () => Promise<WorkflowStatus>;
   get_activity: (limit?: number) => Promise<ActivityFeed>;
+  get_ui_flags?: () => Promise<UiFlagsOk | ApiError>;
+  set_ui_flag?: (key: string, value?: boolean) => Promise<UiFlagsOk | ApiError>;
   get_network_settings: () => Promise<NetworkSettings>;
   save_network_settings: (settings: NetworkSettingsInput) => Promise<NetworkSettings | ApiError>;
   pick_open_file: (title?: string, filters?: string[]) => Promise<PickResult>;
@@ -616,7 +622,7 @@ type PyApi = {
   save_download_archive: (items: DownloadArchiveItem[]) => Promise<DownloadArchiveResult | ApiError>;
   delete_download_archive_item: (item: DownloadArchiveItem) => Promise<DownloadArchiveResult | ApiError>;
   get_credential_status: () => Promise<CredentialStatus>;
-  check_earthdata_auth: () => Promise<EarthdataAuthCheck | ApiError>;
+  check_earthdata_auth: (force?: boolean) => Promise<EarthdataAuthCheck | ApiError>;
   save_earthdata_token: (token: string) => Promise<SimpleOk>;
   save_earthdata_login: (username: string, password: string) => Promise<SimpleOk>;
   clear_earthdata_credentials: () => Promise<SimpleOk>;
@@ -939,7 +945,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Studio", version: "2.1.3", offline: true };
+  return { name: "InSAR Studio", version: "2.1.4", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -951,8 +957,8 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "2.1.3",
-    latest_version: "2.1.3",
+    current_version: "2.1.4",
+    latest_version: "2.1.4",
     html_url: "https://github.com/hhanmj/insar_studio/releases/latest",
     message: "Update checks run only in the packaged desktop app.",
   };
@@ -986,7 +992,7 @@ export async function getComponentStatus(refresh = false): Promise<ComponentStat
       {
         id: "dem-gdal",
         name: "DEM/GDAL 高程基准组件",
-        version: "2.1.3",
+        version: "2.1.4",
         size_mb: 205,
         description: "GDAL/rasterio/numpy/PROJ 与 EGM96、EGM2008 高程基准数据。",
         installed: false,
@@ -1210,6 +1216,31 @@ export async function getWorkflowStatus(): Promise<WorkflowStatus> {
 export async function getActivity(limit = 12): Promise<ActivityFeed> {
   if (hasBridge()) return api().get_activity(limit);
   return { ok: true, activities: [] };
+}
+
+export async function getUiFlags(): Promise<UiFlagsOk | ApiError> {
+  if (hasBridge()) {
+    const getter = api().get_ui_flags;
+    if (typeof getter === "function") return getter();
+  }
+  if (typeof window === "undefined") return { ok: true, flags: {} };
+  return {
+    ok: true,
+    flags: {
+      workbench_tour_seen: window.localStorage.getItem("insar-studio:workbench-tour-seen") === "1",
+    },
+  };
+}
+
+export async function setUiFlag(key: string, value = true): Promise<UiFlagsOk | ApiError> {
+  if (hasBridge()) {
+    const setter = api().set_ui_flag;
+    if (typeof setter === "function") return setter(key, value);
+  }
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(`insar-studio:${key.replace(/_/g, "-")}`, value ? "1" : "0");
+  }
+  return getUiFlags();
 }
 
 let mockDownloadArchive: DownloadArchiveItem[] = [];
@@ -2721,8 +2752,8 @@ export async function getCredentialStatus(): Promise<CredentialStatus> {
   return mockCredentials;
 }
 
-export async function checkEarthdataAuth(): Promise<EarthdataAuthCheck | ApiError> {
-  if (hasBridge()) return api().check_earthdata_auth();
+export async function checkEarthdataAuth(force = false): Promise<EarthdataAuthCheck | ApiError> {
+  if (hasBridge()) return api().check_earthdata_auth(force);
   const configured = !["none", "unavailable"].includes(mockCredentials.earthdata);
   return {
     ok: true,

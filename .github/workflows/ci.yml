@@ -13,6 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check executable scripts for curly quotes
+        run: python3 scripts/check_ascii_quotes.py
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 

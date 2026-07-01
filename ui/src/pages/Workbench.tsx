@@ -83,6 +83,7 @@ import {
   getNetworkSettings,
   getOrbitDownloadStatus,
   getTree,
+  getUiFlags,
   importScenesDirectory,
   importScenesFile,
   importScenesText,
@@ -114,6 +115,7 @@ import {
   saveDownloadArchive,
   saveNetworkSettings,
   saveOpentopographyKey,
+  setUiFlag,
   resizeNativeWindowFromEdge,
   removeComponent,
   setDemDataset,
@@ -441,6 +443,7 @@ const PANEL_TABS: { key: PanelTab; label: string; icon: typeof CloudDownload }[]
 ];
 
 const WORKBENCH_TOUR_VERSION = 4;
+const WORKBENCH_TOUR_FLAG = "workbench_tour_seen";
 const WORKBENCH_TOUR_STEPS: TourStep[] = [
   {
     title: "欢迎使用 InSAR Studio",
@@ -532,6 +535,14 @@ function providerLabel(value: string | undefined) {
   if (!value || value === "none") return "待配置";
   if (value === "unavailable") return "不可用";
   return value;
+}
+
+function earthdataCredentialSourceLabel(value: string | undefined) {
+  if (!value || value === "none") return "未保存凭据";
+  if (value === "unavailable") return "系统凭据不可用";
+  if (value === "token") return "本机已保存 Token";
+  if (value.startsWith("login:")) return `本机已保存账号 ${value.slice("login:".length)}`;
+  return `本机已保存 ${value}`;
 }
 
 function statusLabel(state: string | undefined) {
@@ -1031,6 +1042,7 @@ export function Workbench({
   const [aoiToolsOpen, setAoiToolsOpen] = useState(false);
   const [manualAoiOpen, setManualAoiOpen] = useState(false);
   const [tourSignal, setTourSignal] = useState(0);
+  const [tourAutoStart, setTourAutoStart] = useState(false);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -1131,7 +1143,7 @@ export function Workbench({
   const [demNorth, setDemNorth] = useState("");
   const [demRun, setDemRun] = useState<RunSummaryOk | null>(null);
   const [demRunSource, setDemRunSource] = useState<"download" | "download-only" | "local-ellipsoid" | "local-sarscape" | null>(null);
-  const [demDownloadBusy, setDemDownloadBusy] = useState(false);
+  const [demDownloadAction, setDemDownloadAction] = useState<"download-only" | "download-convert" | null>(null);
   const [localDemAction, setLocalDemAction] = useState<"ellipsoid" | "sarscape" | null>(null);
   const [demError, setDemError] = useState<string | null>(null);
   const [localDem, setLocalDem] = useState("");
@@ -1200,6 +1212,10 @@ export function Workbench({
     reason: "startup" | "manual" | "timer" | "download" = "manual",
     credentialStatus = creds?.earthdata,
   ): Promise<EarthdataAuthCheck | null> {
+    if (reason === "startup" || reason === "manual") {
+      setCredError(null);
+      setCredNote(null);
+    }
     if (!isConfigured(credentialStatus)) {
       const missing: EarthdataAuthCheck = {
         ok: true,
@@ -1228,7 +1244,7 @@ export function Workbench({
       });
     }
     try {
-      const res = await checkEarthdataAuth();
+      const res = await checkEarthdataAuth(reason === "startup" || reason === "manual");
       if (res.ok) {
         setEarthdataAuth(res);
         if (res.configured && res.status !== "valid") {
@@ -1247,6 +1263,31 @@ export function Workbench({
       earthdataAuthInFlight.current = false;
       setEarthdataAuthChecking(false);
     }
+  }
+
+  async function refreshCredentialStatusManually() {
+    setCredError(null);
+    setCredNote(null);
+    const next = await refreshCredentials();
+    if (!isConfigured(next.earthdata)) {
+      await refreshEarthdataAuth("manual", next.earthdata);
+      setCredNote("已刷新本机保存状态；Earthdata/ASF 未保存凭据。");
+      return;
+    }
+    const auth = await refreshEarthdataAuth("manual", next.earthdata);
+    if (auth?.status === "valid") {
+      setCredNote(`Earthdata/ASF 登录检测通过（${earthdataCredentialSourceLabel(next.earthdata)}）。`);
+      return;
+    }
+    if (auth?.status === "missing") {
+      setCredNote("已刷新本机保存状态；Earthdata/ASF 未保存凭据。");
+      return;
+    }
+    if (auth) {
+      setCredError(`Earthdata/ASF 登录检测未通过：${auth.message}`);
+      return;
+    }
+    setCredError("Earthdata/ASF 登录检测未完成，请稍后再试。");
   }
 
   const orbitCandidateScenes = useMemo(
@@ -1346,6 +1387,11 @@ export function Workbench({
     void refreshNetwork();
     void refreshComponents(false);
     void refreshDownloadArchive();
+    void getUiFlags().then((res) => {
+      if (!res.ok || res.flags[WORKBENCH_TOUR_FLAG]) return;
+      setTourAutoStart(true);
+      void setUiFlag(WORKBENCH_TOUR_FLAG, true);
+    });
   }, []);
 
   useEffect(() => {
@@ -1514,12 +1560,20 @@ export function Workbench({
     [demWest, demEast, demSouth, demNorth].every((value) => value.trim()) &&
     asNumber(demWest, Number.NaN) < asNumber(demEast, Number.NaN) &&
     asNumber(demSouth, Number.NaN) < asNumber(demNorth, Number.NaN);
+  const demDownloadBusy = demDownloadAction !== null;
   const asfItems = (asfPlan?.items as Json[] | undefined) ?? [];
   const issues = (checkReport?.issues as Json[] | undefined) ?? [];
   const earthdataConfigured = isConfigured(creds?.earthdata);
   const earthdataInvalid =
     earthdataConfigured &&
     (earthdataAuth?.status === "expired" || earthdataAuth?.status === "invalid");
+  const earthdataAuthValid = earthdataConfigured && earthdataAuth?.status === "valid";
+  const earthdataAuthPending =
+    earthdataConfigured && (earthdataAuthChecking || !earthdataAuth || earthdataAuth.status === "unknown");
+  const earthdataAuthProblem =
+    earthdataConfigured &&
+    !!earthdataAuth?.configured &&
+    !["valid", "unknown"].includes(earthdataAuth.status);
   const earthdataCanDownload = earthdataConfigured && !earthdataInvalid;
   const earthdataStatusLabel =
     !earthdataConfigured
@@ -1528,9 +1582,11 @@ export function Workbench({
         ? "正在检测"
       : earthdataAuth?.status === "valid"
         ? "正常"
-        : earthdataInvalid
-          ? "已过期或失效"
-          : "已保存";
+        : earthdataAuthProblem
+          ? earthdataInvalid
+            ? "已过期或失效"
+            : "未通过检测"
+          : "待检测";
   const opentopoConfigured = isConfigured(creds?.opentopography);
   const gacosConfigured = isConfigured(creds?.gacos);
   const dlActive = !dlStatus?.cancelled && (dlStatus?.state === "running" || dlStatus?.state === "paused");
@@ -2443,6 +2499,9 @@ export function Workbench({
         setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
         return;
       }
+      if ((res.paused ?? 0) === 0) {
+        setAsfError("所选影像不在当前下载任务中，或已经完成/暂停。");
+      }
       setDlStatus(await getDownloadStatus());
     } catch (e) {
       setAsfError(formatBridgeError(e));
@@ -2458,6 +2517,9 @@ export function Workbench({
       if (!res.ok) {
         setAsfError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
         return;
+      }
+      if ((res.resumed ?? 0) === 0) {
+        setAsfError("所选影像当前没有处于暂停状态，无法继续。");
       }
       setDlStatus(await getDownloadStatus());
     } catch (e) {
@@ -2602,7 +2664,7 @@ export function Workbench({
   }
 
   async function onRunDemDownload(convert = true) {
-    setDemDownloadBusy(true);
+    setDemDownloadAction(convert ? "download-convert" : "download-only");
     setDemError(null);
     setDemRun(null);
     setDemRunSource(null);
@@ -2641,7 +2703,7 @@ export function Workbench({
     } catch (e) {
       setDemError(formatBridgeError(e));
     } finally {
-      setDemDownloadBusy(false);
+      setDemDownloadAction(null);
     }
   }
 
@@ -4149,7 +4211,7 @@ function renderOutputParameters(
                 className="w-full"
                 title={!opentopoConfigured ? "请先在设置里保存 OpenTopography API Key" : "仅下载原始 GeoTIFF，不执行椭球高/SARscape 转换"}
               >
-                {demDownloadBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+                {demDownloadAction === "download-only" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
                 仅下载DEM
               </Button>
               <Button
@@ -4158,7 +4220,7 @@ function renderOutputParameters(
                 className="w-full"
                 title={!opentopoConfigured ? "请先在设置里保存 OpenTopography API Key" : undefined}
               >
-                {demDownloadBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+                {demDownloadAction === "download-convert" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
                 下载并转换椭球高
               </Button>
             </div>
@@ -5060,11 +5122,15 @@ function renderOutputParameters(
   function renderSceneWorkspaceOverlay() {
     if (!sceneWorkspaceOpen || scenes.length === 0) return null;
     const workspaceScenes = filteredSceneWorkspaceScenes;
-    const selectedActiveSceneIds = selectedDownloadSceneIdList.filter((id) => activeAsfSceneIds.has(id));
+    const selectedPausableSceneIds = dlActive
+      ? selectedDownloadSceneIdList.filter((id) => !pausedAsfSceneIds.has(id))
+      : [];
     const selectedPausedSceneIds = selectedDownloadSceneIdList.filter((id) => pausedAsfSceneIds.has(id));
     const selectedDownloadableSceneIds = selectedDownloadSceneIdList.filter(
       (id) => !activeAsfSceneIds.has(id) && !pausedAsfSceneIds.has(id),
     );
+    const canPauseSelected = selectedPausableSceneIds.length > 0;
+    const canResumeSelected = selectedPausedSceneIds.length > 0;
     return (
       <div className="absolute inset-4 z-[760] flex min-h-0 flex-col overflow-hidden rounded-[26px] border border-white/65 bg-white/88 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-zinc-950/88">
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border/60 px-4 py-3">
@@ -5111,22 +5177,22 @@ function renderOutputParameters(
             <Button
               size="sm"
               variant="outline"
-              onClick={() => void onPauseAsfScenes(selectedActiveSceneIds)}
-              disabled={selectedActiveSceneIds.length === 0}
-              title={selectedActiveSceneIds.length ? "只暂停勾选的正在下载影像" : "勾选正在下载的影像后可暂停"}
+              onClick={() => void onPauseAsfScenes(selectedPausableSceneIds)}
+              disabled={!canPauseSelected}
+              title={canPauseSelected ? "暂停勾选的未暂停影像，排队中和下载中都可暂停" : "当前没有可暂停的勾选影像；需要先开始下载任务，并勾选未暂停影像。"}
             >
               <Pause className="h-4 w-4" />
-              暂停所选
+              {canPauseSelected ? `暂停所选(${selectedPausableSceneIds.length})` : "暂停所选"}
             </Button>
             <Button
               size="sm"
               variant="outline"
               onClick={() => void onResumeAsfScenes(selectedPausedSceneIds)}
-              disabled={selectedPausedSceneIds.length === 0}
-              title={selectedPausedSceneIds.length ? "继续勾选的已暂停影像" : "勾选已暂停影像后可继续"}
+              disabled={!canResumeSelected}
+              title={canResumeSelected ? "继续勾选的已暂停影像" : "当前勾选中没有已暂停的影像；只有状态为已暂停的影像可继续。"}
             >
               <Play className="h-4 w-4" />
-              继续所选
+              {canResumeSelected ? `继续所选(${selectedPausedSceneIds.length})` : "继续所选"}
             </Button>
             <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full" onClick={() => setSceneWorkspaceOpen(false)}>
               <X className="h-4 w-4" />
@@ -5134,11 +5200,12 @@ function renderOutputParameters(
           </div>
         </div>
 
-        <div className="grid shrink-0 grid-cols-4 gap-2 border-b border-border/60 px-4 py-3 text-xs">
+        <div className="grid shrink-0 grid-cols-5 gap-2 border-b border-border/60 px-4 py-3 text-xs">
           {kv("候选影像", scenes.length)}
           {kv("当前显示", workspaceScenes.length)}
           {kv("加入下载", selectedDownloadSceneIdList.length)}
           {kv("正在下载", activeAsfDownloads.length)}
+          {kv("已暂停", pausedAsfSceneIds.size)}
         </div>
 
         <div className="shrink-0 border-b border-border/60 px-4 py-3">
@@ -5286,28 +5353,32 @@ function renderOutputParameters(
         >
           <div className="space-y-3">
             <div className="grid grid-cols-3 gap-2">
-              <Badge variant={isConfigured(earth) ? "success" : "warning"}>ASF: {providerLabel(earth)}</Badge>
+              <Badge
+                variant={
+                  !isConfigured(earth)
+                    ? "warning"
+                    : earthdataAuthValid
+                      ? "success"
+                      : earthdataAuthProblem
+                        ? "warning"
+                        : "neutral"
+                }
+              >
+                ASF: {earthdataStatusLabel}
+              </Badge>
               <Badge variant={isConfigured(dem) ? "success" : "warning"}>DEM: {providerLabel(dem)}</Badge>
               <Badge variant={isConfigured(gacos) ? "success" : "warning"}>GACOS: {providerLabel(gacos)}</Badge>
             </div>
             <Button
               variant="outline"
               size="sm"
-              onClick={() =>
-                void refreshCredentials().then(async (next) => {
-                  if (isConfigured(next.earthdata)) {
-                    await refreshEarthdataAuth("manual", next.earthdata);
-                    setCredNote("已刷新本机保存状态，并检测 Earthdata/ASF 登录状态。");
-                  } else {
-                    setCredNote("已刷新本机保存状态。");
-                  }
-                })
-              }
+              disabled={earthdataAuthChecking}
+              onClick={() => void refreshCredentialStatusManually()}
             >
-              <RotateCcw className="h-4 w-4" />
+              {earthdataAuthChecking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
               刷新状态
             </Button>
-            {earthdataAuth && earthdataAuth.configured && earthdataAuth.status !== "valid" && (
+            {earthdataAuth && earthdataAuth.configured && earthdataAuthProblem && (
               <div className="rounded-2xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs leading-5">
                 <div className="flex items-start gap-2">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
@@ -5337,23 +5408,42 @@ function renderOutputParameters(
         <Section title="Earthdata / ASF" desc="Sentinel-1 下载使用，优先建议 Token。" icon={Radar}>
           <div className="space-y-3">
             {isConfigured(earth) && (
-              <div className="rounded-2xl border border-success/25 bg-success/10 px-3 py-2 text-xs leading-5">
+              <div
+                className={cn(
+                  "rounded-2xl border px-3 py-2 text-xs leading-5",
+                  earthdataAuthValid
+                    ? "border-success/25 bg-success/10"
+                    : earthdataAuthProblem
+                      ? "border-warning/35 bg-warning/10"
+                      : "border-white/45 bg-white/35 dark:border-white/10 dark:bg-white/10",
+                )}
+              >
                 <div className="flex items-start gap-2">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                  {earthdataAuthValid ? (
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                  ) : earthdataAuthProblem ? (
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                  ) : (
+                    <RotateCcw className={cn("mt-0.5 h-4 w-4 shrink-0 text-muted-foreground", earthdataAuthPending && "animate-spin")} />
+                  )}
                   <div>
                     <div className="font-medium">
-                      {earthdataAuth?.status === "valid"
+                      {earthdataAuthValid
                         ? "设置完成，状态正常"
-                        : earthdataAuthChecking || earthdataAuth?.status === "unknown"
+                        : earthdataAuthProblem
+                          ? `已保存但未通过检测：${earthdataStatusLabel}`
+                          : earthdataAuthPending
                           ? `已设置：${providerLabel(earth)}，正在检测`
-                          : `已设置：${providerLabel(earth)}`}
+                          : `已设置：${providerLabel(earth)}，等待检测`}
                     </div>
                     <div className="text-muted-foreground">
-                      {earthdataAuth?.status === "valid"
-                        ? "最近一次登录检测通过；下载前会再做单次校验。"
-                        : earthdataAuthChecking || earthdataAuth?.status === "unknown"
-                          ? "软件正在校验当前凭据是否可用。"
-                          : "保存后不会反复检测；可手动检测，下载前也会单次校验。"}
+                      {earthdataAuthValid
+                        ? `${earthdataCredentialSourceLabel(earth)}；最近一次登录检测通过，下载前会再做单次校验。`
+                        : earthdataAuthProblem
+                          ? earthdataAuth?.message || "请重新保存 Earthdata Token 或账号密码。"
+                        : earthdataAuthPending
+                          ? `${earthdataCredentialSourceLabel(earth)}；软件正在校验当前凭据是否可用。`
+                          : `${earthdataCredentialSourceLabel(earth)}；点击检测登录或重新打开软件后会进行登录检测。`}
                     </div>
                   </div>
                 </div>
@@ -5457,7 +5547,7 @@ function renderOutputParameters(
                 variant="outline"
                 size="sm"
                 disabled={!isConfigured(earth) || earthdataAuthChecking}
-                onClick={() => void refreshCredentials().then((next) => refreshEarthdataAuth("manual", next.earthdata))}
+                onClick={() => void refreshCredentialStatusManually()}
               >
                 {earthdataAuthChecking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
                 检测登录
@@ -5602,7 +5692,7 @@ function renderOutputParameters(
 
         <Section
           title="更新与组件"
-          desc="检查 GitHub Release，后续大体积 DEM 转换库会以组件方式按需下载。"
+          desc="优先打通主程序在线更新；DEM/GDAL 组件作为第二阶段按需安装。"
           icon={HardDrive}
           defaultOpen={false}
           storageKey="settings-updates-components"
@@ -5616,6 +5706,9 @@ function renderOutputParameters(
                   <div className="text-muted-foreground">
                     当前版本 {appInfo?.version ?? updateInfo?.current_version ?? "-"}
                     {updateInfo?.checked && `，最新版本 ${updateInfo.latest_version}`}
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">
+                    安装版可下载并启动安装器；便携版目前下载更新包后需要关闭软件再替换，后续加入独立更新器实现自动覆盖。
                   </div>
                 </div>
                 <Badge variant={updateInfo?.update_available ? "warning" : "neutral"}>
@@ -5646,7 +5739,7 @@ function renderOutputParameters(
                   onClick={onDownloadUpdatePackage}
                 >
                   <CloudDownload className="h-4 w-4" />
-                  {updateInfo?.install_mode === "installer" ? "下载并启动安装器" : "在线下载更新包"}
+                  {updateInfo?.install_mode === "installer" ? "下载并启动安装器" : "下载更新包"}
                 </Button>
                 {downloadedUpdate && (
                   <Button variant="outline" size="sm" onClick={() => void openLocalPath(downloadedUpdate.folder)}>
@@ -5665,9 +5758,9 @@ function renderOutputParameters(
             <div className="rounded-2xl border border-white/45 bg-white/35 p-3 text-xs leading-5 dark:border-white/10 dark:bg-white/10">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <div className="text-sm font-semibold">在线组件</div>
+                  <div className="text-sm font-semibold">在线组件（第二阶段）</div>
                   <div className="text-muted-foreground">
-                    大体积 DEM/GDAL 运行库与 EGM96、EGM2008 高程基准数据随同一个组件按需安装，主程序保持轻量。
+                    主程序在线更新闭环优先；DEM/GDAL 运行库与 EGM96、EGM2008 高程基准数据会作为可选组件按需安装。
                   </div>
                 </div>
                 <Button
@@ -6147,7 +6240,7 @@ function renderOutputParameters(
         storageKey="insar-assistant:workbench-tour"
         version={WORKBENCH_TOUR_VERSION}
         runSignal={tourSignal}
-        autoStart
+        autoStart={tourAutoStart}
         onStepChange={handleTourStepChange}
       />
     </div>

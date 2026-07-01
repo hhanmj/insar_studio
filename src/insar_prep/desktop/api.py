@@ -490,6 +490,7 @@ class Api:
         self._last_orbit_report: Any | None = None
         self._metadata_status: dict[str, Any] = self._idle_metadata_status()
         self._network_settings = self._default_network_settings()
+        self._ui_flags: dict[str, bool] = {}
         self._applied_proxy_url: str | None = None
         self._earthdata_auth_failure_until = 0.0
         self._earthdata_auth_failure_cache: dict[str, Any] | None = None
@@ -562,6 +563,13 @@ class Api:
             settings = data.get("network_settings")
             if isinstance(settings, dict):
                 self._network_settings = self._normalise_network_settings(settings)
+            flags = data.get("ui_flags")
+            if isinstance(flags, dict):
+                self._ui_flags = {
+                    str(key): bool(value)
+                    for key, value in flags.items()
+                    if isinstance(key, str)
+                }
             self._deleted_archive_keys = _clean_download_archive_deleted_keys(
                 data.get("download_archive_deleted_keys")
             )
@@ -587,6 +595,7 @@ class Api:
                 "current_region_id": self._state.current_region_id,
                 "dem_dataset": self._dem_dataset,
                 "network_settings": self._network_settings,
+                "ui_flags": self._ui_flags,
                 "download_archive": _filter_deleted_download_archive(
                     _clean_download_archive(self._download_archive),
                     self._deleted_archive_keys,
@@ -736,6 +745,19 @@ class Api:
     def get_activity(self, limit: int = 12) -> dict:
         """Return recent in-session actions for the overview feed."""
         return self._activity.list(limit=limit)
+
+    def get_ui_flags(self) -> dict:
+        """Return small persistent UI flags, such as first-run guide state."""
+        return {"ok": True, "flags": dict(self._ui_flags)}
+
+    def set_ui_flag(self, key: str, value: bool = True) -> dict:
+        """Persist a small UI flag without touching user data or credentials."""
+        name = str(key or "").strip()
+        if not name:
+            return _error_msg("UI 标记名称不能为空。", "GUI003")
+        self._ui_flags[name] = bool(value)
+        self._save_state()
+        return self.get_ui_flags()
 
     def get_download_archive(self) -> dict:
         """Return persisted download/task history across app restarts."""
@@ -3310,7 +3332,7 @@ class Api:
             prefix = "OpenTopography API Key 无法完成联网校验，未保存"
         return _error_msg(f"{prefix}：{mask_text(result.message)}", code)
 
-    def check_earthdata_auth(self) -> dict:
+    def check_earthdata_auth(self, force: bool = False) -> dict:
         """Probe saved Earthdata credentials and report only user-actionable states."""
         try:
             from insar_prep.providers.asf.credentials import (
@@ -3329,9 +3351,10 @@ class Api:
         cached_failure = self._cached_earthdata_auth_failure()
         if cached_failure is not None:
             return cached_failure
-        cached_success = self._cached_earthdata_auth_success()
-        if cached_success is not None:
-            return cached_success
+        if not bool(force):
+            cached_success = self._cached_earthdata_auth_success()
+            if cached_success is not None:
+                return cached_success
 
         try:
             stored = stored_credential_status()
