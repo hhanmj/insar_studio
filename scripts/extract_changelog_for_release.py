@@ -47,7 +47,7 @@ def build_release_notes(version: str, date: str, body: str) -> str:
         "## 下载说明\n\n"
         "- `InSAR-Studio-*.exe`：全量单文件版，直接双击运行，本次不发布 setup 安装包。\n"
         "- DEM/GDAL 高程基准能力随发行版主程序内置；拆分组件模式仅用于内部测试。\n"
-        "- `SHA256SUMS.txt`：发行资产校验值。\n\n"
+        "\n"
         "## 注意事项\n\n"
         "- 发行包不包含账号、Token、下载历史、缓存、本机测试目录或私有数据。\n"
         "- 首次使用下载功能前，请在软件设置中校验必要凭据。\n"

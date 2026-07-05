@@ -69,12 +69,42 @@ jobs:
           $version = "${{ github.ref_name }}" -replace '^v', ''
           $exeName = "InSAR-Studio-$version.exe"
           Copy-Item dist/insar-prep-desktop.exe "artifacts/$exeName"
-          Get-FileHash -Algorithm SHA256 "artifacts/$exeName" |
-            ForEach-Object { "$($_.Hash)  $([IO.Path]::GetFileName($_.Path))" } |
-            Set-Content -Encoding ASCII artifacts/SHA256SUMS.txt
+          $hash = Get-FileHash -Algorithm SHA256 "artifacts/$exeName"
+          Write-Host "Internal SHA256: $($hash.Hash)  $([IO.Path]::GetFileName($hash.Path))"
 
       - name: Generate Chinese release notes from CHANGELOG
         run: uv run python scripts/extract_changelog_for_release.py --version "${{ github.ref_name }}" --output artifacts/RELEASE_NOTES.md
+
+      - name: Remove legacy checksum asset
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            let release;
+            try {
+              const response = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              });
+              release = response.data;
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`Release ${tag} does not exist yet; no legacy asset to remove.`);
+                return;
+              }
+              throw error;
+            }
+            for (const asset of release.assets) {
+              if (asset.name === 'SHA256SUMS.txt') {
+                await github.rest.repos.deleteReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  asset_id: asset.id,
+                });
+                core.info(`Removed legacy checksum asset from ${tag}.`);
+              }
+            }
 
       - name: Publish desktop assets to the GitHub Release
         uses: softprops/action-gh-release@v2
@@ -82,5 +112,4 @@ jobs:
           body_path: artifacts/RELEASE_NOTES.md
           files: |
             artifacts/InSAR-Studio-*.exe
-            artifacts/SHA256SUMS.txt
           fail_on_unmatched_files: true
