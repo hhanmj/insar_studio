@@ -2,7 +2,7 @@
 
 Wraps the credential-safe primitives -- API-key resolution, request building from
 a :class:`~insar_prep.providers.dem.types.DemRequestPlan`, the real downloader,
-and a results CSV -- into a single synchronous :func:`run_dem_download` call that
+and a results TXT -- into a single synchronous :func:`run_dem_download` call that
 both a background GUI worker and the CLI can reuse, so the DEM download
 orchestration lives in exactly one place (mirroring ``asf/download_runner.py``).
 
@@ -15,7 +15,6 @@ this module never imports ``requests`` itself.
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +22,7 @@ from typing import TYPE_CHECKING
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import get_logger, mask_text
+from insar_prep.core.text_table import write_table_txt
 from insar_prep.providers.dem.credentials import DemKeySource
 from insar_prep.providers.dem.downloader import (
     DemDownloader,
@@ -36,13 +36,15 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
     from threading import Event
 
+    from insar_prep.providers.dem.downloader import DemDownloadRequest
     from insar_prep.providers.dem.types import DemRequestPlan
 
     ProgressCallback = Callable[[DemDownloadResult], None]
+    TransferProgressCallback = Callable[[DemDownloadRequest, int, int | None], None]
 
 logger = get_logger("providers.dem.download_runner")
 
-# Shared DEM output bucket for batch raw, ellipsoid, SARscape-ready files and CSV logs.
+# Shared DEM output bucket for batch raw, ellipsoid, SARscape-ready files and TXT logs.
 DEM_DOWNLOAD_SUBDIR = "DEM"
 
 DEM_DOWNLOAD_RESULT_COLUMNS = [
@@ -58,25 +60,22 @@ DEM_DOWNLOAD_RESULT_COLUMNS = [
 def write_dem_download_results_csv(
     output_dir: Path | str, results: Sequence[DemDownloadResult]
 ) -> Path:
-    """Write a credential-masked per-region DEM results CSV; return its path."""
+    """Write a credential-masked per-region DEM results TXT; return its path."""
     plan_dir = Path(output_dir) if len(results) <= 1 else Path(output_dir) / DEM_DOWNLOAD_SUBDIR
     plan_dir.mkdir(parents=True, exist_ok=True)
-    results_path = plan_dir / "dem_download_results.csv"
-    with results_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=DEM_DOWNLOAD_RESULT_COLUMNS)
-        writer.writeheader()
-        for result in results:
-            writer.writerow(
-                {
-                    "region_safe_name": result.region_safe_name,
-                    "dataset": result.dataset,
-                    "outcome": result.outcome.value,
-                    "bytes_written": result.bytes_written,
-                    "error_code": result.error_code or "",
-                    "message": mask_text(result.message),
-                }
-            )
-    return results_path
+    results_path = plan_dir / "dem_download_results.txt"
+    rows = [
+        {
+            "region_safe_name": result.region_safe_name,
+            "dataset": result.dataset,
+            "outcome": result.outcome.value,
+            "bytes_written": result.bytes_written,
+            "error_code": result.error_code or "",
+            "message": mask_text(result.message),
+        }
+        for result in results
+    ]
+    return write_table_txt(results_path, DEM_DOWNLOAD_RESULT_COLUMNS, rows)
 
 
 @dataclass(frozen=True)
@@ -126,15 +125,16 @@ def run_dem_download(
     *,
     key_source: DemKeySource = DemKeySource.AUTO,
     downloader: DemDownloader | None = None,
-    max_retries: int = 3,
+    max_retries: int = 5,
     progress: ProgressCallback | None = None,
+    transfer_progress: TransferProgressCallback | None = None,
     cancel_event: Event | None = None,
 ) -> DemDownloadRunSummary:
     """Download the DEM for each plan in ``plans`` to its planned ``raw_dem_path``.
 
     Resolves the OpenTopography API key (unless an explicit ``downloader`` is
     given), downloads one DEM per plan with a downloadable dataset, writes a
-    credential-masked ``dem_download/dem_download_results.csv`` under
+    credential-masked ``dem_download/dem_download_results.txt`` under
     ``output_dir``, and returns a :class:`DemDownloadRunSummary`.
 
     Per-plan transport/credential problems are captured as ``FAILED`` results
@@ -155,7 +155,10 @@ def run_dem_download(
     active = downloader
     if active is None:
         active = RealDemDownloader(
-            key_source=key_source, max_retries=max_retries, cancel_event=cancel_event
+            key_source=key_source,
+            max_retries=max_retries,
+            cancel_event=cancel_event,
+            progress=transfer_progress,
         )
 
     results: list[DemDownloadResult] = []

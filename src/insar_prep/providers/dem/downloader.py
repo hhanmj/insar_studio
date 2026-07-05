@@ -38,7 +38,10 @@ from insar_prep.providers.dem.credentials import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from threading import Event
+
+    TransferProgressCallback = Callable[["DemDownloadRequest", int, int | None], None]
 
 logger = get_logger("providers.dem.downloader")
 
@@ -48,7 +51,7 @@ OPENTOPO_OUTPUT_FORMAT = "GTiff"
 
 _DEFAULT_CHUNK_SIZE = 1024 * 1024
 _DEFAULT_TIMEOUT = 120.0
-_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_MAX_RETRIES = 5
 _DEFAULT_BACKOFF = 2.0
 
 # A tiny bbox (~0.01 deg) used by the network preflight (``verify``): proves the
@@ -276,6 +279,7 @@ class RealDemDownloader:
         chunk_size: int = _DEFAULT_CHUNK_SIZE,
         timeout: float = _DEFAULT_TIMEOUT,
         cancel_event: Event | None = None,
+        progress: TransferProgressCallback | None = None,
     ) -> None:
         self.key_source = key_source
         self.endpoint = endpoint
@@ -284,6 +288,7 @@ class RealDemDownloader:
         self.chunk_size = max(1, chunk_size)
         self.timeout = timeout
         self.cancel_event = cancel_event
+        self.progress = progress
         self._resolved = resolved
         self._session = session
 
@@ -408,6 +413,7 @@ class RealDemDownloader:
         with session.get(  # type: ignore[attr-defined]
             self.endpoint, params=params, stream=True, timeout=self.timeout
         ) as response:
+            total = _content_length(response)
             status = int(getattr(response, "status_code", 200))
             if status in (401, 403):
                 raise _KeyRejected()
@@ -430,10 +436,11 @@ class RealDemDownloader:
                             raise _IntegrityMismatch("response is not a GeoTIFF")
                     handle.write(chunk)
                     written += len(chunk)
+                    if self.progress is not None:
+                        self.progress(request, written, total)
 
         if written == 0:
             raise _IntegrityMismatch("received an empty DEM response")
-        total = _content_length(response)
         if total is not None and written != total:
             raise _IntegrityMismatch(f"expected {total} bytes but received {written}")
 

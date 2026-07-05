@@ -34,7 +34,10 @@ logger = get_logger("providers.dem.geoid")
 
 _DATA_PACKAGE = "insar_prep"
 # Geoid model name -> path parts under the package data directory.
-_BUNDLED_GEOIDS: dict[str, tuple[str, ...]] = {"EGM96": ("data", "egm96_15.npz")}
+_BUNDLED_GEOIDS: dict[str, tuple[str, ...]] = {
+    "EGM96": ("data", "egm96_15.npz"),
+    "EGM2008": ("data", "egm2008_5.npz"),
+}
 
 
 @dataclass(frozen=True, eq=False)

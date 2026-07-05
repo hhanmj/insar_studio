@@ -88,7 +88,7 @@ class AsfDownloadJob:
         self._last_scenes: list[object] = []
         self._last_output_dir: Path | None = None
         self._last_credential_source: CredentialSource = CredentialSource.AUTO
-        self._last_max_retries: int = 3
+        self._last_max_retries: int = 5
         self._last_max_concurrent: int = 1
         self._last_proxy_url: str = ""
         self._last_ssl_verify: bool = True
@@ -142,7 +142,12 @@ class AsfDownloadJob:
     def _elapsed_seconds(s: _JobState) -> float:
         if s.started_at is None:
             return 0.0
-        reference = s.paused_started_at if s.paused and s.paused_started_at else (s.updated_at or time.monotonic())
+        if s.paused and s.paused_started_at:
+            reference = s.paused_started_at
+        elif s.state == "running":
+            reference = time.monotonic()
+        else:
+            reference = s.updated_at or time.monotonic()
         return max(0.0, reference - s.started_at - s.paused_total)
 
     def get_status(self) -> dict:
@@ -191,7 +196,7 @@ class AsfDownloadJob:
         output_dir: str | Path,
         *,
         credential_source: CredentialSource = CredentialSource.AUTO,
-        max_retries: int = 3,
+        max_retries: int = 5,
         max_concurrent: int = 1,
         proxy_url: str = "",
         ssl_verify: bool = True,
@@ -435,7 +440,7 @@ class AsfDownloadJob:
             )
             self._status.updated_at = time.monotonic()
 
-        extra = min(len(new_requests), max(0, 8 - live_workers), max(1, int(max_extra_workers or 1)))
+        extra = min(len(new_requests), max(0, 8 - live_workers), max(0, int(max_extra_workers or 0)))
         if extra > 0:
             self._start_workers(extra)
         return {
@@ -758,9 +763,119 @@ class AsfDownloadJob:
             self._cancel.set()
             return False
         if result.outcome is DownloadOutcome.INTERRUPTED:
-            self._cancel.set()
-            return False
+            return not self._cancel.is_set()
         return True
+
+    def _append_final_retry_log(self, result: DownloadResult) -> None:
+        suffix = f" [{result.error_code}]" if result.error_code else ""
+        message = mask_text(result.message) if result.message else ""
+        outcome_label = {
+            DownloadOutcome.SUCCESS: "补齐成功",
+            DownloadOutcome.SKIPPED: "已存在",
+            DownloadOutcome.FAILED: "补齐失败",
+            DownloadOutcome.INTERRUPTED: "补齐中断",
+        }.get(result.outcome, result.outcome.value)
+        detail = f"{mask_text(result.scene_id)}：{outcome_label}（{result.bytes_written} bytes）{suffix}"
+        if message:
+            detail = f"{detail}：{message}"
+        with self._lock:
+            self._status.log.append(
+                {
+                    "scene_id": mask_text(result.scene_id),
+                    "outcome": result.outcome.value,
+                    "bytes_written": result.bytes_written,
+                    "message": message,
+                    "detail": detail,
+                    "ts": int(time.time() * 1000),
+                }
+            )
+            self._status.updated_at = time.monotonic()
+
+    @staticmethod
+    def _request_part_path(request: object) -> Path | None:
+        destination = getattr(request, "destination", None)
+        if destination is None:
+            return None
+        dest = Path(destination)
+        return dest.with_name(dest.name + ".part")
+
+    def _request_is_complete(self, request: object, result: DownloadResult | None) -> bool:
+        if result is not None and result.outcome in {DownloadOutcome.SUCCESS, DownloadOutcome.SKIPPED}:
+            return True
+        destination = getattr(request, "destination", None)
+        if destination is None:
+            return False
+        dest = Path(destination)
+        if not dest.exists():
+            return False
+        expected_size = getattr(request, "expected_size", None)
+        return expected_size is None or dest.stat().st_size == int(expected_size)
+
+    def _retry_missing_requests(
+        self,
+        requests: list[object],
+        results: list[DownloadResult],
+    ) -> list[DownloadResult]:
+        if self._cancel.is_set():
+            return results
+        downloader = self._worker_downloader()
+        if downloader is None:
+            return results
+        by_scene = {self._normalise_scene_id(result.scene_id): result for result in results}
+        missing = [
+            request
+            for request in requests
+            if not self._request_is_complete(
+                request,
+                by_scene.get(self._normalise_scene_id(getattr(request, "scene_id", ""))),
+            )
+        ]
+        if not missing:
+            return results
+        with self._lock:
+            self._status.log.append(
+                {
+                    "scene_id": "",
+                    "outcome": "verification_retry",
+                    "bytes_written": 0,
+                    "message": f"核对到 {len(missing)} 景缺失，正在补齐",
+                    "detail": f"下载核对：发现 {len(missing)} 景缺失，已丢弃对应 .part 并重新下载。",
+                    "ts": int(time.time() * 1000),
+                }
+            )
+            self._status.updated_at = time.monotonic()
+        final_by_scene = dict(by_scene)
+        for request in missing:
+            if self._cancel.is_set():
+                break
+            scene_id = str(getattr(request, "scene_id", ""))
+            scene_key = self._normalise_scene_id(scene_id)
+            part = self._request_part_path(request)
+            if part is not None:
+                try:
+                    part.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            with self._lock:
+                self._status.current_scene = mask_text(scene_id)
+                self._status.updated_at = time.monotonic()
+            result = downloader.download(request)
+            final_by_scene[scene_key] = result
+            self._append_final_retry_log(result)
+            if result.error_code == ErrorCode.DL004.value:
+                self._cancel.set()
+                break
+        with self._lock:
+            self._status.current_scene = ""
+        ordered: list[DownloadResult] = []
+        seen: set[str] = set()
+        for request in requests:
+            scene_key = self._normalise_scene_id(getattr(request, "scene_id", ""))
+            result = final_by_scene.get(scene_key)
+            if result is not None and scene_key not in seen:
+                ordered.append(result)
+                seen.add(scene_key)
+        return ordered
 
     def _mark_scene_paused(self, request: object, result: DownloadResult) -> None:
         scene_id = str(getattr(request, "scene_id", result.scene_id))
@@ -864,17 +979,32 @@ class AsfDownloadJob:
             cancelled = self._cancel.is_set()
             with self._results_lock:
                 results = list(self._results)
+            if not cancelled:
+                results = self._retry_missing_requests(requests, results)
+                cancelled = self._cancel.is_set()
+                with self._results_lock:
+                    self._results = list(results)
 
             results_path = write_download_results_csv(output_path, results) if results else None
             counts = {outcome: 0 for outcome in DownloadOutcome}
             for result in results:
                 counts[result.outcome] += 1
+            failed_scene_ids = {
+                self._normalise_scene_id(result.scene_id)
+                for result in results
+                if result.outcome in {DownloadOutcome.FAILED, DownloadOutcome.INTERRUPTED}
+            }
+            failed_scene_names = sorted(mask_text(scene_id) for scene_id in failed_scene_ids)
             summary_line = (
                 f"{counts.get(DownloadOutcome.SUCCESS, 0)} 已下载, "
                 f"{counts.get(DownloadOutcome.SKIPPED, 0)} 跳过, "
                 f"{counts.get(DownloadOutcome.FAILED, 0)} 失败, "
                 f"{counts.get(DownloadOutcome.INTERRUPTED, 0)} 中断"
             )
+            if failed_scene_names:
+                visible = "；".join(failed_scene_names[:8])
+                more = f" 等 {len(failed_scene_names)} 景" if len(failed_scene_names) > 8 else ""
+                summary_line = f"{summary_line}；失败影像：{visible}{more}"
             succeeded = counts.get(DownloadOutcome.SUCCESS, 0)
             skipped = counts.get(DownloadOutcome.SKIPPED, 0)
             failed = counts.get(DownloadOutcome.FAILED, 0)
@@ -893,6 +1023,7 @@ class AsfDownloadJob:
                 self._status.paused_started_at = None
                 self._status.summary_line = summary_line
                 self._status.results_path = str(results_path) if results_path else ""
+                self._status.done = min(len(results), self._status.total)
                 self._status.succeeded = succeeded
                 self._status.skipped = skipped
                 self._status.failed = failed
@@ -906,6 +1037,7 @@ class AsfDownloadJob:
                 self._paused_scene_ids = set()
                 self._paused_requests = {}
                 self._scene_cancel_events = {}
+                self._last_failed_scene_ids = failed_scene_ids
             if self._activity is not None:
                 prefix = "下载已取消" if cancelled else "下载完成"
                 self._activity.add(f"{prefix}：{summary_line}", kind="download")
@@ -936,8 +1068,11 @@ class _OrbitJobState:
     state: str = "idle"
     total: int = 0
     done: int = 0
+    concurrency: int = 10
     current_scene: str = ""
     orbit_dir: str = ""
+    done_bytes: int = 0
+    bytes_per_second: float = 0.0
     started_at: float | None = None
     updated_at: float | None = None
     paused_started_at: float | None = None
@@ -951,6 +1086,7 @@ class _OrbitJobState:
     unavailable: int = 0
     failed: int = 0
     has_failures: bool = False
+    active_scenes: dict[str, dict[str, Any]] = field(default_factory=dict)
     results: list[dict[str, Any]] = field(default_factory=list)
     log: list[dict[str, Any]] = field(default_factory=list)
     report: dict[str, Any] | None = None
@@ -971,7 +1107,12 @@ class OrbitDownloadJob:
     def _elapsed_seconds(s: _OrbitJobState) -> float:
         if s.started_at is None:
             return 0.0
-        reference = s.paused_started_at if s.paused and s.paused_started_at else (s.updated_at or time.monotonic())
+        if s.paused and s.paused_started_at:
+            reference = s.paused_started_at
+        elif s.state == "running":
+            reference = time.monotonic()
+        else:
+            reference = s.updated_at or time.monotonic()
         return max(0.0, reference - s.started_at - s.paused_total)
 
     def get_status(self) -> dict:
@@ -982,8 +1123,11 @@ class OrbitDownloadJob:
                 "state": s.state,
                 "total": s.total,
                 "done": s.done,
+                "concurrency": s.concurrency,
                 "current_scene": s.current_scene,
                 "orbit_dir": s.orbit_dir,
+                "done_bytes": s.done_bytes,
+                "bytes_per_second": s.bytes_per_second,
                 "elapsed_seconds": self._elapsed_seconds(s),
                 "paused": s.paused,
                 "cancelled": s.cancelled,
@@ -994,6 +1138,7 @@ class OrbitDownloadJob:
                 "unavailable": s.unavailable,
                 "failed": s.failed,
                 "has_failures": s.has_failures,
+                "active_scenes": list(s.active_scenes.values()),
                 "results": list(s.results[-120:]),
                 "log": list(s.log[-120:]),
                 "report": s.report,
@@ -1005,6 +1150,7 @@ class OrbitDownloadJob:
         scenes: Iterable[object],
         output_dir: str | Path,
         *,
+        max_concurrent: int = 10,
         activity: ActivityLog | None = None,
     ) -> dict:
         scene_list = list(scenes)
@@ -1016,12 +1162,18 @@ class OrbitDownloadJob:
         self._cancel.clear()
         self._pause.clear()
         self._activity = activity
+        workers = max(1, min(int(max_concurrent or 10), 10))
         with self._lock:
             now = time.monotonic()
-            self._status = _OrbitJobState(state="running", started_at=now, updated_at=now)
+            self._status = _OrbitJobState(
+                state="running",
+                concurrency=workers,
+                started_at=now,
+                updated_at=now,
+            )
         self._thread = threading.Thread(
             target=self._run,
-            args=(scene_list, Path(output_dir)),
+            args=(scene_list, Path(output_dir), workers),
             daemon=True,
         )
         self._thread.start()
@@ -1131,9 +1283,25 @@ class OrbitDownloadJob:
         }
         with self._lock:
             self._status.done += 1
+            if outcome == "success":
+                self._status.succeeded += 1
+            elif outcome == "skipped":
+                self._status.skipped += 1
+            elif outcome == "unavailable":
+                self._status.unavailable += 1
+            elif outcome == "failed":
+                self._status.failed += 1
+                self._status.has_failures = True
+            self._status.done_bytes += int(data.get("bytes_written") or 0)
+            elapsed = self._elapsed_seconds(self._status)
+            if elapsed > 0:
+                self._status.bytes_per_second = self._status.done_bytes / elapsed
+            elif self._status.done_bytes > 0:
+                self._status.bytes_per_second = float(self._status.done_bytes)
             self._status.results.append(data)
             self._status.log.append(entry)
-            self._status.current_scene = ""
+            self._status.active_scenes.pop(scene_id, None)
+            self._status.current_scene = ", ".join(self._status.active_scenes.keys())
             self._status.updated_at = time.monotonic()
         if self._activity is not None:
             self._activity.add(
@@ -1141,7 +1309,7 @@ class OrbitDownloadJob:
                 kind="download",
             )
 
-    def _run(self, scenes: list[object], output_path: Path) -> None:
+    def _run(self, scenes: list[object], output_path: Path, workers: int = 10) -> None:
         try:
             from insar_prep.providers.asf.scene_parser import deduplicate_scenes
             from insar_prep.providers.orbit import (
@@ -1155,26 +1323,84 @@ class OrbitDownloadJob:
             unique_scenes, _ = deduplicate_scenes(scenes)
             orbit_dir = poeorb_directory(output_path)
             seen_scene_ids: set[str] = set()
-            with self._lock:
-                self._status.total = len(unique_scenes)
-                self._status.orbit_dir = str(orbit_dir)
-                self._status.updated_at = time.monotonic()
-
+            pending: Queue[object] = Queue()
             for scene in unique_scenes:
                 if getattr(scene, "scene_id", "") in seen_scene_ids:
                     continue
                 seen_scene_ids.add(getattr(scene, "scene_id", ""))
-                if self._cancel.is_set():
-                    break
-                while self._pause.is_set() and not self._cancel.is_set():
-                    time.sleep(0.25)
-                if self._cancel.is_set():
-                    break
-                with self._lock:
-                    self._status.current_scene = mask_text(getattr(scene, "scene_id", ""))
-                    self._status.updated_at = time.monotonic()
-                result = download_orbit_for_scene(scene, orbit_dir)
-                self._append_result(result)
+                pending.put(scene)
+            with self._lock:
+                self._status.total = len(seen_scene_ids)
+                self._status.concurrency = max(1, min(int(workers or 10), 10))
+                self._status.orbit_dir = str(orbit_dir)
+                self._status.updated_at = time.monotonic()
+
+            def worker_loop() -> None:
+                while not self._cancel.is_set():
+                    while self._pause.is_set() and not self._cancel.is_set():
+                        time.sleep(0.25)
+                    if self._cancel.is_set():
+                        return
+                    try:
+                        scene = pending.get_nowait()
+                    except Empty:
+                        return
+                    scene_id = getattr(scene, "scene_id", "")
+                    masked_scene_id = mask_text(scene_id)
+                    try:
+                        with self._lock:
+                            self._status.current_scene = masked_scene_id
+                            self._status.active_scenes[masked_scene_id] = {
+                                "scene_id": masked_scene_id,
+                                "started_at": int(time.time() * 1000),
+                            }
+                            self._status.updated_at = time.monotonic()
+                        result = None
+                        for _attempt in range(5):
+                            result = download_orbit_for_scene(scene, orbit_dir)
+                            if result.outcome is not OrbitDownloadOutcome.FAILED:
+                                break
+                        if result is not None:
+                            self._append_result(result)
+                    except Exception as exc:  # noqa: BLE001
+                        with self._lock:
+                            self._status.done += 1
+                            self._status.failed += 1
+                            self._status.has_failures = True
+                            self._status.active_scenes.pop(masked_scene_id, None)
+                            self._status.current_scene = ", ".join(self._status.active_scenes.keys())
+                            self._status.results.append(
+                                {
+                                    "scene_id": masked_scene_id,
+                                    "outcome": "failed",
+                                    "orbit_file": "",
+                                    "orbit_type": "",
+                                    "path": "",
+                                    "bytes_written": 0,
+                                    "message": mask_text(f"{type(exc).__name__}: {exc}"),
+                                    "error_code": "ORB001",
+                                }
+                            )
+                            self._status.log.append(
+                                {
+                                    "scene_id": masked_scene_id,
+                                    "outcome": "failed",
+                                    "detail": f"{masked_scene_id}: 失败，{mask_text(str(exc))}",
+                                    "ts": int(time.time() * 1000),
+                                }
+                            )
+                            self._status.updated_at = time.monotonic()
+                    finally:
+                        pending.task_done()
+
+            threads = [
+                threading.Thread(target=worker_loop, daemon=True)
+                for _ in range(min(max(1, int(workers or 10)), max(1, pending.qsize())))
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
 
             results = list(self._status.results)
             succeeded = sum(1 for r in results if r.get("outcome") == OrbitDownloadOutcome.SUCCESS.value)
@@ -1210,6 +1436,7 @@ class OrbitDownloadJob:
                 self._status.has_failures = failed > 0
                 self._status.summary_line = summary_line
                 self._status.report = report
+                self._status.active_scenes = {}
                 self._status.log.append(
                     {
                         "scene_id": "",
@@ -1226,9 +1453,348 @@ class OrbitDownloadJob:
             with self._lock:
                 self._status.state = "failed"
                 self._status.error = str(exc)
+                self._status.active_scenes = {}
                 self._status.updated_at = time.monotonic()
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 self._status.state = "failed"
                 self._status.error = mask_text(f"{type(exc).__name__}: {exc}")
+                self._status.active_scenes = {}
                 self._status.updated_at = time.monotonic()
+
+
+@dataclass
+class _DemJobState:
+    state: str = "idle"
+    total: int = 0
+    done: int = 0
+    current_scene: str = ""
+    output_dir: str = ""
+    dataset: str = ""
+    convert: bool = True
+    raw_dem_path: str = ""
+    ellipsoid_dem_path: str = ""
+    sarscape_ready_dem_path: str = ""
+    results_path: str = ""
+    conversion_results_path: str = ""
+    done_bytes: int = 0
+    bytes_per_second: float = 0.0
+    started_at: float | None = None
+    updated_at: float | None = None
+    cancelled: bool = False
+    error: str | None = None
+    summary_line: str = ""
+    succeeded: int = 0
+    skipped: int = 0
+    failed: int = 0
+    interrupted: int = 0
+    has_failures: bool = False
+    results: list[dict[str, Any]] = field(default_factory=list)
+    log: list[dict[str, Any]] = field(default_factory=list)
+
+
+class DemDownloadJob:
+    """Single-flight OpenTopography DEM download with cancellable status polling."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._status = _DemJobState()
+        self._thread: threading.Thread | None = None
+        self._cancel = threading.Event()
+        self._activity: ActivityLog | None = None
+
+    @staticmethod
+    def _elapsed_seconds(s: _DemJobState) -> float:
+        if s.started_at is None:
+            return 0.0
+        reference = time.monotonic() if s.state == "running" else (s.updated_at or time.monotonic())
+        return max(0.0, reference - s.started_at)
+
+    def get_status(self) -> dict:
+        with self._lock:
+            s = self._status
+            elapsed = self._elapsed_seconds(s)
+            rate = s.bytes_per_second
+            if s.state == "running" and elapsed > 0 and s.done_bytes > 0:
+                rate = s.done_bytes / elapsed
+            return {
+                "ok": True,
+                "state": s.state,
+                "total": s.total,
+                "done": s.done,
+                "current_scene": s.current_scene,
+                "output_dir": s.output_dir,
+                "dataset": s.dataset,
+                "convert": s.convert,
+                "raw_dem_path": s.raw_dem_path,
+                "ellipsoid_dem_path": s.ellipsoid_dem_path,
+                "sarscape_ready_dem_path": s.sarscape_ready_dem_path,
+                "results_path": s.results_path,
+                "conversion_results_path": s.conversion_results_path,
+                "done_bytes": s.done_bytes,
+                "bytes_per_second": rate,
+                "elapsed_seconds": elapsed,
+                "cancelled": s.cancelled,
+                "error": s.error,
+                "summary_line": s.summary_line,
+                "succeeded": s.succeeded,
+                "skipped": s.skipped,
+                "failed": s.failed,
+                "interrupted": s.interrupted,
+                "has_failures": s.has_failures,
+                "results": list(s.results[-40:]),
+                "log": list(s.log[-80:]),
+            }
+
+    def start(
+        self,
+        plan: object,
+        output_dir: str | Path,
+        *,
+        key_source: str = "auto",
+        convert: bool = True,
+        activity: ActivityLog | None = None,
+    ) -> dict:
+        out = Path(output_dir)
+        with self._lock:
+            if self._status.state == "running":
+                return {"ok": False, "error": "已有 DEM 下载任务在进行", "code": "GUI004"}
+        self._cancel.clear()
+        self._activity = activity
+        dataset = str(getattr(plan, "dataset", "") or "")
+        raw = str(getattr(plan, "raw_dem_path", "") or "")
+        ellipsoid = str(getattr(plan, "ellipsoid_dem_path", "") or "")
+        sarscape = str(getattr(plan, "sarscape_ready_dem_path", "") or "")
+        now = time.monotonic()
+        with self._lock:
+            self._status = _DemJobState(
+                state="running",
+                total=1,
+                current_scene=dataset or "DEM",
+                output_dir=str(out),
+                dataset=dataset,
+                convert=bool(convert),
+                raw_dem_path=raw,
+                ellipsoid_dem_path=ellipsoid if convert else "",
+                sarscape_ready_dem_path=sarscape if convert else "",
+                started_at=now,
+                updated_at=now,
+                log=[
+                    {
+                        "scene_id": dataset,
+                        "outcome": "started",
+                        "detail": f"开始 DEM 下载：{dataset} → {out}",
+                        "ts": int(time.time() * 1000),
+                    }
+                ],
+            )
+        self._thread = threading.Thread(
+            target=self._run,
+            args=(plan, out, key_source, bool(convert)),
+            daemon=True,
+        )
+        self._thread.start()
+        return {"ok": True}
+
+    def stop(self) -> dict:
+        with self._lock:
+            if self._status.state != "running":
+                return {"ok": False, "error": "当前没有进行中的 DEM 下载", "code": "GUI004"}
+            self._status.updated_at = time.monotonic()
+            self._status.log.append(
+                {
+                    "scene_id": self._status.dataset,
+                    "outcome": "cancel_requested",
+                    "detail": "正在结束 DEM 下载：当前网络块完成后会停止，并保留 .part。",
+                    "ts": int(time.time() * 1000),
+                }
+            )
+        self._cancel.set()
+        return {"ok": True}
+
+    def shutdown(self, timeout: float = 2.0) -> dict:
+        with self._lock:
+            should_stop = self._status.state == "running"
+            if should_stop:
+                self._status.cancelled = True
+                self._status.updated_at = time.monotonic()
+                self._status.log.append(
+                    {
+                        "scene_id": self._status.dataset,
+                        "outcome": "app_shutdown",
+                        "detail": "软件正在退出：DEM 下载已请求中断，未完成文件保留为 .part。",
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+            thread = self._thread
+        if not should_stop:
+            return {"ok": True, "stopped": False}
+        self._cancel.set()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.1, float(timeout or 0.1)))
+        return {"ok": True, "stopped": True}
+
+    @staticmethod
+    def _dump_result(result: object) -> dict[str, Any]:
+        if hasattr(result, "model_dump"):
+            data = result.model_dump(mode="json")  # type: ignore[attr-defined]
+        else:
+            data = dict(result)  # type: ignore[arg-type]
+        return {str(k): v for k, v in data.items()}
+
+    def _append_download_result(self, result: object) -> None:
+        data = self._dump_result(result)
+        outcome = str(data.get("outcome") or "")
+        bytes_written = int(data.get("bytes_written") or 0)
+        message = mask_text(str(data.get("message") or ""))
+        detail = f"{data.get('dataset') or self._status.dataset}: {outcome}"
+        if bytes_written:
+            detail += f"，{bytes_written} bytes"
+        if message:
+            detail += f"；{message}"
+        with self._lock:
+            self._status.done = 1
+            self._status.done_bytes = max(self._status.done_bytes, bytes_written)
+            elapsed = self._elapsed_seconds(self._status)
+            if elapsed > 0:
+                self._status.bytes_per_second = self._status.done_bytes / elapsed
+            self._status.results.append(data)
+            self._status.log.append(
+                {
+                    "scene_id": str(data.get("region_safe_name") or ""),
+                    "outcome": outcome,
+                    "detail": detail,
+                    "ts": int(time.time() * 1000),
+                }
+            )
+            self._status.updated_at = time.monotonic()
+
+    def _update_download_progress(self, request: object, bytes_written: int, expected_size: int | None) -> None:
+        dataset = str(getattr(request, "dataset", "") or self._status.dataset or "DEM")
+        written = max(0, int(bytes_written or 0))
+        with self._lock:
+            self._status.current_scene = dataset
+            self._status.done_bytes = max(self._status.done_bytes, written)
+            elapsed = self._elapsed_seconds(self._status)
+            if elapsed > 0:
+                self._status.bytes_per_second = self._status.done_bytes / elapsed
+            self._status.summary_line = (
+                f"正在下载 {dataset}，已接收 {self._status.done_bytes} bytes"
+                + (f" / {int(expected_size)} bytes" if expected_size else "")
+            )
+            self._status.updated_at = time.monotonic()
+
+    def _run(self, plan: object, output_dir: Path, key_source: str, convert: bool) -> None:
+        try:
+            from insar_prep.providers.dem.credentials import DemKeySource
+            from insar_prep.providers.dem.convert_runner import run_dem_conversion
+            from insar_prep.providers.dem.conversion_planner import create_dem_conversion_plan
+            from insar_prep.providers.dem.download_runner import run_dem_download
+
+            source = DemKeySource((key_source or "auto").strip().lower())
+            download = run_dem_download(
+                [plan],
+                output_dir,
+                key_source=source,
+                progress=self._append_download_result,
+                transfer_progress=self._update_download_progress,
+                cancel_event=self._cancel,
+            )
+            cancelled = bool(download.cancelled or self._cancel.is_set())
+            summary_line = download.summary_line()
+            results_path = str(download.results_path) if download.results_path else ""
+            conversion_results_path = ""
+            conversion = None
+            if convert and not cancelled and not download.has_failures:
+                with self._lock:
+                    self._status.log.append(
+                        {
+                            "scene_id": self._status.dataset,
+                            "outcome": "conversion_started",
+                            "detail": "DEM 下载完成，开始生成椭球高/SARscape 文件。",
+                            "ts": int(time.time() * 1000),
+                        }
+                    )
+                conversion_plan = create_dem_conversion_plan(plan)
+                conversion = run_dem_conversion([conversion_plan], output_dir)
+                conversion_results_path = str(conversion.results_path) if conversion.results_path else ""
+                summary_line = f"下载：{download.summary_line()}；转换：{conversion.summary_line()}"
+            elif convert and (cancelled or download.has_failures):
+                with self._lock:
+                    self._status.log.append(
+                        {
+                            "scene_id": self._status.dataset,
+                            "outcome": "conversion_skipped",
+                            "detail": "DEM 转换未执行：下载失败或已中断。",
+                            "ts": int(time.time() * 1000),
+                        }
+                    )
+            succeeded = int(download.succeeded)
+            skipped = int(download.skipped)
+            failed = int(download.failed)
+            interrupted = int(download.interrupted)
+            has_failures = bool(download.has_failures)
+            if conversion is not None:
+                failed += int(conversion.failed)
+                has_failures = has_failures or bool(conversion.has_failures)
+            with self._lock:
+                self._status.state = "cancelled" if cancelled else ("failed" if has_failures else "finished")
+                self._status.cancelled = cancelled
+                self._status.summary_line = summary_line
+                self._status.results_path = results_path
+                self._status.conversion_results_path = conversion_results_path
+                self._status.succeeded = succeeded
+                self._status.skipped = skipped
+                self._status.failed = failed
+                self._status.interrupted = interrupted
+                self._status.has_failures = has_failures
+                self._status.current_scene = ""
+                self._status.done = max(self._status.done, 1)
+                self._status.updated_at = time.monotonic()
+                self._status.log.append(
+                    {
+                        "scene_id": self._status.dataset,
+                        "outcome": self._status.state,
+                        "detail": f"DEM 任务结束：{summary_line}",
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+            if self._activity is not None:
+                self._activity.add(f"DEM 下载完成：{summary_line}", kind="download")
+        except InsarPrepError as exc:
+            with self._lock:
+                state = "cancelled" if self._cancel.is_set() else "failed"
+                self._status.state = state
+                self._status.cancelled = self._cancel.is_set()
+                self._status.error = mask_text(str(exc))
+                self._status.failed = 0 if self._cancel.is_set() else 1
+                self._status.interrupted = 1 if self._cancel.is_set() else 0
+                self._status.has_failures = not self._cancel.is_set()
+                self._status.summary_line = "DEM 下载已中断" if self._cancel.is_set() else str(exc)
+                self._status.current_scene = ""
+                self._status.updated_at = time.monotonic()
+                self._status.log.append(
+                    {
+                        "scene_id": self._status.dataset,
+                        "outcome": state,
+                        "detail": self._status.summary_line,
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self._status.state = "failed"
+                self._status.error = mask_text(str(exc))
+                self._status.failed = 1
+                self._status.has_failures = True
+                self._status.summary_line = mask_text(str(exc))
+                self._status.current_scene = ""
+                self._status.updated_at = time.monotonic()
+                self._status.log.append(
+                    {
+                        "scene_id": self._status.dataset,
+                        "outcome": "failed",
+                        "detail": f"DEM 下载失败：{mask_text(str(exc))}",
+                        "ts": int(time.time() * 1000),
+                    }
+                )

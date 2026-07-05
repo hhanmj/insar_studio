@@ -56,6 +56,7 @@ const DEFAULT_BBOX: Bbox = {
   north: 53.6,
   crs: "EPSG:4326",
 };
+const MAP_SCENE_DISPLAY_LIMIT = 300;
 
 const MAP_LAYERS: Record<
   MapLayerKey,
@@ -707,12 +708,12 @@ function MapStatusOverlay() {
 
   return (
     <div
-      className="pointer-events-none absolute left-4 z-[520] rounded-2xl border border-white/55 bg-white/62 px-3 py-1.5 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62"
-      style={{ bottom: "max(2rem, calc(env(safe-area-inset-bottom) + 2rem))" }}
+      className="pointer-events-none absolute left-3 z-[520] rounded-full border border-white/55 bg-white/68 px-2.5 py-1 text-[11px] shadow-md backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62"
+      style={{ bottom: "max(1rem, calc(env(safe-area-inset-bottom) + 1rem))" }}
     >
       <span className="text-muted-foreground">{status.label}</span>
-      <span className="ml-2 font-mono">
-        经度: {fmt(status.lng)}　纬度: {fmt(status.lat)}　|　缩放: {status.zoom}
+      <span className="ml-1.5 font-mono tabular-nums">
+        {fmt(status.lng)}, {fmt(status.lat)} · Z{status.zoom}
       </span>
     </div>
   );
@@ -774,10 +775,19 @@ export function WorkbenchMap({
   const [scenePopup, setScenePopup] = useState<{ sceneId: string; position: LatLngExpression } | null>(null);
   const layerBackdropRef = useRef<HTMLDivElement | null>(null);
   const layerPanelRef = useRef<HTMLDivElement | null>(null);
-  const visibleScenes = useMemo(
-    () => scenes.filter((scene) => isValidBbox(scene.footprint_bbox)).slice(0, 300),
+  const validFootprintScenes = useMemo(
+    () => scenes.filter((scene) => isValidBbox(scene.footprint_bbox)),
     [scenes],
   );
+  const visibleScenes = useMemo(() => {
+    const baseScenes = validFootprintScenes.slice(0, MAP_SCENE_DISPLAY_LIMIT);
+    if (!selectedSceneId || baseScenes.some((scene) => scene.scene_id === selectedSceneId)) {
+      return baseScenes;
+    }
+    const selectedScene = validFootprintScenes.find((scene) => scene.scene_id === selectedSceneId);
+    if (!selectedScene) return baseScenes;
+    return [...baseScenes.slice(0, MAP_SCENE_DISPLAY_LIMIT - 1), selectedScene];
+  }, [selectedSceneId, validFootprintScenes]);
   const orderedSceneEntries = useMemo(() => {
     const entries = visibleScenes.map((scene, index) => ({ scene, index }));
     if (!selectedSceneId) return entries;
@@ -788,6 +798,26 @@ export function WorkbenchMap({
   }, [selectedSceneId, visibleScenes]);
   const aoiPolygons = useMemo(() => geometryPolygons(aoiGeometry), [aoiGeometry]);
   const footprintCount = visibleScenes.length;
+  const totalFootprintCount = validFootprintScenes.length;
+  const footprintLabel =
+    totalFootprintCount > MAP_SCENE_DISPLAY_LIMIT
+      ? `地图 ${footprintCount} / ${totalFootprintCount} 景`
+      : `影像 ${footprintCount} 景`;
+  const bboxLabel = `W${fmt(fitBbox.west)} S${fmt(fitBbox.south)} E${fmt(fitBbox.east)} N${fmt(fitBbox.north)}`;
+  const bboxCopyText = `west=${fitBbox.west}, south=${fitBbox.south}, east=${fitBbox.east}, north=${fitBbox.north}`;
+  const [bboxCopied, setBboxCopied] = useState(false);
+  const copyFitBbox = useCallback(() => {
+    const done = () => {
+      setBboxCopied(true);
+      window.setTimeout(() => setBboxCopied(false), 1200);
+    };
+    const writer = navigator.clipboard?.writeText?.(bboxCopyText);
+    if (writer) {
+      void writer.then(done).catch(done);
+    } else {
+      done();
+    }
+  }, [bboxCopyText]);
   const token = tiandituToken.trim();
   const layer = MAP_LAYERS[layerKey].requiresToken && !token ? MAP_LAYERS.cartoLight : MAP_LAYERS[layerKey];
   const layerUrl = layer.url.replace("{token}", encodeURIComponent(token));
@@ -941,38 +971,38 @@ export function WorkbenchMap({
         onToggleLayers={() => setLayersOpen((value) => !value)}
       />
 
-      <div
-        className="pointer-events-none absolute left-4 z-[500] max-w-[460px] rounded-2xl border border-white/55 bg-white/62 px-3 py-2 text-xs shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62"
-        style={{ bottom: "max(5.25rem, calc(env(safe-area-inset-bottom) + 5.25rem))" }}
-      >
-        <div className="flex items-center gap-2 font-medium">
-          <MapPinned className="h-3.5 w-3.5 text-primary" />
-          {drawActive ? "正在绘制 AOI" : "地图工作区"}
+      <div className="pointer-events-none absolute right-3 top-3 z-[500] max-w-[min(44rem,calc(100%-5rem))] overflow-hidden rounded-lg border border-white/55 bg-white/72 px-2.5 py-1.5 text-[11px] shadow-md backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/62">
+        <div className="flex min-w-0 flex-nowrap items-center justify-end gap-2 whitespace-nowrap">
+          <span className="inline-flex shrink-0 items-center gap-1.5 font-medium">
+            <MapPinned className="h-4 w-4 text-primary" />
+            {drawActive ? "正在绘制 AOI" : "地图工作区"}
+          </span>
+          <button
+            type="button"
+            className="pointer-events-auto min-w-[15rem] flex-1 truncate rounded-md px-3 py-1.5 text-left font-mono text-[12px] text-foreground tabular-nums transition-colors hover:bg-white/70 hover:text-primary dark:hover:bg-white/10"
+            onClick={copyFitBbox}
+            title="复制当前地图范围经纬度"
+          >
+            {bboxCopied ? "已复制" : bboxLabel}
+          </button>
+          {footprintCount > 0 && (
+            <>
+              <span className="shrink-0 text-muted-foreground">{footprintLabel}</span>
+              <span className="hidden shrink-0 items-center gap-1 md:inline-flex">
+                <span className="h-2 w-2 rounded-full bg-[#2563eb]" />
+                升轨
+              </span>
+              <span className="hidden shrink-0 items-center gap-1 md:inline-flex">
+                <span className="h-2 w-2 rounded-full bg-[#f97316]" />
+                降轨
+              </span>
+              <span className="hidden shrink-0 items-center gap-1 md:inline-flex">
+                <span className="h-2 w-2 rounded-full bg-[#64748b]" />
+                未知
+              </span>
+            </>
+          )}
         </div>
-        <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-          W{fmt(fitBbox.west)} S{fmt(fitBbox.south)} E{fmt(fitBbox.east)} N{fmt(fitBbox.north)}
-        </div>
-        {footprintCount > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#2563eb]" />
-              升轨
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#f97316]" />
-              降轨
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#64748b]" />
-              未知
-            </span>
-          </div>
-        )}
-        {footprintCount > 0 && (
-          <div className="mt-1 text-[11px] text-muted-foreground">
-            已显示 {footprintCount} 个 SAR 影像范围，点击范围或左侧列表可查看/定位
-          </div>
-        )}
       </div>
 
       {layersOpen && (

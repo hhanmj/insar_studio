@@ -4,7 +4,7 @@ Builds a *plan* of the Sentinel-1 downloads implied by a local ASF cart,
 **without** downloading anything, contacting ASF/Earthdata, verifying remote
 files, or reading credentials. It only consumes the already-parsed
 :class:`~insar_prep.core.models.Scene` list and writes a small
-``asf_download_plan.json`` + ``asf_download_plan.csv`` under
+``asf_download_plan.json`` + ``asf_download_plan.txt`` under
 ``<output_dir>/asf_download_plan/``.
 
 Credential-safety (see ``docs/asf_download_credential_design.md``): no URL,
@@ -17,7 +17,6 @@ needs NASA Earthdata Login credentials (not handled here).
 
 from __future__ import annotations
 
-import csv
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -29,6 +28,7 @@ from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import DownloadError
 from insar_prep.core.logging import get_logger, mask_text
 from insar_prep.core.models import InsarBaseModel
+from insar_prep.core.text_table import write_table_txt
 
 if TYPE_CHECKING:
     from insar_prep.core.models import Scene
@@ -40,12 +40,14 @@ ASF_PLAN_SUBDIR = "asf_download_plan"
 SAR_DATA_SUBDIR = "SAR_Data"
 SLC_SUBDIR = f"{SAR_DATA_SUBDIR}/SLC"
 PLAN_JSON_NAME = "asf_download_plan.json"
-PLAN_CSV_NAME = "asf_download_plan.csv"
+PLAN_TXT_NAME = "asf_download_plan.txt"
+# Backward-compatible internal alias; download plans are now written as TXT.
+PLAN_CSV_NAME = PLAN_TXT_NAME
 
 # Sentinel-1 products are distributed as .zip archives.
 _SLC_EXTENSION = ".zip"
 
-# Fixed CSV column order. Do not reorder: downstream readers rely on this header.
+# Fixed TXT column order. Do not reorder: downstream readers rely on this header.
 ASF_PLAN_COLUMNS = [
     "scene_id",
     "platform",
@@ -92,7 +94,7 @@ class AsfDownloadPlanItem(InsarBaseModel):
     notes: str = ""
 
     def to_row(self) -> dict[str, str]:
-        """Return this item as a ``{column: value}`` dict for ``csv.DictWriter``."""
+        """Return this item as a ``{column: value}`` dict for the TXT table."""
         return {
             "scene_id": self.scene_id,
             "platform": self.platform,
@@ -204,26 +206,26 @@ def build_asf_download_plan(
 
 
 def asf_download_plan_paths(output_dir: Path | str) -> tuple[Path, Path]:
-    """Return the ``(json_path, csv_path)`` for the plan under ``output_dir``."""
+    """Return the ``(json_path, txt_path)`` for the plan under ``output_dir``."""
     plan_dir = Path(output_dir) / ASF_PLAN_SUBDIR
     return plan_dir / PLAN_JSON_NAME, plan_dir / PLAN_CSV_NAME
 
 
 def write_asf_download_plan(plan: AsfDownloadPlan, output_dir: Path | str) -> tuple[Path, Path]:
-    """Write the plan as UTF-8 JSON + CSV (credential-masked). Returns both paths."""
-    json_path, csv_path = asf_download_plan_paths(output_dir)
+    """Write the plan as UTF-8 JSON + TXT (credential-masked). Returns both paths."""
+    json_path, txt_path = asf_download_plan_paths(output_dir)
     try:
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(mask_text(plan.to_json(indent=2)), encoding="utf-8")
-        with csv_path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=ASF_PLAN_COLUMNS)
-            writer.writeheader()
-            for item in plan.items:
-                writer.writerow({key: mask_text(value) for key, value in item.to_row().items()})
+        rows = [
+            {key: mask_text(value) for key, value in item.to_row().items()}
+            for item in plan.items
+        ]
+        write_table_txt(txt_path, ASF_PLAN_COLUMNS, rows)
     except OSError as exc:
         raise DownloadError(
             f"failed to write ASF download plan to {json_path.parent}: {exc}",
             code=ErrorCode.ASF001,
         ) from exc
     logger.debug("wrote ASF download plan (%d items) to %s", len(plan.items), json_path.parent)
-    return json_path, csv_path
+    return json_path, txt_path

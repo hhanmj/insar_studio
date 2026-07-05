@@ -36,14 +36,10 @@ jobs:
         working-directory: ui
         run: npm ci
 
-      # desktop + download keep the base app functional. The convert extra is
-      # installed here only so the optional DEM/GDAL component can be packaged
-      # as a separate Release asset; the desktop exe itself is built lean.
+      # The release exe is the full internal build: desktop UI, downloads,
+      # DEM conversion dependencies, and the bundled EGM2008 grid.
       - name: Install dependencies
         run: uv sync --extra desktop --extra download --extra convert --dev
-
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
 
       - name: Stage artifacts dir
         run: New-Item -ItemType Directory -Force -Path artifacts | Out-Null
@@ -52,7 +48,7 @@ jobs:
         working-directory: ui
         run: npm run build
 
-      - name: Build EGM2008 geoid grid for the DEM/GDAL component
+      - name: Build EGM2008 geoid grid for the full desktop release
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build/geoid | Out-Null
@@ -64,53 +60,27 @@ jobs:
           }
           uv run python scripts/build_geoid_npz.py --model EGM2008 --output build/geoid/egm2008_5.npz $archive
 
-      - name: Build optional DEM/GDAL component
-        run: pwsh -File scripts/build_dem_gdal_component.ps1 -Egm2008GeoidNpz build/geoid/egm2008_5.npz
-
-      - name: Build and smoke-test the lean desktop exe
-        run: pwsh -File scripts/build_windows_desktop_exe.ps1 -SkipUi -ExternalDemComponent
-
-      - name: Build per-user Windows installer
-        shell: pwsh
-        run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
-          pwsh -File scripts/build_windows_desktop_installer.ps1 -Version $version
+      - name: Build and smoke-test the full desktop exe
+        run: pwsh -File scripts/build_windows_desktop_exe.ps1 -SkipUi -Egm2008GeoidNpz build/geoid/egm2008_5.npz
 
       - name: Stage desktop release assets
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}" -replace '^v', ''
           $exeName = "InSAR-Studio-$version.exe"
-          $setupName = "insar-studio-$version-setup.exe"
           Copy-Item dist/insar-prep-desktop.exe "artifacts/$exeName"
-          Copy-Item "dist/$setupName" "artifacts/$setupName"
-          Copy-Item dist/components/insar-dem-gdal-$version-win64.zip "artifacts/insar-dem-gdal-$version-win64.zip"
-          Copy-Item dist/components/components-manifest.json "artifacts/components-manifest.json"
-          Copy-Item dist/components/SHA256SUMS-components.txt "artifacts/SHA256SUMS-components.txt"
-          $releaseReadme = @"
-          InSAR Studio $version
-
-          本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。
-          它的定位是处理前的数据准备助手，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。
-
-          运行：双击 $exeName。
-          DEM：DEM/GDAL 高程基准组件会在用户需要时从 Release 按需下载，不默认塞进主程序。
-          隐私：发行包不包含账号、Token、下载历史、缓存或本机测试目录；用户首次使用需在设置里配置必要凭据。
-          "@
-          $releaseReadme.Trim() | Set-Content -Encoding UTF8 artifacts/README_RELEASE.txt
-          Compress-Archive -Path "artifacts/$exeName", "artifacts/README_RELEASE.txt" -DestinationPath "artifacts/insar-studio-$version-portable.zip" -Force
-          Get-FileHash -Algorithm SHA256 "artifacts/$setupName", "artifacts/$exeName", "artifacts/insar-studio-$version-portable.zip", "artifacts/insar-dem-gdal-$version-win64.zip", "artifacts/components-manifest.json" |
+          Get-FileHash -Algorithm SHA256 "artifacts/$exeName" |
             ForEach-Object { "$($_.Hash)  $([IO.Path]::GetFileName($_.Path))" } |
             Set-Content -Encoding ASCII artifacts/SHA256SUMS.txt
+
+      - name: Generate Chinese release notes from CHANGELOG
+        run: uv run python scripts/extract_changelog_for_release.py --version "${{ github.ref_name }}" --output artifacts/RELEASE_NOTES.md
 
       - name: Publish desktop assets to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: artifacts/RELEASE_NOTES.md
           files: |
-            artifacts/*.exe
-            artifacts/*.zip
-            artifacts/*.json
+            artifacts/InSAR-Studio-*.exe
             artifacts/SHA256SUMS.txt
-            artifacts/SHA256SUMS-components.txt
-          generate_release_notes: true
           fail_on_unmatched_files: true

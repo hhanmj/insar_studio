@@ -140,6 +140,7 @@ export type SceneRow = {
   footprint_bbox?: Bbox | null;
   footprint_geojson?: Json | null;
   has_url: boolean;
+  download_url?: string;
 };
 
 export type TreeRegion = {
@@ -311,6 +312,12 @@ export type ScenesOk = {
     returned_count?: number | null;
     source?: string | null;
   };
+  cache?: {
+    hit?: boolean;
+    key?: string;
+    count?: number;
+    path?: string;
+  };
 };
 export type CheckOk = { ok: true; report: Json };
 export type PlanOk = { ok: true; plan: Json };
@@ -342,6 +349,7 @@ export type RunSummaryOk = {
   ellipsoid_dem_path?: string;
   sarscape_ready_dem_path?: string;
   logs?: string[];
+  task_id?: string;
 };
 export type OrbitDownloadOk = {
   ok: true;
@@ -361,8 +369,12 @@ export type OrbitDownloadStatus = {
   state: string;
   total: number;
   done: number;
+  concurrency?: number;
   current_scene: string;
+  active_scenes?: { scene_id: string; started_at?: number }[];
   orbit_dir: string;
+  done_bytes?: number;
+  bytes_per_second?: number;
   elapsed_seconds?: number;
   paused: boolean;
   cancelled: boolean;
@@ -377,6 +389,34 @@ export type OrbitDownloadStatus = {
   log: { scene_id: string; outcome: string; detail: string; ts?: number }[];
   report?: Json | null;
   pause_hint?: string;
+};
+export type DemDownloadStatus = {
+  ok: true;
+  state: string;
+  total: number;
+  done: number;
+  current_scene: string;
+  output_dir: string;
+  dataset: string;
+  convert: boolean;
+  raw_dem_path?: string;
+  ellipsoid_dem_path?: string;
+  sarscape_ready_dem_path?: string;
+  results_path?: string;
+  conversion_results_path?: string;
+  done_bytes?: number;
+  bytes_per_second?: number;
+  elapsed_seconds?: number;
+  cancelled: boolean;
+  error: string | null;
+  summary_line: string;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  interrupted: number;
+  has_failures: boolean;
+  results: Json[];
+  log: { scene_id: string; outcome: string; detail: string; ts?: number }[];
 };
 export type OrbitMatchOk = {
   ok: true;
@@ -436,6 +476,12 @@ export type NativeWindowSize = {
   x?: number;
   y?: number;
 } | ApiError;
+export type NativeWindowWorkArea = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 export type MetadataStatus = {
   ok: true;
   state: string;
@@ -486,7 +532,7 @@ type PyApi = {
   open_external_url: (url: string) => Promise<SimpleOk>;
   open_path: (path: string) => Promise<SimpleOk>;
   window_minimize?: () => Promise<SimpleOk>;
-  window_toggle_maximize?: () => Promise<SimpleOk>;
+  window_toggle_maximize?: (workArea?: NativeWindowWorkArea) => Promise<SimpleOk>;
   window_close?: () => Promise<SimpleOk>;
   window_get_size?: () => Promise<NativeWindowSize>;
   window_resize_from_edge?: (
@@ -531,6 +577,7 @@ type PyApi = {
   preview_scenes_directory?: (path: string) => Promise<ScenesResult>;
   clear_orbit_candidate_scenes?: () => Promise<SimpleOk>;
   search_asf_scenes: (params: AsfSearchParams) => Promise<ScenesResult>;
+  cancel_asf_search?: () => Promise<SimpleOk>;
   list_scenes: () => Promise<ScenesOk | ApiError>;
   clear_scenes: () => Promise<SimpleOk>;
   clear_map_layers?: () => Promise<SimpleOk>;
@@ -538,7 +585,7 @@ type PyApi = {
   check_scenes: () => Promise<CheckResult>;
   match_orbits_directory: (orbitDir: string) => Promise<OrbitMatchResult>;
   download_orbits: (outputDir?: string, sceneIds?: string[]) => Promise<OrbitDownloadResult>;
-  start_orbit_download: (outputDir?: string, sceneIds?: string[]) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  start_orbit_download: (outputDir?: string, sceneIds?: string[], maxConcurrent?: number) => Promise<{ ok: boolean; error?: string; code?: string }>;
   pause_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   resume_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   stop_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
@@ -602,6 +649,24 @@ type PyApi = {
     keySource?: string,
     convert?: boolean,
   ) => Promise<RunSummaryResult>;
+  start_dem_download?: (
+    outputDir?: string,
+    dataset?: string,
+    keySource?: string,
+    convert?: boolean,
+  ) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  start_dem_download_bbox?: (
+    west: number,
+    east: number,
+    south: number,
+    north: number,
+    outputDir?: string,
+    dataset?: string,
+    keySource?: string,
+    convert?: boolean,
+  ) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  stop_dem_download?: () => Promise<{ ok: boolean; error?: string; code?: string }>;
+  get_dem_download_status?: () => Promise<DemDownloadStatus>;
   run_dem_conversion: (outputDir?: string) => Promise<RunSummaryResult>;
   run_local_dem_conversion: (
     inputPath: string,
@@ -672,6 +737,36 @@ function notifyContextChanged() {
 }
 
 let bridgeSeen = false;
+export function waitForBridgeReady(timeoutMs = 1800): Promise<boolean> {
+  if (typeof window === "undefined") return Promise.resolve(false);
+  if (hasBridge()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ready: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearInterval(intervalId);
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("pywebviewready", onReady);
+      window.removeEventListener("insar-context-changed", onReady);
+      if (ready && !bridgeSeen) {
+        bridgeSeen = true;
+        notifyContextChanged();
+      }
+      resolve(ready);
+    };
+    const onReady = () => {
+      if (hasBridge()) finish(true);
+    };
+    const intervalId = window.setInterval(() => {
+      if (hasBridge()) finish(true);
+    }, 80);
+    const timeoutId = window.setTimeout(() => finish(hasBridge()), timeoutMs);
+    window.addEventListener("pywebviewready", onReady);
+    window.addEventListener("insar-context-changed", onReady);
+  });
+}
+
 export function watchBridgeReady(): () => void {
   if (typeof window === "undefined") return () => undefined;
   if (hasBridge()) {
@@ -945,7 +1040,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Studio", version: "2.1.4", offline: true };
+  return { name: "InSAR Studio", version: "2.1.5", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -957,8 +1052,8 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "2.1.4",
-    latest_version: "2.1.4",
+    current_version: "2.1.5",
+    latest_version: "2.1.5",
     html_url: "https://github.com/hhanmj/insar_studio/releases/latest",
     message: "Update checks run only in the packaged desktop app.",
   };
@@ -992,7 +1087,7 @@ export async function getComponentStatus(refresh = false): Promise<ComponentStat
       {
         id: "dem-gdal",
         name: "DEM/GDAL 高程基准组件",
-        version: "2.1.4",
+        version: "2.1.5",
         size_mb: 205,
         description: "GDAL/rasterio/numpy/PROJ 与 EGM96、EGM2008 高程基准数据。",
         installed: false,
@@ -1219,6 +1314,7 @@ export async function getActivity(limit = 12): Promise<ActivityFeed> {
 }
 
 export async function getUiFlags(): Promise<UiFlagsOk | ApiError> {
+  if (!hasBridge()) await waitForBridgeReady();
   if (hasBridge()) {
     const getter = api().get_ui_flags;
     if (typeof getter === "function") return getter();
@@ -1233,6 +1329,7 @@ export async function getUiFlags(): Promise<UiFlagsOk | ApiError> {
 }
 
 export async function setUiFlag(key: string, value = true): Promise<UiFlagsOk | ApiError> {
+  if (!hasBridge()) await waitForBridgeReady();
   if (hasBridge()) {
     const setter = api().set_ui_flag;
     if (typeof setter === "function") return setter(key, value);
@@ -1330,9 +1427,19 @@ export async function minimizeNativeWindow(): Promise<SimpleOk> {
   return { ok: true };
 }
 
+function browserScreenWorkArea(): NativeWindowWorkArea | undefined {
+  if (typeof window === "undefined" || typeof window.screen === "undefined") return undefined;
+  const screenWithOffsets = window.screen as Screen & { availLeft?: number; availTop?: number };
+  const x = Number.isFinite(screenWithOffsets.availLeft) ? Number(screenWithOffsets.availLeft) : 0;
+  const y = Number.isFinite(screenWithOffsets.availTop) ? Number(screenWithOffsets.availTop) : 0;
+  const width = Math.max(920, Math.floor(Number(screenWithOffsets.availWidth || window.innerWidth || 1200)));
+  const height = Math.max(620, Math.floor(Number(screenWithOffsets.availHeight || window.innerHeight || 800)) - 1);
+  return { x: Math.round(x), y: Math.round(y), width, height };
+}
+
 export async function toggleNativeWindowMaximize(): Promise<SimpleOk> {
   if (hasBridge() && typeof api().window_toggle_maximize === "function") {
-    return api().window_toggle_maximize!();
+    return api().window_toggle_maximize!(browserScreenWorkArea());
   }
   return { ok: true };
 }
@@ -1781,20 +1888,25 @@ export async function searchAsfScenes(params: AsfSearchParams): Promise<ScenesRe
     if (res.ok) notifyContextChanged();
     return res;
   }
-  const n = Math.min(Number(params.max_results || 12) || 12, 50);
+  const n = Math.min(Number(params.max_results || 120) || 120, 1000);
   const product = String(params.product_type || "SLC").toUpperCase();
-  const beam = String(params.beam_mode || "IW").toUpperCase();
-  const polarization = String(params.polarization || "DV").toUpperCase();
-  const orbitDirection = String(params.orbit_direction || "").toUpperCase();
+  const splitFilter = (value: unknown) =>
+    String(value || "")
+      .split(",")
+      .map((item) => item.trim().toUpperCase())
+      .filter(Boolean);
+  const beams = splitFilter(params.beam_mode);
+  const polarizations = splitFilter(params.polarization);
+  const orbitDirections = splitFilter(params.orbit_direction);
   const scenes = Array.from({ length: Math.min(n, 6) }, (_, i) => ({
     ...mockScene(i),
     product_type: product,
-    beam_mode: beam,
-    polarization,
+    beam_mode: beams[i % Math.max(1, beams.length)] || mockScene(i).beam_mode,
+    polarization: polarizations[i % Math.max(1, polarizations.length)] || mockScene(i).polarization,
     has_url: true,
     orbit_direction:
-      orbitDirection === "ASCENDING" || orbitDirection === "DESCENDING"
-        ? orbitDirection
+      orbitDirections.length > 0
+        ? orbitDirections[i % orbitDirections.length]
         : i % 2 === 0
           ? "DESCENDING"
           : "ASCENDING",
@@ -1812,6 +1924,14 @@ export async function searchAsfScenes(params: AsfSearchParams): Promise<ScenesRe
   }
   notifyContextChanged();
   return { ok: true, scenes, duplicates: [], errors: [] };
+}
+
+export async function cancelAsfSearch(): Promise<SimpleOk> {
+  if (hasBridge()) {
+    const cancel = api().cancel_asf_search;
+    if (typeof cancel === "function") return cancel();
+  }
+  return { ok: true, cancelled: true };
 }
 
 export async function listScenes(): Promise<ScenesResult> {
@@ -1959,8 +2079,12 @@ let mockOrbitState: OrbitDownloadStatus = {
   state: "idle",
   total: 0,
   done: 0,
+  concurrency: 10,
   current_scene: "",
+  active_scenes: [],
   orbit_dir: "",
+  done_bytes: 0,
+  bytes_per_second: 0,
   elapsed_seconds: 0,
   paused: false,
   cancelled: false,
@@ -1980,8 +2104,9 @@ let mockOrbitState: OrbitDownloadStatus = {
 export async function startOrbitDownload(
   outputDir = "",
   sceneIds: string[] = [],
+  maxConcurrent = 10,
 ): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().start_orbit_download(outputDir, sceneIds);
+  if (hasBridge()) return api().start_orbit_download(outputDir, sceneIds, maxConcurrent);
   const selectedIds = sceneIds.filter(Boolean);
   const n = selectedIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入 ASF 场景或本地 SLC 目录", code: "ASF001" };
@@ -2000,8 +2125,12 @@ export async function startOrbitDownload(
     state: "finished",
     total: n,
     done: n,
+    concurrency: Math.max(1, Math.min(Number(maxConcurrent) || 10, 10)),
     current_scene: "",
+    active_scenes: [],
     orbit_dir: `${root}\\Sentinel_Orbit\\AUX_POEORB`,
+    done_bytes: n * 1024,
+    bytes_per_second: n * 1024,
     paused: false,
     cancelled: false,
     error: null,
@@ -2197,7 +2326,7 @@ export async function startAsfDownload(
 
 export async function appendAsfDownload(
   outputDir = "",
-  maxExtraWorkers = 1,
+  maxExtraWorkers = 0,
   sceneIds: string[] = [],
 ): Promise<{ ok: boolean; error?: string; code?: string; appended?: number; skipped?: number; concurrency?: number }> {
   if (hasBridge()) return api().append_asf_download(outputDir, maxExtraWorkers, sceneIds);
@@ -2207,7 +2336,7 @@ export async function appendAsfDownload(
     ...mockDlState,
     state: mockDlState.state === "idle" ? "running" : mockDlState.state,
     total: mockDlState.total + n,
-    concurrency: Math.max(mockDlState.concurrency ?? 1, (mockDlState.concurrency ?? 1) + Math.min(n, maxExtraWorkers)),
+    concurrency: Math.max(mockDlState.concurrency ?? 1, (mockDlState.concurrency ?? 1) + Math.min(n, Math.max(0, maxExtraWorkers))),
   };
   return { ok: true, appended: n, skipped: 0, concurrency: mockDlState.concurrency };
 }
@@ -2317,7 +2446,7 @@ export async function runDemDownload(
       failed: 0,
       interrupted: 0,
       has_failures: false,
-      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
+      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.txt`,
       results: [
         {
           region_safe_name: mock.region?.safe_name ?? "region",
@@ -2344,7 +2473,7 @@ export async function runDemDownload(
     failed: 0,
     interrupted: 0,
     has_failures: conversion.ok ? conversion.has_failures : true,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.txt`,
     results: [
       {
         region_safe_name: mock.region?.safe_name ?? "region",
@@ -2356,7 +2485,7 @@ export async function runDemDownload(
     ],
     download: {
       summary_line: "1 downloaded, 0 skipped, 0 failed, 0 interrupted",
-      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
+      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.txt`,
     },
     conversion: conversion.ok ? conversion : null,
     conversion_results_path: conversion.ok ? conversion.results_path : "",
@@ -2364,6 +2493,104 @@ export async function runDemDownload(
     ellipsoid_dem_path: String(plan.plan.ellipsoid_dem_path ?? ""),
     sarscape_ready_dem_path: String(plan.plan.sarscape_ready_dem_path ?? ""),
   };
+}
+
+let mockDemDownloadStatus: DemDownloadStatus = {
+  ok: true,
+  state: "idle",
+  total: 0,
+  done: 0,
+  current_scene: "",
+  output_dir: "",
+  dataset: "",
+  convert: true,
+  done_bytes: 0,
+  bytes_per_second: 0,
+  elapsed_seconds: 0,
+  cancelled: false,
+  error: null,
+  summary_line: "",
+  succeeded: 0,
+  skipped: 0,
+  failed: 0,
+  interrupted: 0,
+  has_failures: false,
+  results: [],
+  log: [],
+};
+
+export async function startDemDownload(
+  outputDir = "",
+  dataset = "COP30",
+  keySource = "auto",
+  convert = true,
+): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge() && typeof api().start_dem_download === "function") {
+    return api().start_dem_download!(outputDir, dataset, keySource, convert);
+  }
+  mockDemDownloadStatus = {
+    ...mockDemDownloadStatus,
+    state: "running",
+    total: 1,
+    done: 0,
+    current_scene: dataset,
+    output_dir: outputDir,
+    dataset,
+    convert,
+    cancelled: false,
+    error: null,
+    summary_line: `正在下载 ${dataset}`,
+    log: [{ scene_id: dataset, outcome: "started", detail: `开始 DEM 下载：${dataset}`, ts: Date.now() }],
+  };
+  window.setTimeout(() => {
+    if (mockDemDownloadStatus.state !== "running") return;
+    mockDemDownloadStatus = {
+      ...mockDemDownloadStatus,
+      state: "finished",
+      done: 1,
+      succeeded: 1,
+      summary_line: "1 downloaded, 0 skipped, 0 failed, 0 interrupted",
+      raw_dem_path: `${outputDir}\\${demSourceStem(dataset)}.tif`,
+      ellipsoid_dem_path: convert ? `${outputDir}\\${demSourceStem(dataset)}_ellipsoid.tif` : "",
+      sarscape_ready_dem_path: convert ? `${outputDir}\\${demSourceStem(dataset)}_dem` : "",
+      results_path: `${outputDir}\\dem_download_results.txt`,
+      log: [...mockDemDownloadStatus.log, { scene_id: dataset, outcome: "finished", detail: "DEM 下载完成", ts: Date.now() }],
+    };
+  }, 1500);
+  return { ok: true };
+}
+
+export async function startDemDownloadBbox(
+  west: number,
+  east: number,
+  south: number,
+  north: number,
+  outputDir = "",
+  dataset = "COP30",
+  keySource = "auto",
+  convert = true,
+): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge() && typeof api().start_dem_download_bbox === "function") {
+    return api().start_dem_download_bbox!(west, east, south, north, outputDir, dataset, keySource, convert);
+  }
+  return startDemDownload(outputDir, dataset, keySource, convert);
+}
+
+export async function stopDemDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge() && typeof api().stop_dem_download === "function") return api().stop_dem_download!();
+  mockDemDownloadStatus = {
+    ...mockDemDownloadStatus,
+    state: "cancelled",
+    cancelled: true,
+    summary_line: "DEM 下载已中断",
+    log: [...mockDemDownloadStatus.log, { scene_id: mockDemDownloadStatus.dataset, outcome: "cancelled", detail: "DEM 下载已中断", ts: Date.now() }],
+  };
+  return { ok: true };
+}
+
+export async function getDemDownloadStatus(): Promise<DemDownloadStatus> {
+  if (hasBridge() && typeof api().get_dem_download_status === "function") return api().get_dem_download_status!();
+  return mockDemDownloadStatus;
 }
 
 export async function runDemDownloadBbox(
@@ -2391,7 +2618,7 @@ export async function runDemDownloadBbox(
       failed: 0,
       interrupted: 0,
       has_failures: false,
-      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
+      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.txt`,
       results: [
         {
           region_safe_name: "standalone_dem",
@@ -2418,7 +2645,7 @@ export async function runDemDownloadBbox(
     failed: 0,
     interrupted: 0,
     has_failures: conversion.ok ? conversion.has_failures : true,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.txt`,
     results: [
       {
         region_safe_name: "standalone_dem",
@@ -2430,7 +2657,7 @@ export async function runDemDownloadBbox(
     ],
     download: {
       summary_line: "1 downloaded, 0 skipped, 0 failed, 0 interrupted",
-      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.csv`,
+      results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_download_results.txt`,
     },
     conversion: conversion.ok ? conversion : null,
     conversion_results_path: conversion.ok ? conversion.results_path : "",
@@ -2656,7 +2883,7 @@ export async function runDemConversion(outputDir = ""): Promise<RunSummaryResult
     skipped: 0,
     failed: 0,
     has_failures: false,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.txt`,
     results: [
       {
         region_safe_name: mock.region?.safe_name ?? "region",
@@ -2691,7 +2918,7 @@ export async function runLocalDemConversion(
     skipped: 0,
     failed: 0,
     has_failures: false,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.txt`,
     raw_dem_path: String(plan.plan.raw_dem_path ?? inputPath),
     ellipsoid_dem_path: String(plan.plan.ellipsoid_dem_path ?? ""),
     sarscape_ready_dem_path: outputMode === "ellipsoid" ? "" : String(plan.plan.sarscape_ready_dem_path ?? ""),
@@ -2734,7 +2961,7 @@ export async function runDemConversionBbox(
     skipped: 0,
     failed: 0,
     has_failures: false,
-    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.csv`,
+    results_path: `${outputDir || mock.workspace?.root || "C:\\InSAR"}\\dem_convert_results.txt`,
     results: [
       {
         region_safe_name: "standalone_dem",

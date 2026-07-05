@@ -23,6 +23,7 @@ release/
 .venv/
 venv/
 .uv-cache/
+.uv-python/
 uv.lock.bak
 
 # ---- PyInstaller / packaging artifacts ----
@@ -34,6 +35,7 @@ smoke_package/
 
 # ---- Test / lint / type caches ----
 .pytest_cache/
+.pytest-tmp-*/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -53,6 +55,7 @@ Thumbs.db
 .codex/
 .cursor/
 .agents/
+.release-assets/
 
 # ---- InSAR data: never commit user data or downloaded products ----
 *.SAFE

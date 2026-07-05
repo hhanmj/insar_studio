@@ -27,6 +27,10 @@
     Build a lean desktop exe that excludes rasterio/GDAL. DEM ellipsoid
     conversion will then require the optional DEM/GDAL component.
 
+.PARAMETER Egm2008GeoidNpz
+    Optional EGM2008 geoid .npz file to bundle into the full desktop exe. This is
+    used for release builds where DEM/GDAL is bundled instead of externalized.
+
 .PARAMETER SkipSelfTest
     Skip launching the frozen exe with --selftest. Useful on local machines where
     Windows Application Control blocks freshly built test executables.
@@ -46,6 +50,7 @@ param(
     [switch]$SkipUi,
     [switch]$ExternalDemComponent,
     [switch]$SkipSelfTest,
+    [string]$Egm2008GeoidNpz = "",
     [string]$BoundaryDir = ""
 )
 
@@ -101,11 +106,25 @@ function Invoke-LocalCodeSign {
     Write-Host "Local test code signature applied: $Path" -ForegroundColor Yellow
 }
 
+function Start-DesktopSelfTestProcess {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Path
+    $psi.Arguments = "--selftest"
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.WaitForExit()
+    return $proc
+}
+
 function Invoke-DesktopSelfTest {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     try {
-        return Start-Process -FilePath $Path -ArgumentList "--selftest" -Wait -PassThru -NoNewWindow
+        return Start-DesktopSelfTestProcess -Path $Path
     } catch {
         $message = $_.Exception.Message
         if ($message -notmatch "Application Control policy") {
@@ -113,7 +132,7 @@ function Invoke-DesktopSelfTest {
         }
         Write-Host "Windows blocked the freshly built unsigned exe; applying local test signature..." -ForegroundColor Yellow
         Invoke-LocalCodeSign -Path $Path
-        return Start-Process -FilePath $Path -ArgumentList "--selftest" -Wait -PassThru -NoNewWindow
+        return Start-DesktopSelfTestProcess -Path $Path
     }
 }
 
@@ -266,6 +285,17 @@ if ($ExternalDemComponent) {
         "--collect-all", "rasterio",
         "--exclude-module", "rasterio.rio"
     ) + @($entry)
+    if (-not [string]::IsNullOrWhiteSpace($Egm2008GeoidNpz)) {
+        if (-not (Test-Path -LiteralPath $Egm2008GeoidNpz)) {
+            throw "EGM2008 geoid grid not found: $Egm2008GeoidNpz"
+        }
+        $egm2008Resolved = (Resolve-Path -LiteralPath $Egm2008GeoidNpz).Path
+        $entry = $pyArgs[-1]
+        $pyArgs = $pyArgs[0..($pyArgs.Length - 2)] + @(
+            "--add-data", "$egm2008Resolved;insar_prep/data"
+        ) + @($entry)
+        Write-Host "Bundling EGM2008 geoid grid into the full desktop exe: $egm2008Resolved" -ForegroundColor Green
+    }
 }
 
 Invoke-Step "PyInstaller desktop build" {

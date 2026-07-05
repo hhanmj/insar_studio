@@ -21,7 +21,7 @@
     Run from anywhere; the script resolves the repo root from its own location.
 #>
 param(
-    [string]$Version = "2.1.3"
+    [string]$Version = "2.1.6"
 )
 
 $ErrorActionPreference = "Stop"

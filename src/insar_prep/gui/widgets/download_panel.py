@@ -119,7 +119,7 @@ class DownloadPanel(QGroupBox):
 
         self.output_dir_edit = QLineEdit()
         self.output_dir_edit.setObjectName("download_output_dir")
-        self.output_dir_edit.setPlaceholderText("Output root (SLCs go under <root>/02_slc)")
+        self.output_dir_edit.setPlaceholderText("Output root (SLCs go under <root>/SAR_Data/SLC)")
         self.browse_button = QPushButton("Browse…")
         self.browse_button.setObjectName("download_browse_button")
         self.browse_button.clicked.connect(self._on_browse)
@@ -216,12 +216,12 @@ class DownloadPanel(QGroupBox):
         """Build and write the offline dry-run plan (no network); show a summary."""
         unique_scenes, _duplicates = deduplicate_scenes(list(scenes))
         plan = build_asf_download_plan(scenes=unique_scenes, output_dir=output_dir)
-        json_path, csv_path = write_asf_download_plan(plan, output_dir)
+        json_path, txt_path = write_asf_download_plan(plan, output_dir)
         self.result_label.setText(
             f"Dry-run plan: {plan.planned_count} planned, "
             f"{plan.missing_url_count} missing URL (no files downloaded)"
         )
-        self.log_view.setPlainText(f"Plan JSON: {json_path}\nPlan CSV: {csv_path}")
+        self.log_view.setPlainText(f"Plan JSON: {json_path}\nPlan TXT: {txt_path}")
         return plan
 
     # --- credential status ----------------------------------------------------

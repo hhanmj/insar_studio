@@ -2,8 +2,8 @@
 
 Wraps :class:`~insar_prep.providers.dem.converter.RealDemConverter` into a single
 synchronous :func:`run_dem_conversion` that the CLI (and a future GUI worker) can
-reuse, writing a credential-free ``dem_convert/dem_convert_results.csv`` next to
-the download results CSV. It mirrors ``dem/download_runner.py``.
+reuse, writing a credential-free ``dem_convert/dem_convert_results.txt`` next to
+the download results TXT. It mirrors ``dem/download_runner.py``.
 
 It is offline-testable: inject a fake ``converter`` to exercise the
 success / copied / failed paths without rasterio, a geoid, or a real GeoTIFF.
@@ -11,7 +11,6 @@ success / copied / failed paths without rasterio, a geoid, or a real GeoTIFF.
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +18,7 @@ from typing import TYPE_CHECKING
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import get_logger, mask_text
+from insar_prep.core.text_table import write_table_txt
 from insar_prep.providers.dem.converter import (
     DemConversionOutcome,
     DemConversionResult,
@@ -52,27 +52,24 @@ DEM_CONVERT_RESULT_COLUMNS = [
 def write_dem_convert_results_csv(
     output_dir: Path | str, results: Sequence[DemConversionResult]
 ) -> Path:
-    """Write a per-region DEM conversion results CSV; return its path."""
+    """Write a per-region DEM conversion results TXT; return its path."""
     plan_dir = Path(output_dir) if len(results) <= 1 else Path(output_dir) / DEM_CONVERT_SUBDIR
     plan_dir.mkdir(parents=True, exist_ok=True)
-    results_path = plan_dir / "dem_convert_results.csv"
-    with results_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=DEM_CONVERT_RESULT_COLUMNS)
-        writer.writeheader()
-        for result in results:
-            writer.writerow(
-                {
-                    "region_safe_name": result.region_safe_name,
-                    "dataset": result.dataset,
-                    "outcome": result.outcome.value,
-                    "source_vertical_datum": result.source_vertical_datum.value,
-                    "target_vertical_datum": result.target_vertical_datum.value,
-                    "geoid_model": result.geoid_model or "",
-                    "output_path": str(result.path) if result.path else "",
-                    "message": mask_text(result.message),
-                }
-            )
-    return results_path
+    results_path = plan_dir / "dem_convert_results.txt"
+    rows = [
+        {
+            "region_safe_name": result.region_safe_name,
+            "dataset": result.dataset,
+            "outcome": result.outcome.value,
+            "source_vertical_datum": result.source_vertical_datum.value,
+            "target_vertical_datum": result.target_vertical_datum.value,
+            "geoid_model": result.geoid_model or "",
+            "output_path": str(result.path) if result.path else "",
+            "message": mask_text(result.message),
+        }
+        for result in results
+    ]
+    return write_table_txt(results_path, DEM_CONVERT_RESULT_COLUMNS, rows)
 
 
 @dataclass(frozen=True)
@@ -125,7 +122,7 @@ def run_dem_conversion(
 ) -> DemConvertRunSummary:
     """Convert each plan's raw DEM to a SARscape-ready ellipsoidal DEM.
 
-    Writes a ``dem_convert/dem_convert_results.csv`` under ``output_dir`` and
+    Writes a ``dem_convert/dem_convert_results.txt`` under ``output_dir`` and
     returns a :class:`DemConvertRunSummary`. Per-plan failures are captured as
     ``FAILED`` results (never raised); :class:`InsarPrepError` is raised only when
     there is nothing to convert.

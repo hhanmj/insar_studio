@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import urlencode
 
@@ -23,11 +24,19 @@ _CONNECT_TIMEOUT_SECONDS = 5
 _READ_TIMEOUT_SECONDS = 12
 _CMR_CONNECT_TIMEOUT_SECONDS = 4
 _CMR_READ_TIMEOUT_SECONDS = 8
+_CMR_PAGE_SIZE = 200
+_DEFAULT_UNCOUNTED_SEARCH_RESULTS = 500
 _REQUEST_HEADERS = {"User-Agent": "InSAR-Assistant/0.1 ASF metadata search"}
-_MAX_REMOTE_SEARCH_RESULTS = 500
+_MAX_REMOTE_SEARCH_RESULTS = 10000
+_ASF_SPLIT_SEARCH_THRESHOLD = 2000
+_ASF_SPLIT_WINDOW_DAYS = 180
+_ASF_SPLIT_WINDOW_MAX_RESULTS = 2000
+_SENTINEL1_ARCHIVE_START = datetime(2014, 10, 1, tzinfo=UTC)
+_CMR_ENRICH_LIMIT = 500
 _AOI_QUERY_WKT_MAX_CHARS = 12000
 _AOI_SIMPLIFY_TOLERANCES = (0.0, 0.001, 0.005, 0.01, 0.02, 0.05)
 ProgressCallback = Callable[[int, int, str], None]
+CancelCallback = Callable[[], bool]
 _CMR_COLLECTIONS: dict[str, tuple[str, ...]] = {
     "SLC": (
         "C1214470488-ASF",  # SENTINEL-1A_SLC
@@ -104,6 +113,18 @@ def _normalise_polarization(value: str | None) -> str:
     return (value or "").strip().upper().replace("-", "_").replace("+", "_")
 
 
+def _split_filter_values(value: str | None) -> tuple[str, ...]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in str(value or "").replace(";", ",").replace("|", ",").split(","):
+        text = item.strip().upper()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        values.append(text)
+    return tuple(values)
+
+
 def _asf_polarization_param(value: str | None) -> str | None:
     pol = _normalise_polarization(value)
     if not pol:
@@ -111,12 +132,21 @@ def _asf_polarization_param(value: str | None) -> str | None:
     return _ASF_POLARIZATION_QUERY.get(pol, pol)
 
 
-def _scene_matches_filters(scene: Scene, *, beam_mode: str = "", polarization: str = "") -> bool:
-    beam = (beam_mode or "").strip().upper()
-    if beam and str(scene.beam_mode or "").upper() != beam:
+def _scene_matches_filters(
+    scene: Scene,
+    *,
+    beam_mode: str = "",
+    polarization: str = "",
+    orbit_direction: str = "",
+) -> bool:
+    beams = _split_filter_values(beam_mode)
+    if beams and str(scene.beam_mode or "").upper() not in beams:
         return False
-    pol = _normalise_polarization(polarization)
-    if pol and _normalise_polarization(str(scene.polarization or "")) != pol:
+    pols = tuple(_normalise_polarization(item) for item in _split_filter_values(polarization))
+    if pols and _normalise_polarization(str(scene.polarization or "")) not in pols:
+        return False
+    directions = _split_filter_values(orbit_direction)
+    if directions and str(scene.orbit_direction or "").upper() not in directions:
         return False
     return True
 
@@ -256,6 +286,7 @@ def _fetch_features(
     scene_ids: list[str],
     *,
     progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
 ) -> dict[str, Mapping[str, Any]]:
     try:
         import requests  # noqa: PLC0415 - optional download extra
@@ -268,6 +299,7 @@ def _fetch_features(
     features: dict[str, Mapping[str, Any]] = {}
     total = max(1, (len(scene_ids) + _CHUNK_SIZE - 1) // _CHUNK_SIZE)
     for start in range(0, len(scene_ids), _CHUNK_SIZE):
+        _raise_if_cancelled(cancelled)
         batch = start // _CHUNK_SIZE + 1
         if progress is not None:
             progress(batch - 1, total, f"正在查询 ASF 元数据批次 {batch}/{total}")
@@ -507,8 +539,16 @@ def _asf_datetime(value: str | None, *, end: bool = False) -> str | None:
         return None
     if "T" in text:
         return text
+    clean = text.replace("/", "-")
+    try:
+        datetime.strptime(clean, "%Y-%m-%d")
+    except ValueError as exc:
+        raise InputValidationError(
+            "ASF 日期格式应为 YYYY-MM-DD 或 YYYY/MM/DD，例如 2024-01-31。",
+            code=ErrorCode.ASF002,
+        ) from exc
     suffix = "23:59:59Z" if end else "00:00:00Z"
-    return f"{text}T{suffix}"
+    return f"{clean}T{suffix}"
 
 
 def _first_feature_source(feature: Mapping[str, Any]) -> str | None:
@@ -538,6 +578,11 @@ def _asf_request_failure_message(exc: BaseException) -> str:
     if "connection" in name or "connection" in text or "connect" in text:
         return "ASF 元数据检索失败：无法连接 ASF 服务。请检查网络、代理设置，或稍后重试。"
     return "ASF 元数据检索失败：网络请求未完成。请检查网络或代理设置，稍后重试。"
+
+
+def _raise_if_cancelled(cancelled: CancelCallback | None) -> None:
+    if cancelled is not None and cancelled():
+        raise InputValidationError("ASF 检索已停止。", code=ErrorCode.DL001)
 
 
 def _request_asf_geojson(requests_module: Any, params: Mapping[str, str], *, method: str) -> dict[str, Any]:
@@ -690,6 +735,164 @@ def _get_asf_count(params: Mapping[str, str]) -> int | None:
     return None
 
 
+def _asf_geojson_features(data: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+    features = data.get("features", []) if isinstance(data, Mapping) else []
+    return [feature for feature in features if isinstance(feature, Mapping)]
+
+
+def _asf_feature_scenes(
+    features: Iterable[Mapping[str, Any]],
+    *,
+    beam_mode: str,
+    polarization: str,
+    orbit_direction: str,
+    cancelled: CancelCallback | None = None,
+) -> list[Scene]:
+    scenes: list[Scene] = []
+    for idx, feature in enumerate(features):
+        if idx % 50 == 0:
+            _raise_if_cancelled(cancelled)
+        source = _first_feature_source(feature)
+        if not source:
+            continue
+        try:
+            scene = parse_scene_name(source)
+        except InputValidationError:
+            logger.debug("skipping unparseable ASF search result: %r", source)
+            continue
+        updates = _feature_updates(feature)
+        scene = scene.model_copy(update=updates) if updates else scene
+        if _scene_matches_filters(
+            scene,
+            beam_mode=beam_mode,
+            polarization=polarization,
+            orbit_direction=orbit_direction,
+        ):
+            scenes.append(scene)
+    return scenes
+
+
+def _parse_asf_query_datetime(value: str | None, *, end: bool = False) -> datetime | None:
+    text = _asf_datetime(value, end=end)
+    if not text:
+        return None
+    normalised = text.strip()
+    if normalised.endswith("Z"):
+        normalised = f"{normalised[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalised)
+    except ValueError:
+        parsed = datetime.strptime(text[:19], "%Y-%m-%dT%H:%M:%S")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _format_asf_query_datetime(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _asf_split_query_windows(start: str | None, end: str | None) -> list[tuple[datetime, datetime]]:
+    start_dt = _parse_asf_query_datetime(start, end=False) or _SENTINEL1_ARCHIVE_START
+    end_dt = _parse_asf_query_datetime(end, end=True) or datetime.now(UTC)
+    if start_dt > end_dt:
+        raise InputValidationError(
+            "ASF 检索开始日期不能晚于结束日期。",
+            code=ErrorCode.ASF002,
+        )
+    windows: list[tuple[datetime, datetime]] = []
+    cursor_end = end_dt
+    step = timedelta(days=_ASF_SPLIT_WINDOW_DAYS)
+    one_second = timedelta(seconds=1)
+    while cursor_end >= start_dt:
+        cursor_start = max(start_dt, cursor_end - step + one_second)
+        windows.append((cursor_start, cursor_end))
+        cursor_end = cursor_start - one_second
+    return windows
+
+
+def _split_asf_window(start_dt: datetime, end_dt: datetime) -> list[tuple[datetime, datetime]]:
+    if end_dt - start_dt <= timedelta(days=1):
+        return []
+    midpoint = start_dt + ((end_dt - start_dt) / 2)
+    one_second = timedelta(seconds=1)
+    return [
+        (midpoint + one_second, end_dt),
+        (start_dt, midpoint),
+    ]
+
+
+def _merge_asf_features(
+    target: dict[str, Mapping[str, Any]],
+    features: Iterable[Mapping[str, Any]],
+) -> None:
+    for feature in features:
+        key = _feature_key(feature)
+        if not key:
+            continue
+        current = target.get(key)
+        if current is None or _feature_rank(feature) >= _feature_rank(current):
+            target[key] = feature
+
+
+def _search_asf_geojson_by_date_windows(
+    params: Mapping[str, str],
+    *,
+    start: str | None,
+    end: str | None,
+    requested_limit: int,
+    progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
+) -> list[Mapping[str, Any]]:
+    queue = _asf_split_query_windows(start, end)
+    features_by_key: dict[str, Mapping[str, Any]] = {}
+    processed = 0
+    while queue and len(features_by_key) < requested_limit:
+        _raise_if_cancelled(cancelled)
+        start_dt, end_dt = queue.pop(0)
+        processed += 1
+        total = processed + len(queue)
+        if progress is not None:
+            progress(
+                processed - 1,
+                max(1, total),
+                f"正在分段查询 ASF 元数据 {processed}/{max(1, total)}",
+            )
+        window_limit = min(_ASF_SPLIT_WINDOW_MAX_RESULTS, requested_limit)
+        query = dict(params)
+        query["start"] = _format_asf_query_datetime(start_dt)
+        query["end"] = _format_asf_query_datetime(end_dt)
+        query["maxResults"] = str(window_limit)
+        data = _get_asf_geojson(query)
+        features = _asf_geojson_features(data)
+        subwindows = _split_asf_window(start_dt, end_dt) if len(features) >= window_limit else []
+        if subwindows:
+            queue[0:0] = subwindows
+            if progress is not None:
+                progress(
+                    processed,
+                    max(1, processed + len(queue)),
+                    "当前时间段结果较多，继续细分 ASF 查询窗口",
+                )
+            continue
+        _merge_asf_features(features_by_key, features)
+        if progress is not None:
+            progress(
+                processed,
+                max(1, processed + len(queue)),
+                f"已完成 ASF 分段 {processed}/{max(1, processed + len(queue))}，累计 {len(features_by_key)} 景",
+            )
+    return list(features_by_key.values())
+
+
+def _should_use_asf_split_search(requested_limit: int | None, total_count: int | None) -> bool:
+    if requested_limit is None:
+        return False
+    if requested_limit >= _ASF_SPLIT_SEARCH_THRESHOLD:
+        return True
+    return bool(total_count is not None and total_count >= _ASF_SPLIT_SEARCH_THRESHOLD)
+
+
 def _cmr_datetime_range(start: str | None, end: str | None) -> str | None:
     start_value = _asf_datetime(start)
     end_value = _asf_datetime(end, end=True)
@@ -816,6 +1019,7 @@ def _search_scenes_from_cmr(
     beam_mode: str = "",
     polarization: str = "",
     max_results: int,
+    cancelled: CancelCallback | None = None,
 ) -> list[Scene]:
     try:
         import requests  # noqa: PLC0415 - optional download extra
@@ -830,25 +1034,27 @@ def _search_scenes_from_cmr(
     if not collection_ids:
         raise InputValidationError(f"CMR 备用检索暂不支持 {product_type}", code=ErrorCode.ASF002)
 
-    limit = max(1, min(int(max_results or 50), 500))
+    limit = max(1, min(int(max_results or 50), _MAX_REMOTE_SEARCH_RESULTS))
     scenes: list[Scene] = []
     last_error: BaseException | None = None
-    checked = 0
-    for collection_id in collection_ids:
+    page_num = 1
+    while len(scenes) < limit:
+        _raise_if_cancelled(cancelled)
+        page_size = min(_CMR_PAGE_SIZE, limit - len(scenes))
+        params: list[tuple[str, str]] = [
+            ("page_size", str(page_size)),
+            ("page_num", str(page_num)),
+            ("sort_key", "-start_date"),
+        ]
+        params.extend(("collection_concept_id", collection_id) for collection_id in collection_ids)
         if len(scenes) >= limit:
             break
-        checked += 1
-        params: dict[str, str] = {
-            "collection_concept_id": collection_id,
-            "page_size": str(min(100, limit - len(scenes))),
-            "sort_key": "-start_date",
-        }
         temporal = _cmr_datetime_range(start, end)
         if temporal:
-            params["temporal"] = temporal
+            params.append(("temporal", temporal))
         bbox_text = _cmr_bbox(bbox)
         if bbox_text:
-            params["bounding_box"] = bbox_text
+            params.append(("bounding_box", bbox_text))
         try:
             response = requests.get(
                 CMR_GRANULES_URL,
@@ -860,17 +1066,15 @@ def _search_scenes_from_cmr(
             data = response.json()
         except requests.RequestException as exc:
             last_error = exc
-            if checked >= 2:
-                break
-            continue
+            break
         except ValueError as exc:
             last_error = exc
-            if checked >= 2:
-                break
-            continue
+            break
         entries = (((data or {}).get("feed") or {}).get("entry") or []) if isinstance(data, dict) else []
         if not isinstance(entries, list):
-            continue
+            break
+        if not entries:
+            break
         for entry in entries:
             if not isinstance(entry, Mapping):
                 continue
@@ -883,6 +1087,9 @@ def _search_scenes_from_cmr(
                 scenes.append(scene)
                 if len(scenes) >= limit:
                     break
+        if len(entries) < page_size:
+            break
+        page_num += 1
     if not scenes and last_error is not None:
         raise InputValidationError(
             f"CMR 备用检索也未完成：{_asf_request_failure_message(last_error)}",
@@ -898,6 +1105,14 @@ def _plain_error_message(exc: BaseException) -> str:
     return str(message or exc)
 
 
+def _search_query_limit(requested_limit: int, *, has_aoi: bool) -> int:
+    if not has_aoi:
+        return requested_limit
+    if requested_limit <= 200:
+        return min(_MAX_REMOTE_SEARCH_RESULTS, max(requested_limit * 4, requested_limit + 50))
+    return requested_limit
+
+
 def search_scenes_from_asf(
     *,
     bbox: BBox | None = None,
@@ -910,9 +1125,11 @@ def search_scenes_from_asf(
     orbit_direction: str = "",
     relative_orbit: int | None = None,
     frame: int | None = None,
-    max_results: int = 50,
+    max_results: int | None = 50,
     progress: ProgressCallback | None = None,
     stats: dict[str, Any] | None = None,
+    cancelled: CancelCallback | None = None,
+    allow_cmr_fallback: bool = True,
 ) -> list[Scene]:
     """Query ASF SearchAPI and return Sentinel-1 scenes with metadata.
 
@@ -923,25 +1140,30 @@ def search_scenes_from_asf(
     if level not in {"SLC", "GRD", "RAW", "OCN"}:
         raise InputValidationError(f"不支持的 Sentinel-1 产品类型：{product_type}", code=ErrorCode.ASF002)
 
-    requested_limit = max(1, min(int(max_results or 50), _MAX_REMOTE_SEARCH_RESULTS))
-    query_limit = requested_limit
-    if isinstance(aoi_geojson, Mapping) or bbox is not None:
-        query_limit = min(
-            _MAX_REMOTE_SEARCH_RESULTS,
-            max(requested_limit * 4, requested_limit + 50),
-        )
+    _raise_if_cancelled(cancelled)
+    requested_limit = (
+        None
+        if max_results is None
+        else max(1, min(int(max_results or 50), _MAX_REMOTE_SEARCH_RESULTS))
+    )
+    has_aoi = isinstance(aoi_geojson, Mapping) or bbox is not None
+    query_limit = requested_limit or _DEFAULT_UNCOUNTED_SEARCH_RESULTS
+    if requested_limit is not None:
+        query_limit = _search_query_limit(requested_limit, has_aoi=has_aoi)
     if bbox is None and isinstance(aoi_geojson, Mapping):
         bbox = _bbox_from_geojson_like(aoi_geojson)
     params: dict[str, str] = {
-        "platform": "Sentinel-1",
+        "dataset": "SENTINEL-1",
         "processingLevel": level,
         "output": "geojson",
         "maxResults": str(query_limit),
     }
-    beam = (beam_mode or "").strip().upper()
-    if beam:
-        params["beamMode"] = beam
-    polarization_param = _asf_polarization_param(polarization)
+    beam_values = _split_filter_values(beam_mode)
+    beam_param = beam_values[0] if len(beam_values) == 1 else ""
+    if beam_param:
+        params["beamMode"] = beam_param
+    polarization_values = _split_filter_values(polarization)
+    polarization_param = _asf_polarization_param(polarization_values[0]) if len(polarization_values) == 1 else None
     if polarization_param:
         params["polarization"] = polarization_param
     start_value = _asf_datetime(start)
@@ -953,15 +1175,27 @@ def search_scenes_from_asf(
     aoi_wkt = _search_wkt_for_aoi(aoi_geojson, bbox)
     if aoi_wkt:
         params["intersectsWith"] = aoi_wkt
-    direction = (orbit_direction or "").strip().upper()
-    if direction in {"ASCENDING", "DESCENDING"}:
-        params["flightDirection"] = direction
+    direction_values = tuple(
+        value for value in _split_filter_values(orbit_direction) if value in {"ASCENDING", "DESCENDING"}
+    )
+    direction_param = direction_values[0] if len(direction_values) == 1 else ""
+    if direction_param:
+        params["flightDirection"] = direction_param
     if relative_orbit is not None:
         params["relativeOrbit"] = str(int(relative_orbit))
     if frame is not None:
         params["frame"] = str(int(frame))
 
+    _raise_if_cancelled(cancelled)
     total_count = _get_asf_count(params) if (progress is not None or stats is not None) else None
+    if requested_limit is None:
+        requested_limit = (
+            max(1, min(total_count, _MAX_REMOTE_SEARCH_RESULTS))
+            if total_count is not None and total_count > 0
+            else _DEFAULT_UNCOUNTED_SEARCH_RESULTS
+        )
+        query_limit = _search_query_limit(requested_limit, has_aoi=has_aoi)
+        params["maxResults"] = str(query_limit)
     if stats is not None:
         stats.update(
             {
@@ -979,66 +1213,135 @@ def search_scenes_from_asf(
             else f"候选请求 {query_limit} 景"
         )
         progress(0, 1, f"正在请求 ASF 检索接口（目标 {requested_limit} 景，{total_label}）")
+    features: list[Mapping[str, Any]] | None = None
+    source = "ASF"
+    use_split_search = _should_use_asf_split_search(requested_limit, total_count)
     try:
-        data = _get_asf_geojson(params)
-    except InputValidationError as primary_error:
-        if progress is not None:
-            progress(0, 1, "ASF 检索失败，正在切换 CMR 备用检索")
-        try:
-            fallback_scenes = _search_scenes_from_cmr(
-                bbox=bbox,
+        _raise_if_cancelled(cancelled)
+        if use_split_search:
+            features = _search_asf_geojson_by_date_windows(
+                params,
                 start=start,
                 end=end,
-                product_type=level,
-                beam_mode=beam,
-                polarization=polarization,
-                max_results=query_limit,
+                requested_limit=requested_limit,
+                progress=progress,
+                cancelled=cancelled,
             )
-            fallback = _filter_scenes_by_aoi_geometry(fallback_scenes, aoi_geojson)
-            fallback = _sort_scenes_by_aoi_coverage(
-                fallback,
-                aoi_geojson=aoi_geojson,
-                bbox=bbox,
-            )[:requested_limit]
-            if stats is not None:
-                stats.update(
-                    {
-                        "returned_count": len(fallback),
-                        "source": "CMR",
-                        "total_count": total_count,
-                    }
+            source = "ASF_BATCH"
+        else:
+            data = _get_asf_geojson(params)
+            features = _asf_geojson_features(data)
+        _raise_if_cancelled(cancelled)
+    except InputValidationError as primary_error:
+        _raise_if_cancelled(cancelled)
+        if not use_split_search and requested_limit >= _ASF_SPLIT_SEARCH_THRESHOLD:
+            try:
+                if progress is not None:
+                    progress(0, 1, "ASF 单次检索失败，正在改用分段 ASF 检索")
+                features = _search_asf_geojson_by_date_windows(
+                    params,
+                    start=start,
+                    end=end,
+                    requested_limit=requested_limit,
+                    progress=progress,
+                    cancelled=cancelled,
                 )
-            return fallback
-        except InputValidationError as fallback_error:
+                source = "ASF_BATCH"
+            except InputValidationError as split_error:
+                primary_error = split_error
+            else:
+                _raise_if_cancelled(cancelled)
+        if features is not None:
+            pass
+        elif not allow_cmr_fallback:
             raise InputValidationError(
-                f"{_plain_error_message(primary_error)}；CMR 备用检索也失败：{_plain_error_message(fallback_error)}",
+                (
+                    f"{_plain_error_message(primary_error)}；未自动切换 CMR，"
+                    "因为大数量 CMR 备用结果缺少完整升降轨、Path、Frame 字段，容易误导后续筛选。"
+                ),
                 code=ErrorCode.ASF002,
-            ) from fallback_error
-    features = data.get("features", []) if isinstance(data, dict) else []
+            ) from primary_error
+        else:
+            if progress is not None:
+                progress(0, 1, "ASF 检索失败，正在切换 CMR 备用检索")
+            try:
+                fallback_scenes = _search_scenes_from_cmr(
+                    bbox=bbox,
+                    start=start,
+                    end=end,
+                    product_type=level,
+                    beam_mode=beam_param,
+                    polarization=polarization_values[0] if len(polarization_values) == 1 else "",
+                    max_results=query_limit,
+                    cancelled=cancelled,
+                )
+                if requested_limit <= _CMR_ENRICH_LIMIT:
+                    try:
+                        _raise_if_cancelled(cancelled)
+                        if progress is not None:
+                            progress(0, 1, "CMR 已返回候选，正在补齐 ASF 轨道元数据")
+                        fallback_scenes = enrich_scenes_from_asf_search(
+                            fallback_scenes,
+                            progress=progress,
+                            cancelled=cancelled,
+                        )
+                    except Exception as enrich_error:  # noqa: BLE001 - CMR fallback should remain usable.
+                        _raise_if_cancelled(cancelled)
+                        logger.info("could not enrich CMR fallback scenes from ASF SearchAPI: %s", enrich_error)
+                else:
+                    logger.info(
+                        "skipping ASF metadata enrichment for %d CMR fallback scenes",
+                        len(fallback_scenes),
+                    )
+                fallback = [
+                    scene
+                    for scene in fallback_scenes
+                    if _scene_matches_filters(
+                        scene,
+                        beam_mode=beam_mode,
+                        polarization=polarization,
+                        orbit_direction="" if requested_limit > _CMR_ENRICH_LIMIT else orbit_direction,
+                    )
+                ]
+                fallback = _filter_scenes_by_aoi_geometry(fallback, aoi_geojson)
+                fallback = _sort_scenes_by_aoi_coverage(
+                    fallback,
+                    aoi_geojson=aoi_geojson,
+                    bbox=bbox,
+                )[:requested_limit]
+                if stats is not None:
+                    stats.update(
+                        {
+                            "returned_count": len(fallback),
+                            "source": "CMR",
+                            "total_count": total_count,
+                            "cmr_enriched": requested_limit <= _CMR_ENRICH_LIMIT,
+                        }
+                    )
+                return fallback
+            except InputValidationError as fallback_error:
+                raise InputValidationError(
+                    f"{_plain_error_message(primary_error)}；CMR 备用检索也失败：{_plain_error_message(fallback_error)}",
+                    code=ErrorCode.ASF002,
+                ) from fallback_error
     if progress is not None:
         progress(1, 1, f"ASF 返回 {len(features)} 条结果，正在解析元数据")
-    scenes: list[Scene] = []
-    for feature in features:
-        if not isinstance(feature, Mapping):
-            continue
-        source = _first_feature_source(feature)
-        if not source:
-            continue
-        try:
-            scene = parse_scene_name(source)
-        except InputValidationError:
-            logger.debug("skipping unparseable ASF search result: %r", source)
-            continue
-        updates = _feature_updates(feature)
-        scene = scene.model_copy(update=updates) if updates else scene
-        if _scene_matches_filters(scene, beam_mode=beam, polarization=polarization):
-            scenes.append(scene)
+    scenes = _asf_feature_scenes(
+        features,
+        beam_mode=beam_mode,
+        polarization=polarization,
+        orbit_direction=orbit_direction,
+        cancelled=cancelled,
+    )
     unique, _ = deduplicate_scenes(scenes)
     unique = _filter_scenes_by_aoi_geometry(unique, aoi_geojson)
     unique = _sort_scenes_by_aoi_coverage(unique, aoi_geojson=aoi_geojson, bbox=bbox)
     unique = unique[:requested_limit]
     if stats is not None:
         stats["returned_count"] = len(unique)
+        stats["source"] = source
+        if source == "ASF_BATCH":
+            stats["query_limit"] = requested_limit
     logger.info("ASF search returned %d scenes (%s)", len(unique), level)
     return unique
 
@@ -1047,6 +1350,7 @@ def enrich_scenes_from_asf_search(
     scenes: Iterable[Scene],
     *,
     progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
 ) -> list[Scene]:
     """Return scenes enriched with public ASF SearchAPI metadata when available.
 
@@ -1058,7 +1362,7 @@ def enrich_scenes_from_asf_search(
     ids = _metadata_query_ids(scene_list)
     if not ids:
         return scene_list
-    features = _fetch_features(ids, progress=progress)
+    features = _fetch_features(ids, progress=progress, cancelled=cancelled)
     enriched: list[Scene] = []
     for scene in scene_list:
         feature = features.get(_scene_key(scene.scene_id))

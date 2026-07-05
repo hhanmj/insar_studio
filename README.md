@@ -63,6 +63,9 @@ InSAR Studio 是一个面向 InSAR 与遥感数据准备流程的桌面助手。
 - [Sentinel-1 / ASF 下载说明](docs/asf-download.md)
 - [DEM 下载与转换说明](docs/dem.md)
 - [发布、更新与组件化](docs/release.md)
+- [新电脑开发与打包接手指南](docs/developer-handoff.md)
+- [开发日志](docs/development-log.md)
+- [代码规范](docs/code-standards.md)
 - [路线图](docs/roadmap.md)
 - [更新日志](CHANGELOG.md)
 

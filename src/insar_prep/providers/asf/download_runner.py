@@ -1,7 +1,7 @@
 """Shared orchestration for real ASF Sentinel-1 SLC download.
 
 Wraps the credential-safe primitives -- credential resolution, request building,
-the real downloader, and a credential-masked results CSV -- into a single
+the real downloader, and a credential-masked results TXT -- into a single
 synchronous :func:`run_asf_download` call that both a background GUI worker and
 other callers can reuse, so the download orchestration lives in exactly one place.
 
@@ -14,7 +14,6 @@ lazily; this module never imports ``requests`` itself.
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,6 +21,7 @@ from typing import TYPE_CHECKING
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import get_logger, mask_text
+from insar_prep.core.text_table import write_table_txt
 from insar_prep.providers.asf.credentials import CredentialSource, resolve_credentials
 from insar_prep.providers.asf.download_plan import ASF_PLAN_SUBDIR, SLC_SUBDIR
 from insar_prep.providers.asf.downloader import (
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 logger = get_logger("providers.asf.download_runner")
 
-# Fixed, credential-safe results CSV columns (mirrors the CLI ``download-asf``
+# Fixed, credential-safe results TXT columns (mirrors the CLI ``download-asf``
 # results file so a plan directory looks identical regardless of entry point).
 DOWNLOAD_RESULT_COLUMNS = [
     "scene_id",
@@ -56,24 +56,21 @@ DOWNLOAD_RESULT_COLUMNS = [
 
 
 def write_download_results_csv(output_dir: Path | str, results: Sequence[DownloadResult]) -> Path:
-    """Write a credential-masked per-scene results CSV; return its path."""
+    """Write a credential-masked per-scene results TXT; return its path."""
     plan_dir = Path(output_dir) / ASF_PLAN_SUBDIR
     plan_dir.mkdir(parents=True, exist_ok=True)
-    results_path = plan_dir / "asf_download_results.csv"
-    with results_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=DOWNLOAD_RESULT_COLUMNS)
-        writer.writeheader()
-        for result in results:
-            writer.writerow(
-                {
-                    "scene_id": mask_text(result.scene_id),
-                    "outcome": result.outcome.value,
-                    "bytes_written": result.bytes_written,
-                    "error_code": result.error_code or "",
-                    "message": mask_text(result.message),
-                }
-            )
-    return results_path
+    results_path = plan_dir / "asf_download_results.txt"
+    rows = [
+        {
+            "scene_id": mask_text(result.scene_id),
+            "outcome": result.outcome.value,
+            "bytes_written": result.bytes_written,
+            "error_code": result.error_code or "",
+            "message": mask_text(result.message),
+        }
+        for result in results
+    ]
+    return write_table_txt(results_path, DOWNLOAD_RESULT_COLUMNS, rows)
 
 
 @dataclass(frozen=True)
@@ -132,7 +129,7 @@ def run_asf_download(
 
     Resolves Earthdata credentials (unless an explicit ``downloader`` is given),
     downloads each unique scene that carries a URL, writes a credential-masked
-    ``asf_download_plan/asf_download_results.csv``, and returns a
+    ``asf_download_plan/asf_download_results.txt``, and returns a
     :class:`DownloadRunSummary`.
 
     Per-scene transport/credential problems are captured as ``FAILED`` results

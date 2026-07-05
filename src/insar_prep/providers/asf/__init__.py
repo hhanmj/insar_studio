@@ -32,6 +32,7 @@ from insar_prep.providers.asf.credentials import (
 from insar_prep.providers.asf.download_plan import (
     ASF_PLAN_COLUMNS,
     ASF_PLAN_SUBDIR,
+    PLAN_TXT_NAME,
     SLC_SUBDIR,
     AsfDownloadPlan,
     AsfDownloadPlanItem,
@@ -65,6 +66,7 @@ __all__ = [
     "EARTHDATA_TOKEN_ENV",
     "EARTHDATA_TOKEN_URL",
     "SLC_SUBDIR",
+    "PLAN_TXT_NAME",
     "AsfDownloadPlan",
     "AsfDownloadPlanItem",
     "AsfDownloader",

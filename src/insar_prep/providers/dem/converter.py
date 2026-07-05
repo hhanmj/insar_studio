@@ -278,6 +278,16 @@ class RealDemConverter:
                 "DEM vertical datum is unknown; specify it before converting",
                 ErrorCode.DEM002,
             )
+        if dest.exists() and dest.stat().st_size > 0:
+            return DemConversionResult(
+                region_safe_name=plan.region_safe_name,
+                dataset=plan.dataset,
+                outcome=DemConversionOutcome.SKIPPED,
+                source_vertical_datum=source,
+                target_vertical_datum=target,
+                path=dest,
+                message="SARscape-ready DEM already present; skipped",
+            )
         if not plan.raw_dem_path.exists():
             return failed(
                 f"raw DEM not found: {plan.raw_dem_path}; "
@@ -323,18 +333,6 @@ class RealDemConverter:
             geoid = self._load_geoid(model_hint)
         except DemProcessingError as exc:
             return failed(str(exc))
-
-        if dest.exists() and dest.stat().st_size > 0:
-            return DemConversionResult(
-                region_safe_name=plan.region_safe_name,
-                dataset=plan.dataset,
-                outcome=DemConversionOutcome.SKIPPED,
-                source_vertical_datum=source,
-                target_vertical_datum=target,
-                geoid_model=geoid.model,
-                path=dest,
-                message=f"SARscape-ready DEM already present; skipped after validating {geoid.model}",
-            )
 
         approximated = source is VerticalDatum.EGM2008 and geoid.model.upper() != "EGM2008"
         try:

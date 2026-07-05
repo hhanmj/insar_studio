@@ -9,6 +9,7 @@ check/install components even before optional scientific libraries are present.
 from __future__ import annotations
 
 import hashlib
+import importlib.resources as resources
 import importlib.util
 import json
 import os
@@ -408,7 +409,14 @@ def _dem_runtime_available() -> bool:
 
 
 def _egm2008_grid_available() -> bool:
-    return find_component_file(DEM_GDAL_COMPONENT_ID, EGM2008_GEOID_CANDIDATES) is not None
+    if find_component_file(DEM_GDAL_COMPONENT_ID, EGM2008_GEOID_CANDIDATES) is not None:
+        return True
+    try:
+        bundled = resources.files("insar_prep").joinpath("data", "egm2008_5.npz")
+        with resources.as_file(bundled) as path:
+            return path.is_file()
+    except Exception:  # noqa: BLE001 - bundled data is optional in internal builds.
+        return False
 
 
 def get_component_status(*, refresh: bool = False) -> dict[str, Any]:

@@ -578,7 +578,7 @@ export function Download() {
                       {dlStatus.summary_line}
                     </div>
                   )}
-                  {dlStatus.results_path && <KV k="结果 CSV" v={dlStatus.results_path} />}
+                  {dlStatus.results_path && <KV k="结果 TXT" v={dlStatus.results_path} />}
                 </div>
               )}
             </div>
@@ -769,8 +769,8 @@ export function Download() {
             {demRun && (
               <div className="rounded-md border bg-muted/30 p-3 text-xs">
                 <KV k="执行结果" v={demRun.summary_line} />
-                <KV k="下载 CSV" v={demRun.results_path || "—"} />
-                <KV k="转换 CSV" v={demRun.conversion_results_path || "—"} />
+                <KV k="下载 TXT" v={demRun.results_path || "—"} />
+                <KV k="转换 TXT" v={demRun.conversion_results_path || "—"} />
                 <KV k="原始 tif" v={demRun.raw_dem_path || "—"} />
                 <KV k="椭球高 tif" v={demRun.ellipsoid_dem_path || "—"} />
                 <KV k="SARscape DEM" v={demRun.sarscape_ready_dem_path || "—"} />

@@ -1,6 +1,6 @@
 [project]
 name = "insar-prep"
-version = "2.1.4"
+version = "2.1.6"
 description = "Desktop assistant for InSAR and remote sensing data preparation workflows."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -75,6 +75,9 @@ packages = ["src/insar_prep"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "real_download: opt-in smoke test for a real ASF download path",
+]
 norecursedirs = [
     ".git",
     ".venv",

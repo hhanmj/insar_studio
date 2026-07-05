@@ -11,7 +11,6 @@ API calls, no credentials, and no real DEM conversion. No ``print()`` is used
 from __future__ import annotations
 
 import argparse
-import csv
 import getpass
 import importlib.util
 import sys
@@ -25,6 +24,7 @@ from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import CredentialError, InputValidationError, InsarPrepError
 from insar_prep.core.logging import get_logger, mask_text
 from insar_prep.core.naming import sarscape_safe_name
+from insar_prep.core.text_table import write_table_txt
 from insar_prep.gui import PYSIDE6_MISSING_MESSAGE
 from insar_prep.processing.aoi import make_processing_aoi_from_bbox
 from insar_prep.processing.aoi_import import load_aoi_from_geojson, load_aoi_from_wkt
@@ -605,7 +605,7 @@ def run_plan_asf_downloads(args: argparse.Namespace) -> int:
         region_safe_name=region_safe_name,
     )
     try:
-        json_path, csv_path = write_asf_download_plan(plan, args.output_dir)
+        json_path, txt_path = write_asf_download_plan(plan, args.output_dir)
     except InsarPrepError as exc:
         logger.error("failed to write ASF download plan: %s", exc)
         return _EXIT_ERROR
@@ -613,13 +613,13 @@ def run_plan_asf_downloads(args: argparse.Namespace) -> int:
     logger.info(
         "wrote ASF download plan: %s and %s (%d scenes, %d planned, %d missing url)",
         json_path,
-        csv_path,
+        txt_path,
         plan.scene_count,
         plan.planned_count,
         plan.missing_url_count,
     )
     # User-facing confirmation on stdout (no print(); Ruff T20 stays satisfied).
-    sys.stdout.write(f"ASF download plan written:\nJSON: {json_path}\nCSV: {csv_path}\n")
+    sys.stdout.write(f"ASF download plan written:\nJSON: {json_path}\nTXT: {txt_path}\n")
     # Real download is not implemented; this is a plan only.
     if args.require_urls and plan.missing_url_count > 0:
         logger.error(
@@ -645,7 +645,7 @@ def add_download_asf_subparser(subparsers) -> argparse.ArgumentParser:
         "download-asf",
         help="Plan or download Sentinel-1 SLCs from a cart (dry-run by default).",
         description=(
-            "Write an ASF SLC download plan (JSON + CSV) and, with "
+            "Write an ASF SLC download plan (JSON + TXT) and, with "
             "--download-mode real, fetch the SLCs from ASF using NASA Earthdata "
             "credentials. Use --download-mode verify for a fast network preflight "
             "that checks the whole credential + ASF + redirect chain without "
@@ -668,7 +668,7 @@ def add_download_asf_subparser(subparsers) -> argparse.ArgumentParser:
         required=True,
         help=(
             "Output root: the plan goes under <output-dir>/asf_download_plan/ and, "
-            "in real mode, SLCs under <output-dir>/02_slc/."
+            f"in real mode, SLCs under <output-dir>/{SLC_SUBDIR}/."
         ),
     )
     parser.add_argument(
@@ -717,24 +717,21 @@ def add_download_asf_subparser(subparsers) -> argparse.ArgumentParser:
 
 
 def _write_download_results(output_dir: Path, results: list[DownloadResult]) -> Path:
-    """Write a credential-safe per-scene results CSV. Returns its path."""
+    """Write a credential-safe per-scene results TXT. Returns its path."""
     plan_dir = output_dir / "asf_download_plan"
     plan_dir.mkdir(parents=True, exist_ok=True)
-    results_path = plan_dir / "asf_download_results.csv"
-    with results_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=_DOWNLOAD_RESULT_COLUMNS)
-        writer.writeheader()
-        for result in results:
-            writer.writerow(
-                {
-                    "scene_id": mask_text(result.scene_id),
-                    "outcome": result.outcome.value,
-                    "bytes_written": result.bytes_written,
-                    "error_code": result.error_code or "",
-                    "message": mask_text(result.message),
-                }
-            )
-    return results_path
+    results_path = plan_dir / "asf_download_results.txt"
+    rows = [
+        {
+            "scene_id": mask_text(result.scene_id),
+            "outcome": result.outcome.value,
+            "bytes_written": result.bytes_written,
+            "error_code": result.error_code or "",
+            "message": mask_text(result.message),
+        }
+        for result in results
+    ]
+    return write_table_txt(results_path, _DOWNLOAD_RESULT_COLUMNS, rows)
 
 
 def run_download_asf(args: argparse.Namespace) -> int:
@@ -764,11 +761,11 @@ def run_download_asf(args: argparse.Namespace) -> int:
         region_safe_name=region_safe_name,
     )
     try:
-        json_path, csv_path = write_asf_download_plan(plan, output_dir)
+        json_path, txt_path = write_asf_download_plan(plan, output_dir)
     except InsarPrepError as exc:
         logger.error("failed to write ASF download plan: %s", exc)
         return _EXIT_ERROR
-    sys.stdout.write(f"ASF download plan written:\nJSON: {json_path}\nCSV: {csv_path}\n")
+    sys.stdout.write(f"ASF download plan written:\nJSON: {json_path}\nTXT: {txt_path}\n")
 
     if args.require_urls and plan.missing_url_count > 0:
         logger.error(
@@ -938,9 +935,8 @@ def add_download_dem_subparser(subparsers) -> argparse.ArgumentParser:
         dest="output_root",
         required=True,
         help=(
-            "Output root: the DEM lands under "
-            "<output-root>/<region>/04_dem/raw/ and results under "
-            "<output-root>/dem_download/."
+            "Output root: for one region, DEM files and dem_download_results.txt "
+            "land directly under <output-root>."
         ),
     )
     _add_processing_aoi_group(parser)
@@ -1123,9 +1119,9 @@ def add_convert_dem_subparser(subparsers) -> argparse.ArgumentParser:
         dest="output_root",
         required=True,
         help=(
-            "Output root: reads <output-root>/<region>/04_dem/raw/, writes the "
-            "SARscape-ready DEM under <output-root>/<region>/04_dem/ and results "
-            "under <output-root>/dem_convert/."
+            "Output root: reads the downloaded DEM directly under <output-root>, "
+            "writes the SARscape-ready DEM beside it, and writes "
+            "dem_convert_results.txt there for one region."
         ),
     )
     _add_processing_aoi_group(parser)
@@ -1356,7 +1352,7 @@ def add_gacos_import_subparser(subparsers) -> argparse.ArgumentParser:
         dest="output_root",
         required=True,
         help=(
-            "Output root: products land under <output-root>/<region>/05_atmosphere/gacos/requests/."
+            "Output root: products land under <output-root>/<region>/GACOS/requests/."
         ),
     )
     parser.add_argument(
@@ -1530,7 +1526,7 @@ def add_gacos_request_subparser(subparsers) -> argparse.ArgumentParser:
         "--output-root",
         dest="output_root",
         required=True,
-        help="Output root: a results CSV is written under <output-root>/gacos_request/.",
+        help="Output root: a results TXT is written under <output-root>/gacos_request/.",
     )
     _add_processing_aoi_group(parser)
     parser.add_argument(
@@ -1740,7 +1736,7 @@ def add_gacos_download_subparser(subparsers) -> argparse.ArgumentParser:
         dest="output_root",
         required=True,
         help=(
-            "Output root: products land under <output-root>/<region>/05_atmosphere/gacos/requests/."
+            "Output root: products land under <output-root>/<region>/GACOS/requests/."
         ),
     )
     parser.add_argument(

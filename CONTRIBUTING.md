@@ -33,6 +33,8 @@ uv run python -m compileall -q src packaging
 git diff --check
 ```
 
+更完整的换机、打包和发布流程见 [新电脑开发与打包接手指南](docs/developer-handoff.md)；代码风格和模块边界见 [代码规范](docs/code-standards.md)。
+
 ## 分支与提交
 
 - 功能开发建议从 `main` 新建短分支。

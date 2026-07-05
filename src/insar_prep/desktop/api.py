@@ -19,7 +19,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -28,7 +30,7 @@ from insar_prep import __version__
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import mask_text
 from insar_prep.desktop.activity_log import ActivityLog
-from insar_prep.desktop.download_job import AsfDownloadJob, OrbitDownloadJob
+from insar_prep.desktop.download_job import AsfDownloadJob, DemDownloadJob, OrbitDownloadJob
 from insar_prep.gui.state import GuiState, workspace_display_name
 
 _EARTHDATA_AUTH_FAILURE_COOLDOWN_SECONDS = 5 * 60
@@ -66,6 +68,27 @@ def _format_status_log_entry(entry: dict[str, Any]) -> str:
     if ts > 10_000_000_000:
         ts = ts / 1000
     return f"[{time.strftime('%Y/%m/%d %H:%M:%S', time.localtime(ts))}] {detail}"
+
+
+def _local_dem_output_exists(path: Path) -> bool:
+    related = [path, path.with_name(path.name + ".part")]
+    if path.suffix:
+        related.append(path.with_suffix(path.suffix + ".part"))
+    related.extend([path.with_suffix(".hdr"), path.with_suffix(".sml")])
+    return any(item.exists() for item in related)
+
+
+def _unique_local_dem_path(path: Path) -> Path:
+    if not _local_dem_output_exists(path):
+        return path
+    parent = path.parent
+    suffix = path.suffix
+    stem = path.stem if suffix else path.name
+    for index in range(2, 10_000):
+        candidate = parent / f"{stem}_{index}{suffix}"
+        if not _local_dem_output_exists(candidate):
+            return candidate
+    raise ValueError(f"无法生成不冲突的 DEM 输出文件名：{path}")
 
 
 def _is_update_installer(path: Path) -> bool:
@@ -286,8 +309,11 @@ def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _download_archive_identity(item: dict[str, Any]) -> str:
-    """Return the stable identity for a persisted task record."""
+def _normalise_download_archive_path(value: object) -> str:
+    return str(value or "").strip().replace("/", "\\").rstrip("\\").lower()
+
+
+def _download_archive_kind(item: dict[str, Any]) -> str:
     kind = str(item.get("kind") or "").strip()
     task_id = str(item.get("id") or "").strip()
     name = str(item.get("name") or "").strip()
@@ -298,16 +324,56 @@ def _download_archive_identity(item: dict[str, Any]) -> str:
             kind = "orbit"
         elif task_id.startswith("dem:") or "DEM" in name.upper():
             kind = "dem"
-    output_dir = str(item.get("output_dir") or "").strip().rstrip("\\/")
-    if not output_dir and kind and task_id.startswith(f"{kind}:"):
-        body = task_id[len(kind) + 1 :]
-        if ":" in body:
-            output_dir = body.rsplit(":", 1)[0].strip().rstrip("\\/")
-        else:
-            output_dir = body.strip().rstrip("\\/")
+    return kind
+
+
+def _download_archive_path_from_task_id(kind: str, task_id: str) -> str:
+    if not kind or not task_id.startswith(f"{kind}:"):
+        return ""
+    body = task_id[len(kind) + 1 :].strip()
+    if not body:
+        return ""
+    if kind == "dem" and body.count(":") >= 2:
+        body = body.rsplit(":", 2)[0]
+    elif ":" in body:
+        body = body.rsplit(":", 1)[0]
+    path = _normalise_download_archive_path(body)
+    if path and Path(path).suffix.lower() in {".json", ".csv", ".txt", ".log"}:
+        path = _normalise_download_archive_path(Path(path).parent)
+    return path
+
+
+def _download_archive_identity(item: dict[str, Any]) -> str:
+    """Return the stable identity for a persisted task record."""
+    kind = _download_archive_kind(item)
+    task_id = str(item.get("id") or "").strip()
+    if kind == "dem" and task_id:
+        return task_id
+    output_dir = _normalise_download_archive_path(item.get("output_dir"))
+    if not output_dir:
+        output_dir = _download_archive_path_from_task_id(kind, task_id)
     if kind and output_dir:
-        return f"{kind}:{output_dir.lower()}"
+        return f"{kind}:{output_dir}"
     return task_id
+
+
+def _download_archive_identity_candidates(item: dict[str, Any]) -> set[str]:
+    kind = _download_archive_kind(item)
+    task_id = str(item.get("id") or "").strip()
+    output_dir = _normalise_download_archive_path(item.get("output_dir"))
+    keys = {_download_archive_identity(item)}
+    if task_id:
+        keys.add(task_id)
+    if kind and output_dir:
+        keys.add(f"{kind}:{output_dir}")
+    id_path = _download_archive_path_from_task_id(kind, task_id)
+    if kind and id_path:
+        keys.add(f"{kind}:{id_path}")
+    return {key[:600] for key in keys if key}
+
+
+def _download_archive_is_deleted(item: dict[str, Any], deleted_keys: set[str]) -> bool:
+    return bool(_download_archive_identity_candidates(item) & deleted_keys)
 
 
 def _clean_download_archive_deleted_keys(value: Any) -> set[str]:
@@ -333,7 +399,7 @@ def _deleted_download_archive_keys_from_items(value: Any) -> set[str]:
         candidate = {**item, "status": "cancelled"}
         cleaned = _clean_download_archive([candidate])
         if cleaned:
-            out.add(_download_archive_identity(cleaned[0]))
+            out.update(_download_archive_identity_candidates(cleaned[0]))
     return out
 
 
@@ -344,7 +410,7 @@ def _filter_deleted_download_archive(
     """Remove records the user explicitly deleted from history."""
     if not deleted_keys:
         return items
-    return [item for item in items if _download_archive_identity(item) not in deleted_keys]
+    return [item for item in items if not _download_archive_is_deleted(item, deleted_keys)]
 
 
 def _download_archive_status_rank(item: dict[str, Any]) -> int:
@@ -482,6 +548,7 @@ class Api:
         self._dem_dataset = "COP30"
         self._asf_download = AsfDownloadJob()
         self._orbit_download = OrbitDownloadJob()
+        self._dem_download = DemDownloadJob()
         self._activity = ActivityLog()
         self._download_archive: list[dict[str, Any]] = []
         self._deleted_archive_keys: set[str] = set()
@@ -489,6 +556,7 @@ class Api:
         self._orbit_candidate_scenes: list[Any] = []
         self._last_orbit_report: Any | None = None
         self._metadata_status: dict[str, Any] = self._idle_metadata_status()
+        self._asf_search_cancel = threading.Event()
         self._network_settings = self._default_network_settings()
         self._ui_flags: dict[str, bool] = {}
         self._applied_proxy_url: str | None = None
@@ -499,6 +567,7 @@ class Api:
         self._earthdata_candidate_failure_until: dict[str, float] = {}
         self._earthdata_candidate_failure_message: dict[str, str] = {}
         self._window_maximized = False
+        self._window_restore_bounds: dict[str, int] | None = None
         self._shutdown_started = False
         self._state_path = self._desktop_state_path()
         self._load_state()
@@ -509,6 +578,47 @@ class Api:
         base = os.environ.get("LOCALAPPDATA")
         root = Path(base) if base else Path.home() / "AppData" / "Local"
         return root / "InSAR Assistant" / "desktop_state.json"
+
+    @staticmethod
+    def _windows_work_area() -> tuple[int, int, int, int] | None:
+        """Return the Windows work area so frameless maximize does not cover the taskbar."""
+        if not sys.platform.startswith("win"):
+            return None
+        try:
+            import ctypes  # noqa: PLC0415
+
+            class Rect(ctypes.Structure):
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long),
+                ]
+
+            rect = Rect()
+            ok = ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
+            if not ok:
+                return None
+            width = max(100, int(rect.right - rect.left))
+            height = max(100, int(rect.bottom - rect.top))
+            return int(rect.left), int(rect.top), width, height
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _normalise_window_work_area(value: object) -> tuple[int, int, int, int] | None:
+        if not isinstance(value, dict):
+            return None
+        try:
+            left = int(round(float(value.get("x", 0))))
+            top = int(round(float(value.get("y", 0))))
+            width = int(round(float(value.get("width", 0))))
+            height = int(round(float(value.get("height", 0))))
+        except (TypeError, ValueError):
+            return None
+        if width < 400 or height < 300:
+            return None
+        return left, top, width, height
 
     @staticmethod
     def _default_cache_dir() -> Path:
@@ -650,6 +760,177 @@ class Api:
             except OSError as exc:
                 self._activity.add(f"缓存目录创建失败：{exc}", kind="warning")
 
+    def _asf_search_cache_root(self) -> Path | None:
+        settings = self._normalise_network_settings(self._network_settings)
+        if not bool(settings.get("cache_enabled", True)):
+            return None
+        cache_dir = str(settings.get("cache_dir") or "").strip()
+        if not cache_dir:
+            return None
+        return Path(cache_dir) / "asf_search"
+
+    @staticmethod
+    def _asf_search_cache_filter(value: object) -> str:
+        parts = [
+            item.strip().upper()
+            for item in str(value or "").replace(";", ",").split(",")
+            if item.strip()
+        ]
+        return ",".join(sorted(dict.fromkeys(parts)))
+
+    @staticmethod
+    def _asf_search_cache_date(value: object) -> str:
+        return str(value or "").strip().replace("/", "-")
+
+    @staticmethod
+    def _asf_search_cache_bbox(bbox: Any) -> dict[str, Any] | None:
+        if bbox is None:
+            return None
+        try:
+            return {
+                "west": round(float(getattr(bbox, "west")), 7),
+                "east": round(float(getattr(bbox, "east")), 7),
+                "south": round(float(getattr(bbox, "south")), 7),
+                "north": round(float(getattr(bbox, "north")), 7),
+                "crs": str(getattr(bbox, "crs", "EPSG:4326") or "EPSG:4326"),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _asf_search_cache_aoi_hash(aoi_geojson: Any) -> str:
+        if not isinstance(aoi_geojson, dict):
+            return ""
+        raw = json.dumps(aoi_geojson, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _asf_search_cache_target(
+        self,
+        *,
+        bbox: Any,
+        aoi_geojson: Any,
+        payload: dict[str, Any],
+        relative_orbit: int | None,
+        frame: int | None,
+    ) -> tuple[str, Path | None, dict[str, Any]]:
+        key_payload = {
+            "version": 1,
+            "dataset": "SENTINEL-1",
+            "bbox": self._asf_search_cache_bbox(bbox),
+            "aoi": self._asf_search_cache_aoi_hash(aoi_geojson),
+            "start": self._asf_search_cache_date(payload.get("start")),
+            "end": self._asf_search_cache_date(payload.get("end")),
+            "product_type": self._asf_search_cache_filter(payload.get("product_type") or "SLC"),
+            "beam_mode": self._asf_search_cache_filter(payload.get("beam_mode") or "IW"),
+            "polarization": self._asf_search_cache_filter(payload.get("polarization")),
+            "orbit_direction": self._asf_search_cache_filter(payload.get("orbit_direction")),
+            "relative_orbit": relative_orbit,
+            "frame": frame,
+        }
+        raw = json.dumps(key_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        root = self._asf_search_cache_root()
+        return digest, (root / f"{digest}.json" if root is not None else None), key_payload
+
+    @staticmethod
+    def _asf_search_cache_max_age_seconds() -> int:
+        return 7 * 24 * 60 * 60
+
+    def _load_asf_search_cache(
+        self,
+        cache_key: str,
+        cache_path: Path | None,
+    ) -> dict[str, Any] | None:
+        if cache_path is None or not cache_path.is_file():
+            return None
+        try:
+            from insar_prep.core.models import Scene
+
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if data.get("cache_key") != cache_key:
+                return None
+            updated_at = float(data.get("updated_at") or data.get("created_at") or 0)
+            if updated_at and time.time() - updated_at > self._asf_search_cache_max_age_seconds():
+                return None
+            scenes = [
+                Scene.model_validate(item)
+                for item in data.get("scenes", [])
+                if isinstance(item, dict)
+            ]
+            if not scenes:
+                return None
+            return {
+                "scenes": _sort_scenes_by_acquisition_date(scenes),
+                "total_count": data.get("total_count"),
+                "source": data.get("source") or "ASF",
+                "complete": bool(data.get("complete")),
+                "created_at": data.get("created_at"),
+                "updated_at": data.get("updated_at"),
+                "path": str(cache_path),
+            }
+        except Exception as exc:  # noqa: BLE001
+            self._activity.add(f"ASF 检索缓存读取失败，已忽略：{exc}", kind="warning")
+            return None
+
+    @staticmethod
+    def _cached_asf_scenes_for_limit(
+        entry: dict[str, Any] | None,
+        requested_limit: int | None,
+    ) -> list[Any] | None:
+        if entry is None:
+            return None
+        scenes = list(entry.get("scenes") or [])
+        if not scenes:
+            return None
+        if requested_limit is None:
+            return scenes if bool(entry.get("complete")) else None
+        if len(scenes) < requested_limit:
+            return None
+        return scenes[:requested_limit]
+
+    def _write_asf_search_cache(
+        self,
+        *,
+        cache_key: str,
+        cache_path: Path | None,
+        key_payload: dict[str, Any],
+        scenes: list[Any],
+        stats: dict[str, Any],
+        existing: dict[str, Any] | None = None,
+    ) -> None:
+        if cache_path is None or not scenes:
+            return
+        if str(stats.get("source") or "ASF").upper() not in {"ASF", "ASF_BATCH"}:
+            return
+        try:
+            from insar_prep.providers.asf.scene_parser import deduplicate_scenes
+
+            previous = list(existing.get("scenes") or []) if existing else []
+            merged, _ = deduplicate_scenes([*previous, *scenes])
+            merged = _sort_scenes_by_acquisition_date(merged)
+            total_count = stats.get("total_count")
+            try:
+                total_int = int(total_count) if total_count is not None else None
+            except (TypeError, ValueError):
+                total_int = None
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            now = int(time.time())
+            created_at = existing.get("created_at") if existing else None
+            payload = {
+                "version": 1,
+                "cache_key": cache_key,
+                "query": key_payload,
+                "source": "ASF",
+                "created_at": created_at or now,
+                "updated_at": now,
+                "total_count": total_int,
+                "complete": bool(total_int is not None and len(merged) >= total_int),
+                "scenes": [scene.model_dump(mode="json") for scene in merged],
+            }
+            cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            self._activity.add(f"ASF 检索缓存写入失败，已跳过：{exc}", kind="warning")
+
     def _default_workspace_root(self) -> Path:
         """Return the low-friction workspace root used for direct AOI/SAR actions."""
         return Path("C:/InSAR/projects")
@@ -776,11 +1057,15 @@ class Api:
         if not cleaned:
             return
         next_item = cleaned[0]
-        next_key = _download_archive_identity(next_item)
-        if next_key in self._deleted_archive_keys:
+        next_keys = _download_archive_identity_candidates(next_item)
+        if next_keys & self._deleted_archive_keys:
             return
         previous = next(
-            (old for old in self._download_archive if _download_archive_identity(old) == next_key),
+            (
+                old
+                for old in self._download_archive
+                if _download_archive_identity_candidates(old) & next_keys
+            ),
             None,
         )
         if previous is not None:
@@ -794,7 +1079,11 @@ class Api:
                 next_item["ts"] = previous.get("ts") or next_item["ts"]
         self._download_archive = _dedupe_download_archive([
             next_item,
-            *(old for old in self._download_archive if _download_archive_identity(old) != next_key),
+            *(
+                old
+                for old in self._download_archive
+                if not (_download_archive_identity_candidates(old) & next_keys)
+            ),
         ])
         self._save_state()
 
@@ -814,7 +1103,18 @@ class Api:
             ]
         )
         if cleaned:
-            self._deleted_archive_keys.discard(_download_archive_identity(cleaned[0]))
+            keys = _download_archive_identity_candidates(cleaned[0])
+            stable_path = _normalise_download_archive_path(output_dir)
+            stable_prefixes = {f"{kind}:{stable_path}"} if stable_path else set()
+            self._deleted_archive_keys.difference_update(keys)
+            for prefix in stable_prefixes:
+                self._deleted_archive_keys = {
+                    key
+                    for key in self._deleted_archive_keys
+                    if key != prefix
+                    and not key.startswith(f"{prefix}:")
+                    and not key.startswith(f"{prefix}\\")
+                }
 
     def _archive_asf_status(self, status: dict[str, Any]) -> None:
         state = str(status.get("state") or "")
@@ -893,6 +1193,39 @@ class Api:
             }
         )
 
+    def _archive_dem_status(self, status: dict[str, Any]) -> None:
+        state = str(status.get("state") or "")
+        if bool(status.get("cancelled")):
+            state = "cancelled"
+        if state not in {"running", "finished", "failed", "cancelled", "interrupted"}:
+            return
+        output_dir = str(status.get("output_dir") or "").strip()
+        dataset = str(status.get("dataset") or "DEM").strip()
+        detail = (
+            str(status.get("error") or "")
+            or str(status.get("summary_line") or "")
+            or f"正在下载：{dataset}"
+        )
+        logs = [
+            _format_status_log_entry(entry)
+            for entry in (status.get("log") or [])
+            if isinstance(entry, dict) and entry.get("detail")
+        ]
+        self._upsert_download_archive_item(
+            {
+                "id": f"dem:{output_dir or status.get('results_path') or dataset}:{int(status.get('total') or 1)}:{dataset}",
+                "name": "DEM 下载并转换椭球高" if bool(status.get("convert")) else "DEM 下载",
+                "status": state,
+                "detail": detail,
+                "ts": int(time.time() * 1000),
+                "kind": "dem",
+                "output_dir": output_dir,
+                "total": int(status.get("total") or 1),
+                "concurrency": 1,
+                "logs": logs,
+            }
+        )
+
     def save_download_archive(self, items: list[dict[str, Any]] | None = None) -> dict:
         """Persist the UI download/task history."""
         incoming = _filter_deleted_download_archive(
@@ -919,9 +1252,12 @@ class Api:
         key = _download_archive_identity(cleaned[0])
         if not key:
             return _error_msg("Missing download history item identity", "GUI003")
-        self._deleted_archive_keys.add(key)
+        keys = _download_archive_identity_candidates(cleaned[0])
+        self._deleted_archive_keys.update(keys)
         self._download_archive = [
-            row for row in self._download_archive if _download_archive_identity(row) != key
+            row
+            for row in self._download_archive
+            if not (_download_archive_identity_candidates(row) & keys)
         ]
         self._save_state()
         return self.get_download_archive()
@@ -1381,19 +1717,38 @@ class Api:
             return _missing_dep("窗口最小化", exc)
         return {"ok": True}
 
-    def window_toggle_maximize(self) -> dict:
+    def window_toggle_maximize(self, work_area: dict | None = None) -> dict:
         """Toggle maximize/restore for the frameless desktop window."""
         try:
             import webview  # noqa: PLC0415
+            from webview.window import FixPoint  # noqa: PLC0415
 
             window = webview.active_window()
             if window is None:
                 return _error_msg("无可用窗口", "GUI000")
             if self._window_maximized:
-                window.restore()
+                bounds = self._window_restore_bounds
+                if bounds is not None:
+                    window.move(int(bounds["x"]), int(bounds["y"]))
+                    window.resize(int(bounds["width"]), int(bounds["height"]), FixPoint.NORTH | FixPoint.WEST)
+                else:
+                    window.restore()
                 self._window_maximized = False
+                self._window_restore_bounds = None
             else:
-                window.maximize()
+                self._window_restore_bounds = {
+                    "x": int(window.x),
+                    "y": int(window.y),
+                    "width": int(window.width),
+                    "height": int(window.height),
+                }
+                target_area = self._normalise_window_work_area(work_area) or self._windows_work_area()
+                if target_area is None:
+                    window.maximize()
+                else:
+                    left, top, width, height = target_area
+                    window.move(left, top)
+                    window.resize(width, height, FixPoint.NORTH | FixPoint.WEST)
                 self._window_maximized = True
         except Exception as exc:  # noqa: BLE001
             return _missing_dep("窗口最大化", exc)
@@ -1420,17 +1775,25 @@ class Api:
         self._shutdown_started = True
         errors: list[str] = []
         try:
-            self._archive_asf_status(self._asf_download.get_status())
+            asf_before = self._asf_download.get_status()
+            self._archive_asf_status(asf_before)
             self._asf_download.shutdown()
-            self._archive_asf_status(self._asf_download.get_status())
+            self._archive_asf_status(asf_before if asf_before.get("state") == "paused" else self._asf_download.get_status())
         except Exception as exc:  # noqa: BLE001
             errors.append(f"ASF 下载收尾失败：{exc}")
         try:
-            self._archive_orbit_status(self._orbit_download.get_status())
+            orbit_before = self._orbit_download.get_status()
+            self._archive_orbit_status(orbit_before)
             self._orbit_download.shutdown()
-            self._archive_orbit_status(self._orbit_download.get_status())
+            self._archive_orbit_status(orbit_before if orbit_before.get("state") == "paused" else self._orbit_download.get_status())
         except Exception as exc:  # noqa: BLE001
             errors.append(f"轨道下载收尾失败：{exc}")
+        try:
+            self._archive_dem_status(self._dem_download.get_status())
+            self._dem_download.shutdown()
+            self._archive_dem_status(self._dem_download.get_status())
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"DEM 下载收尾失败：{exc}")
         try:
             self._save_state()
         except Exception as exc:  # noqa: BLE001
@@ -1601,7 +1964,7 @@ class Api:
         if opentopo_demtype(name) is None:
             return _error_msg(
                 "USER_LOCAL 是本地 DEM 转换来源，不能通过 OpenTopography 在线下载；"
-                "请选择 COP30、SRTM、AW3D30 等在线 DEM，或使用“本地 DEM 转换”。",
+                "请选择 COP30、COP90、SRTM 或 AW3D30 椭球版，或使用“本地 DEM 转换”。",
                 "DEM001",
             )
         self._dem_dataset = name
@@ -1940,6 +2303,20 @@ class Api:
             str(province or "").strip(),
             str(query or "").strip(),
         ]
+        if _is_national_admin_request(
+            province=str(province or ""),
+            city=str(city or ""),
+            district=str(district or ""),
+            query=str(query or ""),
+        ):
+            self._act("行政边界搜索：全国（内置范围）", kind="aoi")
+            return {
+                "ok": True,
+                "query": "全国",
+                "provider": "builtin",
+                "results": [_builtin_china_boundary()],
+                "warning": "全国范围使用内置省级边界合成预览；正式项目建议上传权威国界面文件。",
+            }
         terms = [term for term in terms if term and term not in {"全部", "不限"}]
         search_text = " ".join(dict.fromkeys(terms)).strip()
         if not search_text:
@@ -2217,7 +2594,7 @@ class Api:
         self._orbit_candidate_scenes = unique
         return {
             "ok": True,
-            "scenes": [_scene_row(s) for s in unique],
+            "scenes": [_scene_row(s) for s in _sort_scenes_by_acquisition_date(unique)],
             "duplicates": dups,
             "errors": [],
         }
@@ -2264,7 +2641,7 @@ class Api:
         self._orbit_candidate_scenes = unique
         return {
             "ok": True,
-            "scenes": [_scene_row(s) for s in unique],
+            "scenes": [_scene_row(s) for s in _sort_scenes_by_acquisition_date(unique)],
             "duplicates": dups,
             "errors": errors,
         }
@@ -2281,7 +2658,7 @@ class Api:
         scenes, _, _ = self._active_scene_context()
         return {
             "ok": True,
-            "scenes": [_scene_row(s) for s in scenes],
+            "scenes": [_scene_row(s) for s in _sort_scenes_by_acquisition_date(scenes)],
             "duplicates": [],
             "errors": [],
         }
@@ -2289,6 +2666,12 @@ class Api:
     def get_metadata_status(self) -> dict:
         """Return current ASF metadata/search progress."""
         return {"ok": True, **self._metadata_status}
+
+    def cancel_asf_search(self) -> dict:
+        """Request cancellation for the active ASF metadata search."""
+        self._asf_search_cancel.set()
+        self._set_metadata_status("cancelled", 0, 1, "ASF 检索已请求停止")
+        return {"ok": True, "cancelled": True}
 
     def clear_scenes(self) -> dict:
         """Clear imported/searched Sentinel-1 scenes from the active context."""
@@ -2378,8 +2761,47 @@ class Api:
             return int(float(str(value).strip()))
 
         try:
+            self._asf_search_cancel.clear()
             self._set_metadata_status("running", 0, 1, "正在准备 ASF 检索")
             search_stats: dict[str, Any] = {}
+            explicit_limit = _optional_int("max_results")
+            relative_orbit = _optional_int("relative_orbit")
+            frame = _optional_int("frame")
+            cache_key, cache_path, cache_query = self._asf_search_cache_target(
+                bbox=bbox,
+                aoi_geojson=aoi_geojson,
+                payload=payload,
+                relative_orbit=relative_orbit,
+                frame=frame,
+            )
+            cache_entry = self._load_asf_search_cache(cache_key, cache_path)
+            cached_scenes = self._cached_asf_scenes_for_limit(cache_entry, explicit_limit)
+            if cached_scenes is not None:
+                scenes = cached_scenes
+                stored, label = self._store_imported_scenes(scenes)
+                cached_total = cache_entry.get("total_count") if cache_entry else None
+                self._set_metadata_status("finished", 1, 1, f"已从本地缓存读取 ASF 检索结果：{len(stored)} 景")
+                self._act(f"ASF 检索缓存导入 {len(stored)} 景 → {label}", kind="scenes")
+                return {
+                    "ok": True,
+                    "scenes": [_scene_row(s) for s in stored],
+                    "duplicates": [],
+                    "errors": [],
+                    "queried": len(scenes),
+                    "search": {
+                        "requested_limit": explicit_limit,
+                        "query_limit": len(cache_entry.get("scenes") or []) if cache_entry else len(scenes),
+                        "total_count": cached_total,
+                        "returned_count": len(stored),
+                        "source": "ASF_CACHE",
+                    },
+                    "cache": {
+                        "hit": True,
+                        "key": cache_key,
+                        "count": len(cache_entry.get("scenes") or []) if cache_entry else len(scenes),
+                        "path": cache_entry.get("path") if cache_entry else "",
+                    },
+                }
             scenes = search_scenes_from_asf(
                 bbox=bbox,
                 aoi_geojson=aoi_geojson,
@@ -2389,15 +2811,31 @@ class Api:
                 beam_mode=str(payload.get("beam_mode") or "IW"),
                 polarization=str(payload.get("polarization") or ""),
                 orbit_direction=str(payload.get("orbit_direction") or ""),
-                relative_orbit=_optional_int("relative_orbit"),
-                frame=_optional_int("frame"),
-                max_results=_optional_int("max_results") or 50,
+                relative_orbit=relative_orbit,
+                frame=frame,
+                max_results=explicit_limit,
                 progress=lambda done, total, msg: self._set_metadata_status("running", done, total, msg),
                 stats=search_stats,
+                cancelled=lambda: self._asf_search_cancel.is_set(),
+                allow_cmr_fallback=True,
+            )
+            if self._asf_search_cancel.is_set():
+                self._set_metadata_status("cancelled", 0, 1, "ASF 检索已停止")
+                return {"ok": False, "cancelled": True, "error": "ASF 检索已停止", "code": "DL001"}
+            self._write_asf_search_cache(
+                cache_key=cache_key,
+                cache_path=cache_path,
+                key_payload=cache_query,
+                scenes=scenes,
+                stats=search_stats,
+                existing=cache_entry,
             )
             stored, label = self._store_imported_scenes(scenes)
             self._set_metadata_status("finished", 1, 1, "ASF 检索与元数据解析完成")
         except InsarPrepError as exc:
+            if getattr(exc, "code", None) and str(getattr(exc, "code")) == "DL001":
+                self._set_metadata_status("cancelled", 0, 1, "ASF 检索已停止")
+                return {"ok": False, "cancelled": True, "error": "ASF 检索已停止", "code": "DL001"}
             self._set_metadata_status("failed", 0, 1, str(exc))
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
@@ -2417,6 +2855,12 @@ class Api:
                 "total_count": search_stats.get("total_count"),
                 "returned_count": len(stored),
                 "source": search_stats.get("source") or "ASF",
+            },
+            "cache": {
+                "hit": False,
+                "key": cache_key,
+                "count": len(scenes),
+                "path": str(cache_path) if cache_path is not None else "",
             },
         }
 
@@ -2518,7 +2962,12 @@ class Api:
             "report": _dump(report),
         }
 
-    def start_orbit_download(self, output_dir: str = "", scene_ids: list[str] | None = None) -> dict:
+    def start_orbit_download(
+        self,
+        output_dir: str = "",
+        scene_ids: list[str] | None = None,
+        max_concurrent: int = 10,
+    ) -> dict:
         """Start POEORB companion downloads in the background."""
         scenes, label = self._orbit_scene_context(scene_ids)
         if not scenes:
@@ -2531,7 +2980,12 @@ class Api:
             "orbit",
             str(Path(out) / "Sentinel_Orbit" / "AUX_POEORB"),
         )
-        result = self._orbit_download.start(scenes, out, activity=self._activity)
+        result = self._orbit_download.start(
+            scenes,
+            out,
+            max_concurrent=max_concurrent,
+            activity=self._activity,
+        )
         self._archive_orbit_status(self._orbit_download.get_status())
         return result
 
@@ -2702,7 +3156,7 @@ class Api:
     def append_asf_download(
         self,
         output_dir: str = "",
-        max_extra_workers: int = 1,
+        max_extra_workers: int = 0,
         scene_ids: list[str] | None = None,
     ) -> dict:
         """Append selected ASF scenes to the currently running/paused download."""
@@ -2718,7 +3172,7 @@ class Api:
         result = self._asf_download.append(
             scenes,
             out,
-            max_extra_workers=max(1, min(int(max_extra_workers or 1), 8)),
+            max_extra_workers=max(0, min(int(max_extra_workers or 0), 8)),
         )
         if result.get("ok"):
             self._act(
@@ -2945,6 +3399,106 @@ class Api:
         if not bool(convert):
             return self._run_dem_download_plan(plan, output_dir, key_source)
         return self._run_dem_download_and_conversion_plan(plan, output_dir, key_source)
+
+    def start_dem_download(
+        self,
+        output_dir: str = "",
+        dataset: str = "COP30",
+        key_source: str = "auto",
+        convert: bool = True,
+    ) -> dict:
+        """Start the current region's DEM download in a cancellable background job."""
+        region = self._state.current_region()
+        if region is None:
+            return _error_msg("请先创建或选择区域，或使用独立 bbox 下载 DEM", "GUI002")
+        if region.aoi is None or region.aoi.bbox is None:
+            return _error_msg("请先在『区域 AOI』设置处理范围（bbox）", "AOI001")
+        dataset = _normalise_downloadable_dem_dataset(dataset, fallback="")
+        if not dataset:
+            return _error_msg(
+                "当前选择的是本地 DEM 来源，不能执行在线下载；请选择一个 OpenTopography 数据集，"
+                "或在“本地 DEM 转换”中选择已有 DEM 文件。",
+                "DEM001",
+            )
+        out = output_dir.strip() or self._default_output()
+        if not out:
+            return _error_msg("请指定 DEM 下载输出根目录", "GUI003")
+        try:
+            plan, _ = self._create_dem_request_plan(
+                region_id=region.region_id,
+                region_safe_name=region.region_safe_name,
+                processing_aoi=region.aoi,
+                output_dir=out,
+                dataset=dataset,
+            )
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(_format_validation(exc), "DEM004")
+        self._act(f"开始 DEM 下载：{dataset}", kind="download")
+        return self._dem_download.start(
+            plan,
+            out,
+            key_source=key_source,
+            convert=bool(convert),
+            activity=self._activity,
+        )
+
+    def start_dem_download_bbox(
+        self,
+        west: float,
+        east: float,
+        south: float,
+        north: float,
+        output_dir: str = "",
+        dataset: str = "COP30",
+        key_source: str = "auto",
+        convert: bool = True,
+    ) -> dict:
+        """Start a standalone bbox DEM download in a cancellable background job."""
+        dataset = _normalise_downloadable_dem_dataset(dataset, fallback="")
+        if not dataset:
+            return _error_msg(
+                "当前选择的是本地 DEM 来源，不能执行在线下载；请选择一个 OpenTopography 数据集，"
+                "或在“本地 DEM 转换”中选择已有 DEM 文件。",
+                "DEM001",
+            )
+        out = output_dir.strip() or self._default_output()
+        if not out:
+            return _error_msg("请指定 DEM 下载输出根目录", "GUI003")
+        try:
+            from insar_prep.processing.aoi import make_processing_aoi_from_bbox
+
+            aoi = make_processing_aoi_from_bbox(
+                float(west), float(east), float(south), float(north)
+            )
+            plan, _ = self._create_dem_request_plan(
+                region_id="standalone_dem",
+                region_safe_name="standalone_dem",
+                processing_aoi=aoi,
+                output_dir=out,
+                dataset=dataset,
+            )
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(_format_validation(exc), "DEM004")
+        self._act(f"开始独立 DEM 下载：{dataset}", kind="download")
+        return self._dem_download.start(
+            plan,
+            out,
+            key_source=key_source,
+            convert=bool(convert),
+            activity=self._activity,
+        )
+
+    def stop_dem_download(self) -> dict:
+        """Request cancellation for the active DEM download."""
+        return self._dem_download.stop()
+
+    def get_dem_download_status(self) -> dict:
+        """Return current background DEM download status."""
+        return self._dem_download.get_status()
 
     def run_dem_conversion(self, output_dir: str = "") -> dict:
         """Run DEM vertical-datum conversion for the current region."""
@@ -3720,6 +4274,7 @@ class Api:
 
     def _store_imported_scenes(self, scenes: list[Any]) -> tuple[list[Any], str]:
         """Attach imported scenes to the current region, or keep them standalone."""
+        scenes = _sort_scenes_by_acquisition_date(scenes)
         region = self._state.current_region()
         if region is None:
             self._standalone_scenes = scenes
@@ -3791,6 +4346,7 @@ class Api:
         """Run one DEM download plan and return a JSON-safe summary."""
         try:
             from insar_prep.providers.dem.credentials import DemKeySource
+            from insar_prep.providers.dem.downloader import opentopo_demtype
             from insar_prep.providers.dem.download_runner import run_dem_download
 
             source = DemKeySource((key_source or "auto").strip().lower())
@@ -3799,6 +4355,13 @@ class Api:
         out = output_dir.strip() or self._default_output()
         if not out:
             return _error_msg("请指定 DEM 下载输出根目录", "GUI003")
+        dataset = str(getattr(plan, "dataset", "") or "").strip().upper()
+        if not dataset or opentopo_demtype(dataset) is None:
+            return _error_msg(
+                f"{dataset or '当前 DEM 来源'} 不能通过 OpenTopography 在线下载；"
+                "如需处理已有 DEM，请使用“本地 DEM 转换”选择本机 tif/img/vrt 文件。",
+                "DEM001",
+            )
         try:
             logs = [_ui_log(f"开始 DEM 下载：{getattr(plan, 'dataset', '')} → {out}")]
             summary = run_dem_download([plan], out, key_source=source)
@@ -3823,8 +4386,8 @@ class Api:
             "results": [_dump(result) for result in summary.results],
             "logs": logs,
             "raw_dem_path": str(getattr(plan, "raw_dem_path", "")),
-            "ellipsoid_dem_path": str(getattr(plan, "ellipsoid_dem_path", "")),
-            "sarscape_ready_dem_path": str(getattr(plan, "sarscape_ready_dem_path", "")),
+            "ellipsoid_dem_path": "",
+            "sarscape_ready_dem_path": "",
         }
 
     def _run_dem_download_and_conversion_plan(
@@ -4012,8 +4575,9 @@ class Api:
 
         out = Path((output_dir or "").strip() or self._default_output() or raw_path.parent)
         dem_root = out
-        ellipsoid_path = dem_root / f"{safe}_ellipsoid.tif"
-        sarscape_path = dem_root / f"{safe}_dem"
+        output_stem = self._local_dem_output_stem(raw_path, safe)
+        ellipsoid_path = _unique_local_dem_path(dem_root / f"{output_stem}_ellipsoid.tif")
+        sarscape_path = _unique_local_dem_path(dem_root / f"{output_stem}_dem")
         request_plan = DemRequestPlan(
             region_id=region_id,
             region_safe_name=safe,
@@ -4041,13 +4605,39 @@ class Api:
         return conv_plan, report, detected
 
     @staticmethod
+    def _local_dem_output_stem(raw_path: Path, fallback: str) -> str:
+        from insar_prep.core.naming import sarscape_safe_name
+
+        stem = re.sub(r"[^A-Za-z0-9_]+", "_", raw_path.stem).strip("_")
+        if not stem:
+            try:
+                stem = sarscape_safe_name(raw_path.stem)
+            except ValueError:
+                stem = fallback or "local_dem"
+        if not stem:
+            stem = fallback or "local_dem"
+        lower = stem.lower()
+        for suffix in ("_ellipsoid", "_dem"):
+            if lower.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        return stem or fallback or "local_dem"
+
+    @staticmethod
     def _detect_local_dem_vertical_datum(path: Path, raster_info: dict) -> dict:
         """Best-effort vertical datum detection from tags and filename."""
         from insar_prep.core.enums import VerticalDatum
 
         tag_text = " ".join(str(v) for v in raster_info.get("tags", {}).values())
         text = f"{path.name} {tag_text}".upper()
-        if "WGS84_ELLIPSOID" in text or "ELLIPSOID" in text or "ELLIPSOIDAL" in text:
+        if (
+            "WGS84_ELLIPSOID" in text
+            or "ELLIPSOID" in text
+            or "ELLIPSOIDAL" in text
+            or "SRTMGL1_E" in text
+            or "AW3D30_E" in text
+            or "AW3D30M" in text
+        ):
             datum = VerticalDatum.WGS84_ELLIPSOID
             confidence = "medium"
         elif "EGM2008" in text or "EGM08" in text or "COP30" in text or "COP90" in text:
@@ -4789,7 +5379,62 @@ def _local_feature_gb(feature: dict) -> str:
 
 def _admin_value(value: str) -> str:
     text = str(value or "").strip()
-    return "" if text in {"全部", "不限"} else text
+    return "" if text in {"全部", "不限", "全国", "中国"} else text
+
+
+def _is_national_admin_request(*, province: str, city: str, district: str, query: str) -> bool:
+    province_text = str(province or "").strip()
+    query_text = str(query or "").strip()
+    city_text = _admin_value(city)
+    district_text = _admin_value(district)
+    return not city_text and not district_text and (
+        province_text in {"全部", "全国", "中国"} or query_text in {"全部", "全国", "中国"}
+    )
+
+
+def _builtin_china_boundary() -> dict:
+    provinces = _load_local_boundary_layer("province")
+    province_features = []
+    for feature in provinces:
+        geometry = feature.get("geometry") if isinstance(feature.get("geometry"), dict) else None
+        if geometry is None:
+            continue
+        province_features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "name": _local_feature_name(feature),
+                    "gb": _local_feature_gb(feature),
+                },
+                "geometry": geometry,
+            }
+        )
+    geojson = (
+        {
+            "type": "FeatureCollection",
+            "features": province_features,
+        }
+        if province_features
+        else None
+    )
+    return {
+        "label": "全国",
+        "bbox": {
+            "west": 73.5,
+            "east": 135.1,
+            "south": 18.0,
+            "north": 53.6,
+            "crs": "EPSG:4326",
+        },
+        "geojson": geojson,
+        "source": "内置全国边界" if geojson else "内置全国范围",
+        "class": "boundary",
+        "type": "administrative",
+        "osm_type": None,
+        "osm_id": "CN",
+        "city_code": "CN",
+        "admin_type": "country",
+    }
 
 
 def _name_matches(name: str, query: str) -> bool:
@@ -4853,6 +5498,8 @@ def _search_local_admin_boundaries(
     query: str,
     limit: int = 8,
 ) -> tuple[list[dict], str | None]:
+    if _is_national_admin_request(province=province, city=city, district=district, query=query):
+        return [_builtin_china_boundary()], None
     if _local_boundary_dir() is None:
         return [], "未找到本地边界目录。"
     try:
@@ -4945,7 +5592,11 @@ def _local_admin_options(*, province: str = "", city: str = "") -> dict[str, lis
         )
     ]
     county_names = sorted({_local_feature_name(feature) for feature in county_features})
-    return {"provinces": province_names, "cities": city_names, "districts": county_names}
+    return {
+        "provinces": ["全部", *province_names],
+        "cities": ["全部", *city_names],
+        "districts": ["全部", *county_names],
+    }
 
 
 def _search_tianditu_admin_boundaries(
@@ -5258,4 +5909,17 @@ def _scene_row(scene: Any) -> dict:
         "footprint_bbox": d.get("footprint_bbox"),
         "footprint_geojson": d.get("footprint_geojson"),
         "has_url": bool(d.get("url")),
+        "download_url": d.get("url") or "",
     }
+
+
+def _sort_scenes_by_acquisition_date(scenes: list[Any]) -> list[Any]:
+    """Return scenes in chronological order, with undated rows kept last."""
+    return sorted(
+        scenes,
+        key=lambda scene: (
+            getattr(scene, "acquisition_datetime", None) is None,
+            str(getattr(scene, "acquisition_datetime", "") or ""),
+            str(getattr(scene, "scene_id", "") or ""),
+        ),
+    )

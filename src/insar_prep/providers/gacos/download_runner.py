@@ -4,7 +4,7 @@ Wraps the GACOS client into two synchronous calls that the CLI and a background
 GUI worker reuse, mirroring ``asf``/``dem`` download runners:
 
 * :func:`run_gacos_request` splits a date list into <=20-date batches and submits
-  each to the GACOS web form, writing a credential-safe results CSV.
+  each to the GACOS web form, writing a credential-safe results TXT.
 * :func:`run_gacos_download` fetches the emailed result archive(s) and hands them
   to :func:`insar_prep.providers.gacos.importer.import_gacos_products` so the
   products are organized and integrity-checked in one step.
@@ -15,7 +15,6 @@ Both are offline-testable by injecting a
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -26,6 +25,7 @@ from insar_prep.core.events import EventType
 from insar_prep.core.exceptions import InputValidationError, InsarPrepError
 from insar_prep.core.logging import get_logger, log_event, mask_text
 from insar_prep.core.models import BBox
+from insar_prep.core.text_table import write_table_txt
 from insar_prep.providers.gacos.credentials import GacosEmailSource
 from insar_prep.providers.gacos.downloader import (
     GACOS_MAX_DATES_PER_REQUEST,
@@ -87,49 +87,43 @@ def _bbox_span_ok(bbox: BBox) -> bool:
 def write_gacos_request_results_csv(
     output_dir: Path | str, results: Sequence[GacosSubmitResult]
 ) -> Path:
-    """Write a credential-safe per-batch GACOS request results CSV; return its path."""
+    """Write a credential-safe per-batch GACOS request results TXT; return its path."""
     plan_dir = Path(output_dir) / GACOS_REQUEST_SUBDIR
     plan_dir.mkdir(parents=True, exist_ok=True)
-    results_path = plan_dir / "gacos_request_results.csv"
-    with results_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=GACOS_REQUEST_RESULT_COLUMNS)
-        writer.writeheader()
-        for result in results:
-            writer.writerow(
-                {
-                    "region_safe_name": result.region_safe_name,
-                    "batch_index": result.batch_index,
-                    "batch_count": result.batch_count,
-                    "date_count": result.date_count,
-                    "outcome": result.outcome.value,
-                    "error_code": result.error_code or "",
-                    "message": mask_text(result.message),
-                }
-            )
-    return results_path
+    results_path = plan_dir / "gacos_request_results.txt"
+    rows = [
+        {
+            "region_safe_name": result.region_safe_name,
+            "batch_index": result.batch_index,
+            "batch_count": result.batch_count,
+            "date_count": result.date_count,
+            "outcome": result.outcome.value,
+            "error_code": result.error_code or "",
+            "message": mask_text(result.message),
+        }
+        for result in results
+    ]
+    return write_table_txt(results_path, GACOS_REQUEST_RESULT_COLUMNS, rows)
 
 
 def write_gacos_fetch_results_csv(
     output_dir: Path | str, results: Sequence[GacosFetchResult]
 ) -> Path:
-    """Write a credential-safe per-URL GACOS fetch results CSV; return its path."""
+    """Write a credential-safe per-URL GACOS fetch results TXT; return its path."""
     plan_dir = Path(output_dir)
     plan_dir.mkdir(parents=True, exist_ok=True)
-    results_path = plan_dir / "gacos_download_results.csv"
-    with results_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=GACOS_FETCH_RESULT_COLUMNS)
-        writer.writeheader()
-        for index, result in enumerate(results, start=1):
-            writer.writerow(
-                {
-                    "index": index,
-                    "outcome": result.outcome.value,
-                    "bytes_written": result.bytes_written,
-                    "error_code": result.error_code or "",
-                    "message": mask_text(result.message),
-                }
-            )
-    return results_path
+    results_path = plan_dir / "gacos_download_results.txt"
+    rows = [
+        {
+            "index": index,
+            "outcome": result.outcome.value,
+            "bytes_written": result.bytes_written,
+            "error_code": result.error_code or "",
+            "message": mask_text(result.message),
+        }
+        for index, result in enumerate(results, start=1)
+    ]
+    return write_table_txt(results_path, GACOS_FETCH_RESULT_COLUMNS, rows)
 
 
 @dataclass(frozen=True)
@@ -222,7 +216,7 @@ def run_gacos_request(
 
     Splits the dates into batches, submits each to the GACOS web form (unless an
     explicit ``client`` is injected), writes a credential-safe
-    ``GACOS/gacos_request_results.csv`` under ``output_root``, and returns
+    ``GACOS/gacos_request_results.txt`` under ``output_root``, and returns
     a :class:`GacosRequestRunSummary`. Per-batch problems are captured as
     ``FAILED`` results (never raised); :class:`InputValidationError` is raised for
     invalid inputs (no dates, bad time-of-day, too many dates per batch).
