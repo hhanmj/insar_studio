@@ -153,6 +153,17 @@ if (-not $SkipUi) {
 }
 if (-not (Test-Path $uiDist)) { throw "ui\dist not found ($uiDist); run without -SkipUi" }
 
+$stagedEgm2008GeoidNpz = ""
+if (-not [string]::IsNullOrWhiteSpace($Egm2008GeoidNpz)) {
+    if (-not (Test-Path -LiteralPath $Egm2008GeoidNpz)) {
+        throw "EGM2008 geoid grid not found: $Egm2008GeoidNpz"
+    }
+    $egm2008Source = (Resolve-Path -LiteralPath $Egm2008GeoidNpz).Path
+    $stagedEgm2008GeoidNpz = Join-Path $env:TEMP ("insar-egm2008-" + [guid]::NewGuid().ToString("N") + ".npz")
+    Copy-Item -LiteralPath $egm2008Source -Destination $stagedEgm2008GeoidNpz -Force
+    $Egm2008GeoidNpz = $stagedEgm2008GeoidNpz
+}
+
 $boundaryDirName = "$([char]0x8FB9)$([char]0x754C)"
 $chinaName = "$([char]0x4E2D)$([char]0x56FD)"
 $provinceName = "$([char]0x7701)"
@@ -326,6 +337,9 @@ if ($SkipSelfTest) {
     Write-Host "Desktop exe self-test OK (core exercised end-to-end, exit 0)" -ForegroundColor Green
 }
 Remove-Item -Recurse -Force $boundaryStage -ErrorAction SilentlyContinue
+if ($stagedEgm2008GeoidNpz) {
+    Remove-Item -Force $stagedEgm2008GeoidNpz -ErrorAction SilentlyContinue
+}
 
 Write-Host ""
 if ($SkipSelfTest) {
