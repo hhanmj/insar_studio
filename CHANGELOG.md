@@ -2,6 +2,32 @@
 
 本项目遵循语义化版本号思路：修复问题使用补丁版本，兼容性功能使用小版本，破坏性变更使用大版本。
 
+## [2.1.7] - 2026-07-08
+
+### Added
+
+- Added startup update notification dialog with release notes, release date, asset details, and in-app update package download.
+- Added update metadata caching for release name, changelog, publication time, and downloadable assets so known updates can still be shown when the network is temporarily unavailable.
+- Added the update and componentisation plan for the transition from the current full desktop package to a smaller host app plus optional components.
+- Added frozen task snapshots for Sentinel-1 and Orbit download flows so later searches do not mutate existing download tasks.
+
+### Improved
+
+- Improved Sentinel-1 search cache rules for AOI, date, path, frame, orbit direction, beam mode, and polarisation filters.
+- Improved download task isolation: each Sentinel-1 or Orbit batch keeps its own scene snapshot and output directory.
+- Improved ASF/Sentinel-1 downloads to skip already completed files and resume partial files where possible.
+- Improved Orbit downloads to skip existing EOF files and to reuse the same snapshot-oriented download rules.
+- Improved local AOI import behaviour for administrative boundaries and uploaded vector boundaries.
+- Improved task history persistence so paused tasks survive restart and deleted history entries do not reappear.
+- Clarified that future heavy runtimes such as DEM/GDAL, GEE, Whitebox, optical imagery, and processing engines should move to optional components rather than the main exe.
+
+### Fixed
+
+- Fixed repeated interrupted history records for the same task.
+- Fixed stale download workbench state after repeated Sentinel-1 or Orbit searches.
+- Fixed SHP/CGCS2000 boundary import handling and unsupported drag-and-drop messaging.
+- Fixed several download progress and terminal-state refresh issues.
+
 ## [2.1.6] - 2026-07-05
 
 ### 新增

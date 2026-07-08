@@ -9,6 +9,7 @@ import type {
 import { DomEvent } from "leaflet";
 import {
   MapContainer,
+  CircleMarker,
   Polyline,
   Polygon,
   Popup,

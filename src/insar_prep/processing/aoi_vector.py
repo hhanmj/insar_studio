@@ -12,8 +12,9 @@ Design constraints (kept identical to the GeoJSON/WKT importer):
 * **stdlib + shapely only** -- ``struct`` parses the shapefile geometry, the
   standard-library ``xml.etree`` parses KML, and ``zipfile`` unpacks KMZ. No
   ``geopandas``/``fiona``/``pyshp``/``lxml``/GDAL and no new dependencies.
-* **EPSG:4326 lon/lat only**; no coordinate transforms. A shapefile sidecar
-  ``.prj`` is checked and a projected / non-WGS84 CRS is rejected. KML/KMZ are
+* **lon/lat only**; no coordinate transforms. A shapefile sidecar ``.prj`` is
+  checked and a projected CRS is rejected. WGS84 and geographic CGCS2000
+  (EPSG:4490) are accepted for Chinese administrative boundaries. KML/KMZ are
   WGS84 lon/lat by specification.
 * Only areal geometries (``Polygon`` / ``MultiPolygon``) are accepted; the
   Processing AOI bbox is taken from the merged geometry bounds.
@@ -226,10 +227,21 @@ def _check_shapefile_prj(shp_path: Path) -> None:
             f"(WGS84 lon/lat) is supported and no reprojection is performed: {prj_path}",
             code=ErrorCode.AOI001,
         )
-    if not any(token in normalized for token in ("WGS_1984", "WGS84", "4326", "CRS84")):
+    if not any(
+        token in normalized
+        for token in (
+            "WGS_1984",
+            "WGS84",
+            "4326",
+            "CRS84",
+            "CGCS2000",
+            "CHINA_GEODETIC_COORDINATE_SYSTEM_2000",
+            "4490",
+        )
+    ):
         raise InputValidationError(
-            f"shapefile CRS is not WGS84 lon/lat (.prj={prj_text.strip()[:80]!r}); only "
-            "EPSG:4326 is supported and no reprojection is performed",
+            f"shapefile CRS is not supported lon/lat (.prj={prj_text.strip()[:80]!r}); only "
+            "EPSG:4326/WGS84 or geographic CGCS2000 is supported and no reprojection is performed",
             code=ErrorCode.AOI001,
         )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
@@ -130,6 +131,21 @@ def _asf_polarization_param(value: str | None) -> str | None:
     if not pol:
         return None
     return _ASF_POLARIZATION_QUERY.get(pol, pol)
+
+
+def _asf_int_filter(value: int | str | None, *, name: str) -> str | None:
+    """Return an ASF integer filter supporting single values, ranges and lists."""
+    if value is None:
+        return None
+    text = str(value).strip().replace(" ", "")
+    if not text:
+        return None
+    if not re.fullmatch(r"\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*", text):
+        raise InputValidationError(
+            f"ASF {name} 参数必须是整数、整数区间或逗号列表，例如 42 或 42-48",
+            code=ErrorCode.ASF002,
+        )
+    return text
 
 
 def _scene_matches_filters(
@@ -1123,8 +1139,8 @@ def search_scenes_from_asf(
     beam_mode: str = "IW",
     polarization: str = "",
     orbit_direction: str = "",
-    relative_orbit: int | None = None,
-    frame: int | None = None,
+    relative_orbit: int | str | None = None,
+    frame: int | str | None = None,
     max_results: int | None = 50,
     progress: ProgressCallback | None = None,
     stats: dict[str, Any] | None = None,
@@ -1181,10 +1197,12 @@ def search_scenes_from_asf(
     direction_param = direction_values[0] if len(direction_values) == 1 else ""
     if direction_param:
         params["flightDirection"] = direction_param
-    if relative_orbit is not None:
-        params["relativeOrbit"] = str(int(relative_orbit))
-    if frame is not None:
-        params["frame"] = str(int(frame))
+    relative_orbit_param = _asf_int_filter(relative_orbit, name="Path")
+    frame_param = _asf_int_filter(frame, name="Frame")
+    if relative_orbit_param:
+        params["relativeOrbit"] = relative_orbit_param
+    if frame_param:
+        params["frame"] = frame_param
 
     _raise_if_cancelled(cancelled)
     total_count = _get_asf_count(params) if (progress is not None or stats is not None) else None

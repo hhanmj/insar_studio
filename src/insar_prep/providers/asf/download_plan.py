@@ -135,16 +135,48 @@ def _expected_filename(scene: Scene) -> str:
     return f"{scene.scene_id}{_SLC_EXTENSION}"
 
 
-def _product_subdir(scene: Scene) -> str:
-    product = str(getattr(scene.product_type, "value", scene.product_type)).lower()
-    if product == "slc":
-        return SLC_SUBDIR
-    return f"{SAR_DATA_SUBDIR}/{product.upper()}"
+def _product_subdir_for_value(
+    product_value: object,
+    *,
+    use_product_subdirs: bool = True,
+    product_subdir_root: str = SAR_DATA_SUBDIR,
+) -> str:
+    if not use_product_subdirs:
+        return ""
+    product = str(getattr(product_value, "value", product_value) or "SLC").lower()
+    product_dir = "SLC" if product == "slc" else product.upper()
+    root = str(product_subdir_root or "").strip().strip("/\\")
+    return f"{root}/{product_dir}" if root else product_dir
 
 
-def _planned_path(output_dir: Path, scene: Scene, expected_filename: str) -> Path:
+def _product_subdir(
+    scene: Scene,
+    *,
+    use_product_subdirs: bool = True,
+    product_subdir_root: str = SAR_DATA_SUBDIR,
+) -> str:
+    return _product_subdir_for_value(
+        scene.product_type,
+        use_product_subdirs=use_product_subdirs,
+        product_subdir_root=product_subdir_root,
+    )
+
+
+def _planned_path(
+    output_dir: Path,
+    scene: Scene,
+    expected_filename: str,
+    *,
+    use_product_subdirs: bool = True,
+    product_subdir_root: str = SAR_DATA_SUBDIR,
+) -> Path:
     """Return the *intended* local product path (the file is never created here)."""
-    return output_dir / _product_subdir(scene) / expected_filename
+    subdir = _product_subdir(
+        scene,
+        use_product_subdirs=use_product_subdirs,
+        product_subdir_root=product_subdir_root,
+    )
+    return output_dir / subdir / expected_filename if subdir else output_dir / expected_filename
 
 
 def _acquisition_text(scene: Scene) -> str:
@@ -153,7 +185,13 @@ def _acquisition_text(scene: Scene) -> str:
     return scene.acquisition_datetime.isoformat()
 
 
-def _plan_item(scene: Scene, output_dir: Path) -> AsfDownloadPlanItem:
+def _plan_item(
+    scene: Scene,
+    output_dir: Path,
+    *,
+    use_product_subdirs: bool = True,
+    product_subdir_root: str = SAR_DATA_SUBDIR,
+) -> AsfDownloadPlanItem:
     expected = _expected_filename(scene)
     has_url = bool(scene.url)
     if has_url:
@@ -171,7 +209,15 @@ def _plan_item(scene: Scene, output_dir: Path) -> AsfDownloadPlanItem:
         polarization=scene.polarization.value,
         url_status="present" if has_url else "missing",
         expected_filename=expected,
-        planned_path=str(_planned_path(output_dir, scene, expected)),
+        planned_path=str(
+            _planned_path(
+                output_dir,
+                scene,
+                expected,
+                use_product_subdirs=use_product_subdirs,
+                product_subdir_root=product_subdir_root,
+            )
+        ),
         status=status,
         credential_required=True,
         notes=notes,
@@ -184,16 +230,31 @@ def build_asf_download_plan(
     output_dir: Path | str,
     source_cart: Path | str = "",
     region_safe_name: str = "",
+    use_product_subdirs: bool = True,
+    product_subdir_root: str = SAR_DATA_SUBDIR,
 ) -> AsfDownloadPlan:
     """Build an offline ASF download plan from parsed scenes (no network)."""
     out_dir = Path(output_dir)
-    items = [_plan_item(scene, out_dir) for scene in scenes]
+    items = [
+        _plan_item(
+            scene,
+            out_dir,
+            use_product_subdirs=use_product_subdirs,
+            product_subdir_root=product_subdir_root,
+        )
+        for scene in scenes
+    ]
     planned = sum(1 for item in items if item.status is AsfPlanStatus.PLANNED)
     missing = sum(1 for item in items if item.status is AsfPlanStatus.MISSING_URL)
+    slc_subdir = _product_subdir_for_value(
+        "SLC",
+        use_product_subdirs=use_product_subdirs,
+        product_subdir_root=product_subdir_root,
+    )
     plan = AsfDownloadPlan(
         source_cart=str(source_cart),
         output_directory=str(out_dir),
-        slc_directory=str(out_dir / SLC_SUBDIR),
+        slc_directory=str(out_dir / slc_subdir if slc_subdir else out_dir),
         region_safe_name=region_safe_name,
         scene_count=len(items),
         planned_count=planned,

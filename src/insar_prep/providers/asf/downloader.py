@@ -799,15 +799,20 @@ def download_requests_from_scenes(
     scenes: Iterable[object],
     *,
     slc_dir: Path,
+    use_product_subdirs: bool = True,
+    product_subdir_base: Path | None = None,
 ) -> list[DownloadRequest]:
     """Build :class:`DownloadRequest` objects for scenes that have a URL.
 
     The destination mirrors the dry-run planner's product-aware layout:
     SLC -> ``SAR_Data/SLC``, GRD -> ``SAR_Data/GRD``, RAW -> ``SAR_Data/RAW``
-    and OCN -> ``SAR_Data/OCN``.
+    and OCN -> ``SAR_Data/OCN``. Desktop callers may set
+    ``use_product_subdirs=False`` to download directly into ``slc_dir``.
     Scenes without a URL are skipped (they cannot be fetched).
     """
     requests_out: list[DownloadRequest] = []
+    slc_path = Path(slc_dir)
+    base_dir = Path(product_subdir_base) if product_subdir_base is not None else None
     for scene in scenes:
         url = getattr(scene, "url", None)
         scene_id = getattr(scene, "scene_id", "")
@@ -815,9 +820,13 @@ def download_requests_from_scenes(
             continue
         expected_filename = f"{scene_id}.zip"
         product = str(getattr(getattr(scene, "product_type", ""), "value", "") or "").lower()
-        destination_dir = slc_dir
-        if product and product != "slc":
-            destination_dir = slc_dir.parent / product.upper()
+        destination_dir = slc_path
+        if use_product_subdirs:
+            if base_dir is not None:
+                product_dir = "SLC" if not product or product == "slc" else product.upper()
+                destination_dir = base_dir / product_dir
+            elif product and product != "slc":
+                destination_dir = slc_path.parent / product.upper()
         requests_out.append(
             DownloadRequest(
                 scene_id=scene_id,

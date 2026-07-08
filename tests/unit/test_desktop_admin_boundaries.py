@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import base64
+import io
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +12,19 @@ from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import CredentialError
 from insar_prep.desktop.api import Api
 from insar_prep.providers.asf.downloader import DownloadOutcome, DownloadResult
+
+
+_DRAG_KML_COORDS = "110.1,30.8,0 110.6,30.8,0 110.6,31.2,0 110.1,31.2,0 110.1,30.8,0"
+
+
+def _drag_kml_text(name: str = "AOI001") -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+        f"<Placemark><name>{name}</name><Polygon>"
+        f"<outerBoundaryIs><LinearRing><coordinates>{_DRAG_KML_COORDS}</coordinates>"
+        "</LinearRing></outerBoundaryIs></Polygon></Placemark></Document></kml>"
+    )
 
 
 def test_local_admin_options_include_city_and_county() -> None:
@@ -52,6 +68,51 @@ def test_aoi_bind_auto_creates_default_region(tmp_path: Path, monkeypatch) -> No
     assert context["region"]["has_aoi"] is True
     assert context["region"]["bbox"]["west"] == 109.0
     assert not default_root.exists()
+
+
+def test_dragged_kml_content_can_preview_and_bind_aoi(tmp_path: Path) -> None:
+    api = Api()
+    api._state_path = tmp_path / "desktop_state.json"
+
+    preview = api.preview_aoi_file_content("boundary.kml", _drag_kml_text("AOI001"))
+
+    assert preview["ok"] is True
+    assert preview["source_kind"] == "content"
+    assert preview["total_features"] == 1
+    assert preview["geojson"]["type"] == "FeatureCollection"
+    assert preview["features"][0]["name"] == "AOI001"
+
+    bound = api.set_region_aoi_geojson_features(preview["geojson"], ["0"], "name", "merge")
+
+    assert bound["ok"] is True
+    assert bound["aoi"]["bbox"]["west"] == 110.1
+    assert bound["aoi"]["bbox"]["east"] == 110.6
+
+
+def test_dragged_kmz_bytes_can_preview_aoi() -> None:
+    api = Api()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("doc.kml", _drag_kml_text("KMZ AOI"))
+    payload = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    preview = api.preview_aoi_file_bytes("boundary.kmz", payload)
+
+    assert preview["ok"] is True
+    assert preview["source_kind"] == "content"
+    assert preview["total_features"] == 1
+    assert preview["features"][0]["name"] == "KMZ AOI"
+
+
+def test_dragged_shp_bytes_reports_sidecar_hint_instead_of_guessing() -> None:
+    api = Api()
+    payload = base64.b64encode(b"not enough shapefile sidecar data").decode("ascii")
+
+    preview = api.preview_aoi_file_bytes("sichuan.shp", payload)
+
+    assert preview["ok"] is False
+    assert "上传本地边界" in preview["error"]
+    assert ".dbf" in preview["error"]
 
 
 def test_dem_download_plan_rejects_user_local_with_actionable_message(tmp_path: Path) -> None:

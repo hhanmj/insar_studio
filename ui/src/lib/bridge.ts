@@ -27,6 +27,9 @@ export type UpdateInfo = {
   download_url?: string;
   asset_name?: string;
   asset_size?: number;
+  release_name?: string;
+  changelog?: string;
+  published_at?: string;
   online_update_supported?: boolean;
   install_mode?: "manual" | "download" | "installer" | string;
   message?: string;
@@ -178,11 +181,16 @@ export type DownloadArchiveItem = {
   output_dir?: string;
   total?: number;
   concurrency?: number;
+  use_product_subdirs?: boolean;
+  use_orbit_subdir?: boolean;
+  download_layout?: string;
   logs?: string[];
 };
 export type DownloadArchiveResult = { ok: true; items: DownloadArchiveItem[] };
 export type DownloadStatus = {
   ok: true;
+  task_id?: string;
+  name?: string;
   state: string;
   total: number;
   done: number;
@@ -207,6 +215,8 @@ export type DownloadStatus = {
   summary_line: string;
   results_path: string;
   output_dir?: string;
+  use_product_subdirs?: boolean;
+  download_layout?: string;
   succeeded?: number;
   skipped?: number;
   failed?: number;
@@ -217,6 +227,8 @@ export type DownloadStatus = {
   resume_hint?: string;
   retry_supported?: boolean;
   retry_hint?: string;
+  active_task_count?: number;
+  asf_tasks?: DownloadStatus[];
   log: { scene_id: string; outcome: string; bytes_written: number; message?: string; detail: string; ts?: number }[];
 };
 export type WorkflowStage = {
@@ -270,6 +282,8 @@ export type AoiPreviewOk = {
   ok: true;
   path: string;
   file_name: string;
+  source_kind?: "path" | "content" | string;
+  geojson?: Json | null;
   total_features: number;
   fields: string[];
   display_field?: string;
@@ -373,6 +387,8 @@ export type OrbitDownloadStatus = {
   current_scene: string;
   active_scenes?: { scene_id: string; started_at?: number }[];
   orbit_dir: string;
+  use_orbit_subdir?: boolean;
+  download_layout?: string;
   done_bytes?: number;
   bytes_per_second?: number;
   elapsed_seconds?: number;
@@ -465,7 +481,11 @@ export type AsfSearchParams = {
   polarization?: string;
   orbit_direction?: string;
   relative_orbit?: string | number | null;
+  relative_orbit_start?: string | number | null;
+  relative_orbit_end?: string | number | null;
   frame?: string | number | null;
+  frame_start?: string | number | null;
+  frame_end?: string | number | null;
   max_results?: string | number | null;
 };
 export type SimpleOk = { ok: true; [key: string]: unknown } | ApiError;
@@ -555,6 +575,8 @@ type PyApi = {
   ) => Promise<AoiResult>;
   set_region_aoi_file: (path: string) => Promise<AoiResult>;
   preview_aoi_file: (path: string) => Promise<AoiPreviewResult>;
+  preview_aoi_file_content?: (fileName: string, text: string) => Promise<AoiPreviewResult>;
+  preview_aoi_file_bytes?: (fileName: string, base64Data: string) => Promise<AoiPreviewResult>;
   set_region_aoi_file_features: (
     path: string,
     featureIds?: string[],
@@ -562,6 +584,12 @@ type PyApi = {
     downloadMode?: "merge" | "split",
   ) => Promise<AoiResult>;
   set_region_aoi_geojson: (geojson: Json) => Promise<AoiResult>;
+  set_region_aoi_geojson_features?: (
+    geojson: Json,
+    featureIds?: string[],
+    nameField?: string,
+    downloadMode?: "merge" | "split",
+  ) => Promise<AoiResult>;
   search_admin_boundaries: (
     query?: string,
     province?: string,
@@ -584,30 +612,59 @@ type PyApi = {
   get_metadata_status: () => Promise<MetadataStatus>;
   check_scenes: () => Promise<CheckResult>;
   match_orbits_directory: (orbitDir: string) => Promise<OrbitMatchResult>;
-  download_orbits: (outputDir?: string, sceneIds?: string[]) => Promise<OrbitDownloadResult>;
-  start_orbit_download: (outputDir?: string, sceneIds?: string[], maxConcurrent?: number) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  download_orbits: (outputDir?: string, sceneIds?: string[], useOrbitSubdir?: boolean) => Promise<OrbitDownloadResult>;
+  start_orbit_download: (
+    outputDir?: string,
+    sceneIds?: string[],
+    maxConcurrent?: number,
+    useOrbitSubdir?: boolean,
+  ) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  start_orbit_download_snapshot?: (
+    outputDir?: string,
+    scenesSnapshot?: SceneRow[],
+    sceneIds?: string[],
+    maxConcurrent?: number,
+    useOrbitSubdir?: boolean,
+  ) => Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }>;
   pause_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   resume_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   stop_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   get_orbit_download_status: () => Promise<OrbitDownloadStatus>;
-  plan_asf_download: (outputDir?: string, sceneIds?: string[]) => Promise<PlanResult>;
+  plan_asf_download: (outputDir?: string, sceneIds?: string[], useProductSubdirs?: boolean) => Promise<PlanResult>;
   start_asf_download: (
     outputDir?: string,
     credentialSource?: string,
     maxConcurrent?: number,
     sceneIds?: string[],
-  ) => Promise<{ ok: boolean; error?: string; code?: string }>;
+    useProductSubdirs?: boolean,
+  ) => Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }>;
+  start_asf_download_snapshot?: (
+    outputDir?: string,
+    scenesSnapshot?: SceneRow[],
+    sceneIds?: string[],
+    credentialSource?: string,
+    maxConcurrent?: number,
+    useProductSubdirs?: boolean,
+  ) => Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }>;
   append_asf_download: (
     outputDir?: string,
     maxExtraWorkers?: number,
     sceneIds?: string[],
+    taskId?: string,
   ) => Promise<{ ok: boolean; error?: string; code?: string; appended?: number; skipped?: number; concurrency?: number }>;
-  pause_asf_scenes: (sceneIds?: string[]) => Promise<{ ok: boolean; error?: string; code?: string; paused?: number }>;
-  resume_asf_scenes: (sceneIds?: string[]) => Promise<{ ok: boolean; error?: string; code?: string; resumed?: number }>;
-  pause_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
-  resume_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
-  stop_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
-  retry_asf_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
+  append_asf_download_snapshot?: (
+    outputDir?: string,
+    scenesSnapshot?: SceneRow[],
+    sceneIds?: string[],
+    maxExtraWorkers?: number,
+    taskId?: string,
+  ) => Promise<{ ok: boolean; error?: string; code?: string; appended?: number; skipped?: number; concurrency?: number }>;
+  pause_asf_scenes: (sceneIds?: string[], taskId?: string) => Promise<{ ok: boolean; error?: string; code?: string; paused?: number }>;
+  resume_asf_scenes: (sceneIds?: string[], taskId?: string) => Promise<{ ok: boolean; error?: string; code?: string; resumed?: number }>;
+  pause_asf_download: (taskId?: string) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  resume_asf_download: (taskId?: string) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  stop_asf_download: (taskId?: string) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  retry_asf_download: (taskId?: string) => Promise<{ ok: boolean; error?: string; code?: string }>;
   get_download_status: () => Promise<DownloadStatus>;
   plan_dem_download: (outputDir?: string, dataset?: string) => Promise<PlanReportResult>;
   plan_dem_download_bbox: (
@@ -1040,7 +1097,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Studio", version: "2.1.5", offline: true };
+  return { name: "InSAR Studio", version: "2.1.7", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -1052,9 +1109,12 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "2.1.5",
-    latest_version: "2.1.5",
+    current_version: "2.1.7",
+    latest_version: "2.1.7",
     html_url: "https://github.com/hhanmj/insar_studio/releases/latest",
+    release_name: "InSAR Studio 2.1.7",
+    changelog: "Update checks run only in the packaged desktop app.",
+    published_at: "",
     message: "Update checks run only in the packaged desktop app.",
   };
 }
@@ -1087,7 +1147,7 @@ export async function getComponentStatus(refresh = false): Promise<ComponentStat
       {
         id: "dem-gdal",
         name: "DEM/GDAL 高程基准组件",
-        version: "2.1.5",
+        version: "2.1.7",
         size_mb: 205,
         description: "GDAL/rasterio/numpy/PROJ 与 EGM96、EGM2008 高程基准数据。",
         installed: false,
@@ -1643,6 +1703,24 @@ export async function previewAoiFile(path: string): Promise<AoiPreviewResult> {
   };
 }
 
+export async function previewAoiFileContent(fileName: string, text: string): Promise<AoiPreviewResult> {
+  if (hasBridge()) {
+    const previewer = api().preview_aoi_file_content;
+    if (!previewer) return { ok: false, error: "当前版本不支持拖拽读取文件内容，请使用上传本地边界按钮。", code: "AOI001" };
+    return previewer(fileName, text);
+  }
+  return previewAoiFile(fileName);
+}
+
+export async function previewAoiFileBytes(fileName: string, base64Data: string): Promise<AoiPreviewResult> {
+  if (hasBridge()) {
+    const previewer = api().preview_aoi_file_bytes;
+    if (!previewer) return { ok: false, error: "当前版本不支持拖拽读取该格式，请使用上传本地边界按钮。", code: "AOI001" };
+    return previewer(fileName, base64Data);
+  }
+  return previewAoiFile(fileName);
+}
+
 export async function setRegionAoiFileFeatures(
   path: string,
   featureIds: string[],
@@ -1683,6 +1761,34 @@ export async function setRegionAoiGeojson(geojson: Json): Promise<AoiResult> {
     ok: true,
     aoi: { source: "MANUAL_BBOX", role: "PROCESSING_AOI", bbox },
     aoi_geojson: geojson,
+    region_id: mock.region.region_id,
+    region_name: mock.region.name,
+  };
+}
+
+export async function setRegionAoiGeojsonFeatures(
+  geojson: Json,
+  featureIds: string[],
+  nameField = "",
+  downloadMode: "merge" | "split" = "merge",
+): Promise<AoiResult> {
+  if (hasBridge()) {
+    const binder = api().set_region_aoi_geojson_features;
+    if (!binder) return setRegionAoiGeojson(geojson);
+    const res = await binder(geojson, featureIds, nameField, downloadMode);
+    if (res.ok) notifyContextChanged();
+    return res;
+  }
+  const region = ensureMockRegion();
+  const bbox = bboxFromGeojson(geojson);
+  mock.region = { ...region, has_aoi: true, bbox, aoi_geojson: geojson };
+  notifyContextChanged();
+  return {
+    ok: true,
+    aoi: { source: "VECTOR_FILE", role: "PROCESSING_AOI", bbox },
+    aoi_geojson: geojson,
+    aoi_feature_count: featureIds.length || 1,
+    download_mode: downloadMode,
     region_id: mock.region.region_id,
     region_name: mock.region.name,
   };
@@ -1819,6 +1925,7 @@ export async function importScenesFile(path: string): Promise<ScenesResult> {
   }
   if (!path.trim()) return { ok: false, error: "请提供购物车文件路径", code: "ASF001" };
   const scenes = [mockScene(0), mockScene(1), mockScene(2)];
+  const n = scenes.length;
   if (mock.region) mock.region = { ...mock.region, scene_count: scenes.length };
   else mock.standaloneSceneCount = scenes.length;
   notifyContextChanged();
@@ -1960,7 +2067,7 @@ export async function clearMapLayers(): Promise<SimpleOk> {
     return api().clear_scenes();
   }
   const cleared = mockActiveSceneCount();
-  mock.standaloneScenes = [];
+  mock.standaloneSceneCount = 0;
   if (mock.region) {
     mock.region = { ...mock.region, has_aoi: false, bbox: null, aoi_geojson: null, scene_count: 0 };
   }
@@ -2045,15 +2152,20 @@ export async function matchOrbitsDirectory(orbitDir: string): Promise<OrbitMatch
   };
 }
 
-export async function downloadOrbits(outputDir = "", sceneIds: string[] = []): Promise<OrbitDownloadResult> {
-  if (hasBridge()) return api().download_orbits(outputDir, sceneIds);
+export async function downloadOrbits(
+  outputDir = "",
+  sceneIds: string[] = [],
+  useOrbitSubdir = false,
+): Promise<OrbitDownloadResult> {
+  if (hasBridge()) return api().download_orbits(outputDir, sceneIds, useOrbitSubdir);
   const selectedIds = sceneIds.filter(Boolean);
   const n = selectedIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入 ASF 场景或本地 SLC 目录", code: "ASF001" };
   const root = outputDir || mock.workspace?.root || "C:\\InSAR";
+  const orbitDir = useOrbitSubdir ? `${root}\\Sentinel_Orbit` : root;
   return {
     ok: true,
-    orbit_dir: `${root}\\Sentinel_Orbit\\AUX_POEORB`,
+    orbit_dir: orbitDir,
     summary_line: `${n} downloaded, 0 skipped, 0 unavailable, 0 failed`,
     total: n,
     succeeded: n,
@@ -2066,7 +2178,7 @@ export async function downloadOrbits(outputDir = "", sceneIds: string[] = []): P
       outcome: "success",
       orbit_file: `S1A_OPER_AUX_POEORB_OPOD_202403${13 + i}T120000_V202403${12 + i}T000000_202403${13 + i}T000000.EOF`,
       orbit_type: "POEORB",
-      path: `${root}\\Sentinel_Orbit\\AUX_POEORB\\orbit.EOF`,
+      path: `${orbitDir}\\orbit.EOF`,
       bytes_written: 1024,
       message: "已从 ASF 下载 POEORB 精密轨道文件。",
     })),
@@ -2105,18 +2217,20 @@ export async function startOrbitDownload(
   outputDir = "",
   sceneIds: string[] = [],
   maxConcurrent = 10,
-): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().start_orbit_download(outputDir, sceneIds, maxConcurrent);
+  useOrbitSubdir = false,
+): Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }> {
+  if (hasBridge()) return api().start_orbit_download(outputDir, sceneIds, maxConcurrent, useOrbitSubdir);
   const selectedIds = sceneIds.filter(Boolean);
   const n = selectedIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入 ASF 场景或本地 SLC 目录", code: "ASF001" };
   const root = outputDir || mock.region?.root || mock.project?.root || mock.workspace?.root || "C:\\InSAR";
+  const orbitDir = useOrbitSubdir ? `${root}\\Sentinel_Orbit` : root;
   const results = Array.from({ length: n }, (_, i) => ({
     scene_id: selectedIds[i] ?? mockScene(i).scene_id,
     outcome: "success",
     orbit_file: `S1A_OPER_AUX_POEORB_OPOD_202403${13 + i}T120000_V202403${12 + i}T000000_202403${13 + i}T000000.EOF`,
     orbit_type: "POEORB",
-    path: `${root}\\Sentinel_Orbit\\AUX_POEORB\\orbit.EOF`,
+    path: `${orbitDir}\\orbit.EOF`,
     bytes_written: 1024,
     message: "mock POEORB ok",
   }));
@@ -2128,7 +2242,9 @@ export async function startOrbitDownload(
     concurrency: Math.max(1, Math.min(Number(maxConcurrent) || 10, 10)),
     current_scene: "",
     active_scenes: [],
-    orbit_dir: `${root}\\Sentinel_Orbit\\AUX_POEORB`,
+    orbit_dir: orbitDir,
+    use_orbit_subdir: useOrbitSubdir,
+    download_layout: useOrbitSubdir ? "orbit_subdir" : "flat",
     done_bytes: n * 1024,
     bytes_per_second: n * 1024,
     paused: false,
@@ -2149,6 +2265,20 @@ export async function startOrbitDownload(
     report: mockOrbitReport(n),
   };
   return { ok: true };
+}
+
+export async function startOrbitDownloadSnapshot(
+  outputDir = "",
+  scenesSnapshot: SceneRow[] = [],
+  sceneIds: string[] = [],
+  maxConcurrent = 10,
+  useOrbitSubdir = false,
+): Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }> {
+  if (hasBridge()) {
+    const startSnapshot = api().start_orbit_download_snapshot;
+    if (startSnapshot) return startSnapshot(outputDir, scenesSnapshot, sceneIds, maxConcurrent, useOrbitSubdir);
+  }
+  return startOrbitDownload(outputDir, sceneIds, maxConcurrent, useOrbitSubdir);
 }
 
 export async function pauseOrbitDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
@@ -2237,8 +2367,12 @@ function mockReport(hasErrors = false): Json {
   };
 }
 
-export async function planAsfDownload(outputDir = "", sceneIds: string[] = []): Promise<PlanResult> {
-  if (hasBridge()) return api().plan_asf_download(outputDir, sceneIds);
+export async function planAsfDownload(
+  outputDir = "",
+  sceneIds: string[] = [],
+  useProductSubdirs = false,
+): Promise<PlanResult> {
+  if (hasBridge()) return api().plan_asf_download(outputDir, sceneIds, useProductSubdirs);
   if (!(sceneIds.length || mockActiveSceneCount())) {
     return { ok: false, error: "请先在『影像核查』导入场景", code: "ASF001" };
   }
@@ -2281,8 +2415,9 @@ export async function startAsfDownload(
   credentialSource = "auto",
   maxConcurrent = 1,
   sceneIds: string[] = [],
-): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().start_asf_download(outputDir, credentialSource, maxConcurrent, sceneIds);
+  useProductSubdirs = false,
+): Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }> {
+  if (hasBridge()) return api().start_asf_download(outputDir, credentialSource, maxConcurrent, sceneIds, useProductSubdirs);
   const n = sceneIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入场景", code: "ASF001" };
   if (mockCredentials.earthdata === "none" || mockCredentials.earthdata === "unavailable") {
@@ -2310,6 +2445,9 @@ export async function startAsfDownload(
     error: null,
     summary_line: `${n} 已下载, 0 跳过, 0 失败, 0 中断`,
     results_path: "",
+    output_dir: outputDir,
+    use_product_subdirs: useProductSubdirs,
+    download_layout: useProductSubdirs ? "product_subdirs" : "flat",
     succeeded: n,
     skipped: 0,
     failed: 0,
@@ -2324,12 +2462,32 @@ export async function startAsfDownload(
   return { ok: true };
 }
 
+export async function startAsfDownloadSnapshot(
+  outputDir = "",
+  scenesSnapshot: SceneRow[] = [],
+  sceneIds: string[] = [],
+  credentialSource = "auto",
+  maxConcurrent = 1,
+  useProductSubdirs = false,
+): Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }> {
+  if (hasBridge()) {
+    const starter = api().start_asf_download_snapshot;
+    if (typeof starter === "function") {
+      return starter(outputDir, scenesSnapshot, sceneIds, credentialSource, maxConcurrent, useProductSubdirs);
+    }
+    return api().start_asf_download(outputDir, credentialSource, maxConcurrent, sceneIds, useProductSubdirs);
+  }
+  const n = sceneIds.length || scenesSnapshot.length || mockActiveSceneCount();
+  return startAsfDownload(outputDir, credentialSource, maxConcurrent, Array.from({ length: n }, (_, i) => sceneIds[i] || `snapshot_${i}`), useProductSubdirs);
+}
+
 export async function appendAsfDownload(
   outputDir = "",
   maxExtraWorkers = 0,
   sceneIds: string[] = [],
+  taskId = "",
 ): Promise<{ ok: boolean; error?: string; code?: string; appended?: number; skipped?: number; concurrency?: number }> {
-  if (hasBridge()) return api().append_asf_download(outputDir, maxExtraWorkers, sceneIds);
+  if (hasBridge()) return api().append_asf_download(outputDir, maxExtraWorkers, sceneIds, taskId);
   const n = sceneIds.length || 0;
   if (!n) return { ok: false, error: "请先勾选要追加下载的 SAR 影像", code: "ASF001" };
   mockDlState = {
@@ -2341,15 +2499,32 @@ export async function appendAsfDownload(
   return { ok: true, appended: n, skipped: 0, concurrency: mockDlState.concurrency };
 }
 
-export async function pauseAsfScenes(sceneIds: string[] = []): Promise<{ ok: boolean; error?: string; code?: string; paused?: number }> {
-  if (hasBridge()) return api().pause_asf_scenes(sceneIds);
+export async function appendAsfDownloadSnapshot(
+  outputDir = "",
+  scenesSnapshot: SceneRow[] = [],
+  sceneIds: string[] = [],
+  maxExtraWorkers = 0,
+  taskId = "",
+): Promise<{ ok: boolean; error?: string; code?: string; appended?: number; skipped?: number; concurrency?: number }> {
+  if (hasBridge()) {
+    const appender = api().append_asf_download_snapshot;
+    if (typeof appender === "function") {
+      return appender(outputDir, scenesSnapshot, sceneIds, maxExtraWorkers, taskId);
+    }
+    return api().append_asf_download(outputDir, maxExtraWorkers, sceneIds, taskId);
+  }
+  return appendAsfDownload(outputDir, maxExtraWorkers, sceneIds, taskId);
+}
+
+export async function pauseAsfScenes(sceneIds: string[] = [], taskId = ""): Promise<{ ok: boolean; error?: string; code?: string; paused?: number }> {
+  if (hasBridge()) return api().pause_asf_scenes(sceneIds, taskId);
   const paused = new Set([...(mockDlState.paused_scene_ids ?? []), ...sceneIds]);
   mockDlState = { ...mockDlState, paused_scene_ids: Array.from(paused), state: "paused", paused: true };
   return { ok: true, paused: sceneIds.length };
 }
 
-export async function resumeAsfScenes(sceneIds: string[] = []): Promise<{ ok: boolean; error?: string; code?: string; resumed?: number }> {
-  if (hasBridge()) return api().resume_asf_scenes(sceneIds);
+export async function resumeAsfScenes(sceneIds: string[] = [], taskId = ""): Promise<{ ok: boolean; error?: string; code?: string; resumed?: number }> {
+  if (hasBridge()) return api().resume_asf_scenes(sceneIds, taskId);
   const targets = new Set(sceneIds);
   mockDlState = {
     ...mockDlState,
@@ -2360,28 +2535,28 @@ export async function resumeAsfScenes(sceneIds: string[] = []): Promise<{ ok: bo
   return { ok: true, resumed: sceneIds.length };
 }
 
-export async function pauseAsfDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().pause_asf_download();
+export async function pauseAsfDownload(taskId = ""): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge()) return api().pause_asf_download(taskId);
   if (mockDlState.state !== "running") return { ok: false, error: "当前没有进行中的下载", code: "GUI004" };
   mockDlState = { ...mockDlState, state: "paused", paused: true };
   return { ok: true };
 }
 
-export async function resumeAsfDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().resume_asf_download();
+export async function resumeAsfDownload(taskId = ""): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge()) return api().resume_asf_download(taskId);
   if (mockDlState.state !== "paused") return { ok: false, error: "下载未处于暂停状态", code: "GUI004" };
   mockDlState = { ...mockDlState, state: "running", paused: false };
   return { ok: true };
 }
 
-export async function stopAsfDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().stop_asf_download();
+export async function stopAsfDownload(taskId = ""): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge()) return api().stop_asf_download(taskId);
   mockDlState = { ...mockDlState, state: "cancelled", cancelled: true };
   return { ok: true };
 }
 
-export async function retryAsfDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
-  if (hasBridge()) return api().retry_asf_download();
+export async function retryAsfDownload(taskId = ""): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge()) return api().retry_asf_download(taskId);
   if (!mockDlState.has_failures) return { ok: false, error: "当前没有失败或中断的 ASF 场景可重试", code: "GUI004" };
   mockDlState = { ...mockDlState, state: "running", paused: false, cancelled: false };
   return { ok: true };

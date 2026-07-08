@@ -23,6 +23,9 @@ import re
 import sys
 import threading
 import time
+import base64
+import binascii
+import io
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +33,7 @@ from insar_prep import __version__
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import mask_text
 from insar_prep.desktop.activity_log import ActivityLog
-from insar_prep.desktop.download_job import AsfDownloadJob, DemDownloadJob, OrbitDownloadJob
+from insar_prep.desktop.download_job import AsfDownloadManager, DemDownloadJob, OrbitDownloadJob
 from insar_prep.gui.state import GuiState, workspace_display_name
 
 _EARTHDATA_AUTH_FAILURE_COOLDOWN_SECONDS = 5 * 60
@@ -260,6 +263,34 @@ def _dump_optional(model: Any | None) -> Any | None:
     return _dump(model) if model is not None else None
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _download_archive_layout(kind: str, item: dict[str, Any]) -> str:
+    layout = str(item.get("download_layout") or "").strip().lower()
+    if kind == "asf":
+        if layout in {"flat", "product_subdirs"}:
+            return layout
+        return "product_subdirs" if _coerce_bool(item.get("use_product_subdirs"), False) else "flat"
+    if kind == "orbit":
+        if layout in {"flat", "orbit_subdir"}:
+            return layout
+        return "orbit_subdir" if _coerce_bool(item.get("use_orbit_subdir"), False) else "flat"
+    return layout
+
+
 def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
     """Return safe, compact download history records for persistence/UI."""
     if not isinstance(value, list):
@@ -292,6 +323,9 @@ def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
             concurrency = int(float(item.get("concurrency") or 0))
         except (TypeError, ValueError):
             concurrency = 0
+        use_product_subdirs = _coerce_bool(item.get("use_product_subdirs"), False)
+        use_orbit_subdir = _coerce_bool(item.get("use_orbit_subdir"), False)
+        layout = _download_archive_layout(kind, item)
         out.append(
             {
                 "id": task_id[:240],
@@ -303,6 +337,9 @@ def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
                 "output_dir": output_dir[:500],
                 "total": total,
                 "concurrency": concurrency,
+                "use_product_subdirs": use_product_subdirs,
+                "use_orbit_subdir": use_orbit_subdir,
+                "download_layout": layout[:40],
                 "logs": logs,
             }
         )
@@ -335,6 +372,16 @@ def _download_archive_path_from_task_id(kind: str, task_id: str) -> str:
         return ""
     if kind == "dem" and body.count(":") >= 2:
         body = body.rsplit(":", 2)[0]
+    elif kind in {"asf", "orbit"}:
+        parts = body.rsplit(":", 2)
+        if (
+            len(parts) == 3
+            and parts[1] in {"flat", "product_subdirs", "orbit_subdir"}
+            and parts[2].isdigit()
+        ):
+            body = parts[0]
+        elif ":" in body:
+            body = body.rsplit(":", 1)[0]
     elif ":" in body:
         body = body.rsplit(":", 1)[0]
     path = _normalise_download_archive_path(body)
@@ -353,11 +400,16 @@ def _download_archive_identity(item: dict[str, Any]) -> str:
     if not output_dir:
         output_dir = _download_archive_path_from_task_id(kind, task_id)
     if kind and output_dir:
-        return f"{kind}:{output_dir}"
+        layout = _download_archive_layout(kind, item)
+        return f"{kind}:{output_dir}:{layout}" if layout else f"{kind}:{output_dir}"
     return task_id
 
 
-def _download_archive_identity_candidates(item: dict[str, Any]) -> set[str]:
+def _download_archive_identity_candidates(
+    item: dict[str, Any],
+    *,
+    include_legacy: bool = False,
+) -> set[str]:
     kind = _download_archive_kind(item)
     task_id = str(item.get("id") or "").strip()
     output_dir = _normalise_download_archive_path(item.get("output_dir"))
@@ -365,15 +417,23 @@ def _download_archive_identity_candidates(item: dict[str, Any]) -> set[str]:
     if task_id:
         keys.add(task_id)
     if kind and output_dir:
-        keys.add(f"{kind}:{output_dir}")
+        layout = _download_archive_layout(kind, item)
+        if layout:
+            keys.add(f"{kind}:{output_dir}:{layout}")
+        if include_legacy:
+            keys.add(f"{kind}:{output_dir}")
     id_path = _download_archive_path_from_task_id(kind, task_id)
     if kind and id_path:
-        keys.add(f"{kind}:{id_path}")
+        layout = _download_archive_layout(kind, item)
+        if layout:
+            keys.add(f"{kind}:{id_path}:{layout}")
+        if include_legacy:
+            keys.add(f"{kind}:{id_path}")
     return {key[:600] for key in keys if key}
 
 
 def _download_archive_is_deleted(item: dict[str, Any], deleted_keys: set[str]) -> bool:
-    return bool(_download_archive_identity_candidates(item) & deleted_keys)
+    return bool(_download_archive_identity_candidates(item, include_legacy=True) & deleted_keys)
 
 
 def _clean_download_archive_deleted_keys(value: Any) -> set[str]:
@@ -399,7 +459,7 @@ def _deleted_download_archive_keys_from_items(value: Any) -> set[str]:
         candidate = {**item, "status": "cancelled"}
         cleaned = _clean_download_archive([candidate])
         if cleaned:
-            out.update(_download_archive_identity_candidates(cleaned[0]))
+            out.update(_download_archive_identity_candidates(cleaned[0], include_legacy=True))
     return out
 
 
@@ -546,7 +606,7 @@ class Api:
         # The DEM dataset is chosen once (in the download step); the vertical-datum
         # conversion is then auto-detected from it, never chosen by the user.
         self._dem_dataset = "COP30"
-        self._asf_download = AsfDownloadJob()
+        self._asf_download = AsfDownloadManager()
         self._orbit_download = OrbitDownloadJob()
         self._dem_download = DemDownloadJob()
         self._activity = ActivityLog()
@@ -801,8 +861,132 @@ class Api:
     def _asf_search_cache_aoi_hash(aoi_geojson: Any) -> str:
         if not isinstance(aoi_geojson, dict):
             return ""
-        raw = json.dumps(aoi_geojson, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+        def normalise(value: Any) -> Any:
+            if isinstance(value, float):
+                return round(value, 7)
+            if isinstance(value, int) or value is None or isinstance(value, str):
+                return value
+            if isinstance(value, list):
+                return [normalise(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            obj_type = str(value.get("type") or "")
+            if obj_type == "Feature":
+                return normalise(value.get("geometry"))
+            if obj_type == "FeatureCollection":
+                return {
+                    "type": "FeatureCollection",
+                    "features": [
+                        normalise(item.get("geometry") if isinstance(item, dict) and item.get("type") == "Feature" else item)
+                        for item in value.get("features", [])
+                        if isinstance(item, dict)
+                    ],
+                }
+            if obj_type == "GeometryCollection":
+                return {
+                    "type": "GeometryCollection",
+                    "geometries": [
+                        normalise(item)
+                        for item in value.get("geometries", [])
+                        if isinstance(item, dict)
+                    ],
+                }
+            if obj_type:
+                return {
+                    "type": obj_type,
+                    "coordinates": normalise(value.get("coordinates")),
+                }
+            return {str(key): normalise(item) for key, item in sorted(value.items())}
+
+        raw = json.dumps(normalise(aoi_geojson), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _asf_cache_value_set(value: object) -> set[str]:
+        return {
+            item.strip().upper()
+            for item in str(value or "").replace(";", ",").split(",")
+            if item.strip()
+        }
+
+    @staticmethod
+    def _asf_cache_int_ranges(value: object) -> list[tuple[int, int]]:
+        ranges: list[tuple[int, int]] = []
+        text = str(value or "").strip()
+        if not text:
+            return ranges
+        for part in re.split(r"[,;]", text):
+            item = part.strip()
+            if not item:
+                continue
+            match = re.fullmatch(r"(\d+)(?:\s*[-:]\s*(\d+))?", item)
+            if not match:
+                continue
+            start = int(match.group(1))
+            end = int(match.group(2) or start)
+            ranges.append((min(start, end), max(start, end)))
+        return ranges
+
+    @staticmethod
+    def _asf_cache_ranges_cover(cached: object, requested: object) -> bool:
+        requested_ranges = Api._asf_cache_int_ranges(requested)
+        cached_ranges = Api._asf_cache_int_ranges(cached)
+        if not requested_ranges:
+            return not cached_ranges
+        if not cached_ranges:
+            return True
+        return all(
+            any(cached_start <= req_start and cached_end >= req_end for cached_start, cached_end in cached_ranges)
+            for req_start, req_end in requested_ranges
+        )
+
+    @staticmethod
+    def _asf_cache_filter_covers(cached: object, requested: object) -> bool:
+        requested_values = Api._asf_cache_value_set(requested)
+        cached_values = Api._asf_cache_value_set(cached)
+        if not requested_values:
+            return not cached_values
+        if not cached_values:
+            return True
+        return requested_values.issubset(cached_values)
+
+    @staticmethod
+    def _asf_cache_date_covers(cached_start: object, cached_end: object, requested_start: object, requested_end: object) -> bool:
+        c_start = Api._asf_search_cache_date(cached_start)
+        c_end = Api._asf_search_cache_date(cached_end)
+        r_start = Api._asf_search_cache_date(requested_start)
+        r_end = Api._asf_search_cache_date(requested_end)
+        if not r_start and c_start:
+            return False
+        if not r_end and c_end:
+            return False
+        if c_start and r_start and c_start > r_start:
+            return False
+        if c_end and r_end and c_end < r_end:
+            return False
+        return True
+
+    @staticmethod
+    def _asf_cache_query_covers(cached: dict[str, Any], requested: dict[str, Any]) -> bool:
+        if cached.get("version") != requested.get("version"):
+            return False
+        if cached.get("dataset") != requested.get("dataset"):
+            return False
+        if cached.get("bbox") != requested.get("bbox"):
+            return False
+        if cached.get("aoi") != requested.get("aoi"):
+            return False
+        if cached.get("product_type") != requested.get("product_type"):
+            return False
+        if not Api._asf_cache_date_covers(cached.get("start"), cached.get("end"), requested.get("start"), requested.get("end")):
+            return False
+        for name in ("beam_mode", "polarization", "orbit_direction"):
+            if not Api._asf_cache_filter_covers(cached.get(name), requested.get(name)):
+                return False
+        return Api._asf_cache_ranges_cover(cached.get("relative_orbit"), requested.get("relative_orbit")) and Api._asf_cache_ranges_cover(
+            cached.get("frame"), requested.get("frame")
+        )
 
     def _asf_search_cache_target(
         self,
@@ -810,8 +994,8 @@ class Api:
         bbox: Any,
         aoi_geojson: Any,
         payload: dict[str, Any],
-        relative_orbit: int | None,
-        frame: int | None,
+        relative_orbit: str | None,
+        frame: str | None,
     ) -> tuple[str, Path | None, dict[str, Any]]:
         key_payload = {
             "version": 1,
@@ -843,11 +1027,19 @@ class Api:
     ) -> dict[str, Any] | None:
         if cache_path is None or not cache_path.is_file():
             return None
+        return self._load_asf_search_cache_file(cache_path, expected_key=cache_key)
+
+    def _load_asf_search_cache_file(
+        self,
+        cache_path: Path,
+        *,
+        expected_key: str | None = None,
+    ) -> dict[str, Any] | None:
         try:
             from insar_prep.core.models import Scene
 
             data = json.loads(cache_path.read_text(encoding="utf-8"))
-            if data.get("cache_key") != cache_key:
+            if expected_key is not None and data.get("cache_key") != expected_key:
                 return None
             updated_at = float(data.get("updated_at") or data.get("created_at") or 0)
             if updated_at and time.time() - updated_at > self._asf_search_cache_max_age_seconds():
@@ -864,6 +1056,8 @@ class Api:
                 "total_count": data.get("total_count"),
                 "source": data.get("source") or "ASF",
                 "complete": bool(data.get("complete")),
+                "cache_key": data.get("cache_key"),
+                "query": data.get("query") if isinstance(data.get("query"), dict) else {},
                 "created_at": data.get("created_at"),
                 "updated_at": data.get("updated_at"),
                 "path": str(cache_path),
@@ -872,14 +1066,49 @@ class Api:
             self._activity.add(f"ASF 检索缓存读取失败，已忽略：{exc}", kind="warning")
             return None
 
+    def _find_covering_asf_search_cache(
+        self,
+        requested_query: dict[str, Any],
+        requested_limit: int | None,
+        exact_path: Path | None,
+    ) -> dict[str, Any] | None:
+        root = self._asf_search_cache_root()
+        if root is None or not root.is_dir():
+            return None
+        candidates: list[dict[str, Any]] = []
+        for cache_path in root.glob("*.json"):
+            if exact_path is not None and cache_path == exact_path:
+                continue
+            entry = self._load_asf_search_cache_file(cache_path)
+            if entry is None:
+                continue
+            query = entry.get("query") if isinstance(entry.get("query"), dict) else {}
+            if not self._asf_cache_query_covers(query, requested_query):
+                continue
+            filtered = self._cached_asf_scenes_for_limit(entry, requested_limit, requested_query)
+            if filtered is None:
+                continue
+            candidates.append({**entry, "scenes": filtered})
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda item: (
+                bool(item.get("complete")),
+                len(item.get("scenes") or []),
+                float(item.get("updated_at") or 0),
+            ),
+        )
+
     @staticmethod
     def _cached_asf_scenes_for_limit(
         entry: dict[str, Any] | None,
         requested_limit: int | None,
+        requested_query: dict[str, Any] | None = None,
     ) -> list[Any] | None:
         if entry is None:
             return None
-        scenes = list(entry.get("scenes") or [])
+        scenes = Api._filter_cached_asf_scenes(list(entry.get("scenes") or []), requested_query or {})
         if not scenes:
             return None
         if requested_limit is None:
@@ -887,6 +1116,65 @@ class Api:
         if len(scenes) < requested_limit:
             return None
         return scenes[:requested_limit]
+
+    @staticmethod
+    def _filter_cached_asf_scenes(scenes: list[Any], query: dict[str, Any]) -> list[Any]:
+        if not query:
+            return scenes
+
+        def text(value: object) -> str:
+            return str(value or "").strip().upper()
+
+        def scene_date(scene: Any) -> str:
+            value = getattr(scene, "acquisition_datetime", None)
+            return str(value or "")[:10].replace("/", "-")
+
+        def int_value(value: object) -> int | None:
+            try:
+                if value is None or value == "":
+                    return None
+                return int(float(str(value)))
+            except (TypeError, ValueError):
+                return None
+
+        def in_ranges(value: object, ranges: list[tuple[int, int]]) -> bool:
+            if not ranges:
+                return True
+            number = int_value(value)
+            if number is None:
+                return False
+            return any(start <= number <= end for start, end in ranges)
+
+        start = Api._asf_search_cache_date(query.get("start"))
+        end = Api._asf_search_cache_date(query.get("end"))
+        beam_values = Api._asf_cache_value_set(query.get("beam_mode"))
+        pol_values = Api._asf_cache_value_set(query.get("polarization"))
+        orbit_values = Api._asf_cache_value_set(query.get("orbit_direction"))
+        path_ranges = Api._asf_cache_int_ranges(query.get("relative_orbit"))
+        frame_ranges = Api._asf_cache_int_ranges(query.get("frame"))
+        product_type = text(query.get("product_type"))
+
+        out = []
+        for scene in scenes:
+            acquired = scene_date(scene)
+            if start and acquired and acquired < start:
+                continue
+            if end and acquired and acquired > end:
+                continue
+            if product_type and text(getattr(scene, "product_type", "")) != product_type:
+                continue
+            if beam_values and text(getattr(scene, "beam_mode", "")) not in beam_values:
+                continue
+            if pol_values and text(getattr(scene, "polarization", "")) not in pol_values:
+                continue
+            if orbit_values and text(getattr(scene, "orbit_direction", "")) not in orbit_values:
+                continue
+            if not in_ranges(getattr(scene, "relative_orbit", None) or getattr(scene, "path", None), path_ranges):
+                continue
+            if not in_ranges(getattr(scene, "frame", None), frame_ranges):
+                continue
+            out.append(scene)
+        return _sort_scenes_by_acquisition_date(out)
 
     def _write_asf_search_cache(
         self,
@@ -1087,7 +1375,14 @@ class Api:
         ])
         self._save_state()
 
-    def _forget_deleted_archive_key(self, kind: str, output_dir: str) -> None:
+    def _forget_deleted_archive_key(
+        self,
+        kind: str,
+        output_dir: str,
+        *,
+        use_product_subdirs: bool = False,
+        use_orbit_subdir: bool = False,
+    ) -> None:
         """Allow an explicitly started new task to reuse a previously deleted slot."""
         cleaned = _clean_download_archive(
             [
@@ -1099,11 +1394,13 @@ class Api:
                     "ts": int(time.time() * 1000),
                     "kind": kind,
                     "output_dir": output_dir,
+                    "use_product_subdirs": use_product_subdirs,
+                    "use_orbit_subdir": use_orbit_subdir,
                 }
             ]
         )
         if cleaned:
-            keys = _download_archive_identity_candidates(cleaned[0])
+            keys = _download_archive_identity_candidates(cleaned[0], include_legacy=True)
             stable_path = _normalise_download_archive_path(output_dir)
             stable_prefixes = {f"{kind}:{stable_path}"} if stable_path else set()
             self._deleted_archive_keys.difference_update(keys)
@@ -1117,6 +1414,12 @@ class Api:
                 }
 
     def _archive_asf_status(self, status: dict[str, Any]) -> None:
+        tasks = status.get("asf_tasks")
+        if isinstance(tasks, list) and tasks:
+            for task in tasks:
+                if isinstance(task, dict):
+                    self._archive_asf_status(task)
+            return
         state = str(status.get("state") or "")
         if bool(status.get("cancelled")):
             state = "cancelled"
@@ -1153,6 +1456,8 @@ class Api:
                 "output_dir": str(status.get("output_dir") or ""),
                 "total": int(status.get("total") or 0),
                 "concurrency": int(status.get("concurrency") or 0),
+                "use_product_subdirs": _coerce_bool(status.get("use_product_subdirs"), False),
+                "download_layout": str(status.get("download_layout") or "flat"),
                 "logs": logs,
             }
         )
@@ -1189,6 +1494,8 @@ class Api:
                 "kind": "orbit",
                 "output_dir": str(status.get("orbit_dir") or ""),
                 "total": int(status.get("total") or 0),
+                "use_orbit_subdir": _coerce_bool(status.get("use_orbit_subdir"), False),
+                "download_layout": str(status.get("download_layout") or "flat"),
                 "logs": logs,
             }
         )
@@ -1252,7 +1559,7 @@ class Api:
         key = _download_archive_identity(cleaned[0])
         if not key:
             return _error_msg("Missing download history item identity", "GUI003")
-        keys = _download_archive_identity_candidates(cleaned[0])
+        keys = _download_archive_identity_candidates(cleaned[0], include_legacy=True)
         self._deleted_archive_keys.update(keys)
         self._download_archive = [
             row
@@ -1299,6 +1606,9 @@ class Api:
                 "download_url": "",
                 "asset_name": "",
                 "asset_size": 0,
+                "release_name": "",
+                "changelog": "",
+                "published_at": "",
                 "online_update_supported": False,
                 "install_mode": "manual",
                 "message": f"暂时无法检查更新：{exc}",
@@ -1314,6 +1624,9 @@ class Api:
                 "download_url": "",
                 "asset_name": "",
                 "asset_size": 0,
+                "release_name": "",
+                "changelog": "",
+                "published_at": "",
                 "online_update_supported": False,
                 "install_mode": "manual",
                 "message": "当前没有发现新版本，或暂时无法连接更新服务。",
@@ -1337,6 +1650,9 @@ class Api:
             "download_url": asset.download_url if asset else "",
             "asset_name": asset.name if asset else "",
             "asset_size": asset.size if asset else 0,
+            "release_name": info.release_name,
+            "changelog": info.changelog,
+            "published_at": info.published_at,
             "online_update_supported": asset is not None,
             "install_mode": install_mode,
             "message": (
@@ -2147,14 +2463,65 @@ class Api:
             features = _read_aoi_vector_features(path)
         except InsarPrepError as exc:
             return _error(exc)
+        except FileNotFoundError as exc:
+            return _error_msg(_friendly_aoi_error(exc, path), "AOI001")
         except Exception as exc:  # noqa: BLE001
-            return _error_msg(str(exc), "AOI001")
+            return _error_msg(_friendly_aoi_error(exc, path), "AOI001")
+        return self._aoi_preview_response(path, features)
+
+    def preview_aoi_file_content(self, file_name: str, text: str) -> dict:
+        """Return selectable features from dragged KML/GeoJSON text content."""
+        try:
+            features = _read_aoi_vector_features_from_text(file_name, text)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(_friendly_aoi_error(exc, file_name), "AOI001")
+        return self._aoi_preview_response(file_name, features, source_kind="content", include_geojson=True)
+
+    def preview_aoi_file_bytes(self, file_name: str, base64_data: str) -> dict:
+        """Return selectable features from dragged binary AOI content."""
+        try:
+            raw = base64.b64decode(str(base64_data or ""), validate=True)
+            features = _read_aoi_vector_features_from_bytes(file_name, raw)
+        except (binascii.Error, ValueError) as exc:
+            return _error_msg(_friendly_aoi_error(exc, file_name), "AOI001")
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(_friendly_aoi_error(exc, file_name), "AOI001")
+        return self._aoi_preview_response(file_name, features, source_kind="content", include_geojson=True)
+
+    def set_region_aoi_geojson_features(
+        self,
+        geojson: dict,
+        feature_ids: list[Any] | None = None,
+        name_field: str = "",
+        download_mode: str = "merge",
+    ) -> dict:
+        """Bind selected features from dragged GeoJSON/KML content."""
+        try:
+            selected_geojson = _selected_geojson_from_feature_collection(
+                geojson,
+                feature_ids=feature_ids,
+                name_field=name_field,
+                download_mode=download_mode,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(_friendly_aoi_error(exc, "拖入边界"), "AOI001")
+        return self.set_region_aoi_geojson(selected_geojson)
+
+    @staticmethod
+    def _aoi_preview_response(
+        path: str,
+        features: list[dict[str, Any]],
+        *,
+        source_kind: str = "path",
+        include_geojson: bool = False,
+    ) -> dict:
         fields = _aoi_feature_fields(features)
         display_field = _suggest_aoi_name_field(fields)
-        return {
+        response = {
             "ok": True,
             "path": str(path),
             "file_name": Path(path).name,
+            "source_kind": source_kind,
             "total_features": len(features),
             "fields": fields,
             "display_field": display_field,
@@ -2163,6 +2530,9 @@ class Api:
                 for index, feature in enumerate(features)
             ],
         }
+        if include_geojson:
+            response["geojson"] = _feature_collection_from_aoi_features(features, str(path))
+        return response
 
     def set_region_aoi_file_features(
         self,
@@ -2760,13 +3130,33 @@ class Api:
                 return None
             return int(float(str(value).strip()))
 
+        def _optional_asf_int_filter(
+            name: str,
+            *,
+            start_name: str = "",
+            end_name: str = "",
+        ) -> str | None:
+            value = str(payload.get(name) or "").strip()
+            if not value and start_name:
+                start_value = str(payload.get(start_name) or "").strip()
+                end_value = str(payload.get(end_name) or "").strip() if end_name else ""
+                if start_value and end_value:
+                    value = f"{start_value}-{end_value}"
+                else:
+                    value = start_value or end_value
+            return value or None
+
         try:
             self._asf_search_cancel.clear()
             self._set_metadata_status("running", 0, 1, "正在准备 ASF 检索")
             search_stats: dict[str, Any] = {}
             explicit_limit = _optional_int("max_results")
-            relative_orbit = _optional_int("relative_orbit")
-            frame = _optional_int("frame")
+            relative_orbit = _optional_asf_int_filter(
+                "relative_orbit",
+                start_name="relative_orbit_start",
+                end_name="relative_orbit_end",
+            )
+            frame = _optional_asf_int_filter("frame", start_name="frame_start", end_name="frame_end")
             cache_key, cache_path, cache_query = self._asf_search_cache_target(
                 bbox=bbox,
                 aoi_geojson=aoi_geojson,
@@ -2775,7 +3165,12 @@ class Api:
                 frame=frame,
             )
             cache_entry = self._load_asf_search_cache(cache_key, cache_path)
-            cached_scenes = self._cached_asf_scenes_for_limit(cache_entry, explicit_limit)
+            cached_scenes = self._cached_asf_scenes_for_limit(cache_entry, explicit_limit, cache_query)
+            if cached_scenes is None:
+                covering_entry = self._find_covering_asf_search_cache(cache_query, explicit_limit, cache_path)
+                if covering_entry is not None:
+                    cache_entry = covering_entry
+                    cached_scenes = list(covering_entry.get("scenes") or [])
             if cached_scenes is not None:
                 scenes = cached_scenes
                 stored, label = self._store_imported_scenes(scenes)
@@ -2797,7 +3192,7 @@ class Api:
                     },
                     "cache": {
                         "hit": True,
-                        "key": cache_key,
+                        "key": cache_entry.get("cache_key") if cache_entry else cache_key,
                         "count": len(cache_entry.get("scenes") or []) if cache_entry else len(scenes),
                         "path": cache_entry.get("path") if cache_entry else "",
                     },
@@ -2921,14 +3316,19 @@ class Api:
             "report": _dump(report),
         }
 
-    def download_orbits(self, output_dir: str = "", scene_ids: list[str] | None = None) -> dict:
+    def download_orbits(
+        self,
+        output_dir: str = "",
+        scene_ids: list[str] | None = None,
+        use_orbit_subdir: bool = False,
+    ) -> dict:
         """Download POEORB companion files from ASF, then match them to scenes."""
         scenes, label = self._orbit_scene_context(scene_ids)
         if not scenes:
             return _error_msg("请先导入 ASF 场景或本地 SLC 目录", "ASF001")
         out = output_dir.strip() or self._default_output()
         if not out:
-            return _error_msg("请指定输出根目录，轨道将保存到 Sentinel_Orbit\\AUX_POEORB", "GUI003")
+            return _error_msg("请指定输出目录；未勾选子目录时轨道将直接保存到所选目录", "GUI003")
         try:
             from insar_prep.providers.orbit import (
                 download_orbits_for_scenes,
@@ -2936,7 +3336,11 @@ class Api:
                 scan_orbit_directory,
             )
 
-            summary = download_orbits_for_scenes(scenes, out)
+            summary = download_orbits_for_scenes(
+                scenes,
+                out,
+                use_orbit_subdir=_coerce_bool(use_orbit_subdir, False),
+            )
             orbit_files = scan_orbit_directory(summary.orbit_dir, recursive=True)
             report = match_orbits_for_scenes(scenes, orbit_files)
         except InsarPrepError as exc:
@@ -2967,23 +3371,65 @@ class Api:
         output_dir: str = "",
         scene_ids: list[str] | None = None,
         max_concurrent: int = 10,
+        use_orbit_subdir: bool = False,
     ) -> dict:
         """Start POEORB companion downloads in the background."""
         scenes, label = self._orbit_scene_context(scene_ids)
+        return self._start_orbit_download_for_scenes(
+            scenes,
+            label=label,
+            output_dir=output_dir,
+            max_concurrent=max_concurrent,
+            use_orbit_subdir=use_orbit_subdir,
+        )
+
+    def start_orbit_download_snapshot(
+        self,
+        output_dir: str = "",
+        scenes_snapshot: list[dict[str, Any]] | None = None,
+        scene_ids: list[str] | None = None,
+        max_concurrent: int = 10,
+        use_orbit_subdir: bool = False,
+    ) -> dict:
+        """Start POEORB downloads from a frozen Orbit task snapshot."""
+        try:
+            scenes = [_scene_from_row(row) for row in (scenes_snapshot or []) if isinstance(row, dict)]
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(f"任务快照解析失败：{exc}", "ASF001")
+        selected_ids = {str(item).strip() for item in (scene_ids or []) if str(item).strip()}
+        if selected_ids:
+            scenes = [scene for scene in scenes if str(getattr(scene, "scene_id", "")) in selected_ids]
+        return self._start_orbit_download_for_scenes(
+            scenes,
+            label=f"轨道任务快照（选中 {len(scenes)} 景）",
+            output_dir=output_dir,
+            max_concurrent=max_concurrent,
+            use_orbit_subdir=use_orbit_subdir,
+        )
+
+    def _start_orbit_download_for_scenes(
+        self,
+        scenes: list[Any],
+        *,
+        label: str,
+        output_dir: str = "",
+        max_concurrent: int = 10,
+        use_orbit_subdir: bool = False,
+    ) -> dict:
         if not scenes:
             return _error_msg("请先导入 ASF 场景或本地 SLC 目录", "ASF001")
         out = output_dir.strip() or self._default_output()
         if not out:
-            return _error_msg("请指定输出根目录，轨道将保存到 Sentinel_Orbit\\AUX_POEORB", "GUI003")
+            return _error_msg("请指定输出目录；未勾选子目录时轨道将直接保存到所选目录", "GUI003")
         self._act(f"开始精密轨道下载：{label}（{len(scenes)} 景）", kind="download")
-        self._forget_deleted_archive_key(
-            "orbit",
-            str(Path(out) / "Sentinel_Orbit" / "AUX_POEORB"),
-        )
+        use_subdir = _coerce_bool(use_orbit_subdir, False)
+        orbit_dir = Path(out) / "Sentinel_Orbit" if use_subdir else Path(out)
+        self._forget_deleted_archive_key("orbit", str(orbit_dir), use_orbit_subdir=use_subdir)
         result = self._orbit_download.start(
             scenes,
             out,
             max_concurrent=max_concurrent,
+            use_orbit_subdir=use_subdir,
             activity=self._activity,
         )
         self._archive_orbit_status(self._orbit_download.get_status())
@@ -3014,7 +3460,12 @@ class Api:
         return status
 
     # ----------------------------------------------------------- 3. DOWNLOAD
-    def plan_asf_download(self, output_dir: str = "", scene_ids: list[str] | None = None) -> dict:
+    def plan_asf_download(
+        self,
+        output_dir: str = "",
+        scene_ids: list[str] | None = None,
+        use_product_subdirs: bool = False,
+    ) -> dict:
         """Build (dry-run) an ASF Sentinel-1 download plan."""
         scenes, region_safe_name, _ = self._active_scene_context()
         selected_ids = {str(item).strip() for item in (scene_ids or []) if str(item).strip()}
@@ -3036,6 +3487,8 @@ class Api:
                 scenes=unique,
                 output_dir=out,
                 region_safe_name=region_safe_name,
+                use_product_subdirs=_coerce_bool(use_product_subdirs, False),
+                product_subdir_root="",
             )
         except InsarPrepError as exc:
             return _error(exc)
@@ -3051,6 +3504,7 @@ class Api:
         credential_source: str = "auto",
         max_concurrent: int = 1,
         scene_ids: list[str] | None = None,
+        use_product_subdirs: bool = False,
     ) -> dict:
         """Start a real ASF Sentinel-1 download on a background thread."""
         scenes, _, label = self._active_scene_context()
@@ -3058,6 +3512,55 @@ class Api:
         if selected_ids:
             scenes = [scene for scene in scenes if str(getattr(scene, "scene_id", "")) in selected_ids]
             label = f"{label}（选中 {len(scenes)} 景）"
+        return self._start_asf_download_for_scenes(
+            scenes,
+            label=label,
+            output_dir=output_dir,
+            credential_source=credential_source,
+            max_concurrent=max_concurrent,
+            use_product_subdirs=use_product_subdirs,
+        )
+
+    def start_asf_download_snapshot(
+        self,
+        output_dir: str = "",
+        scenes_snapshot: list[dict[str, Any]] | None = None,
+        scene_ids: list[str] | None = None,
+        credential_source: str = "auto",
+        max_concurrent: int = 1,
+        use_product_subdirs: bool = False,
+    ) -> dict:
+        """Start ASF downloading from a frozen UI task snapshot.
+
+        This keeps queued download tasks independent from later ASF searches that
+        replace the current workbench results.
+        """
+        try:
+            scenes = [_scene_from_row(row) for row in (scenes_snapshot or []) if isinstance(row, dict)]
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(f"任务快照解析失败：{exc}", "ASF001")
+        selected_ids = {str(item).strip() for item in (scene_ids or []) if str(item).strip()}
+        if selected_ids:
+            scenes = [scene for scene in scenes if str(getattr(scene, "scene_id", "")) in selected_ids]
+        return self._start_asf_download_for_scenes(
+            scenes,
+            label=f"任务快照（选中 {len(scenes)} 景）",
+            output_dir=output_dir,
+            credential_source=credential_source,
+            max_concurrent=max_concurrent,
+            use_product_subdirs=use_product_subdirs,
+        )
+
+    def _start_asf_download_for_scenes(
+        self,
+        scenes: list[Any],
+        *,
+        label: str,
+        output_dir: str = "",
+        credential_source: str = "auto",
+        max_concurrent: int = 1,
+        use_product_subdirs: bool = False,
+    ) -> dict:
         if not scenes:
             return _error_msg("请先选择要下载的 SAR 影像", "ASF001")
         out = output_dir.strip() or self._default_output()
@@ -3086,13 +3589,18 @@ class Api:
         trust_env = False
         asf_ssl_verify = bool(self._network_settings.get("asf_ssl_verify", True))
         try:
-            from insar_prep.providers.asf.download_plan import SLC_SUBDIR
             from insar_prep.providers.asf.downloader import (
                 RealAsfDownloader,
                 download_requests_from_scenes,
             )
 
-            requests = download_requests_from_scenes(scenes, slc_dir=Path(out) / SLC_SUBDIR)
+            use_subdirs = _coerce_bool(use_product_subdirs, False)
+            requests = download_requests_from_scenes(
+                scenes,
+                slc_dir=Path(out),
+                use_product_subdirs=use_subdirs,
+                product_subdir_base=Path(out) if use_subdirs else None,
+            )
             if not requests:
                 return _error_msg("当前影像没有 ASF 下载 URL，请先重新检索或导入 ASF 官方文件。", "ASF003")
             chosen_network: dict[str, Any] | None = None
@@ -3137,7 +3645,7 @@ class Api:
             f"开始 Sentinel-1 下载：{label}（{len(scenes)} 景，并发 {workers}）",
             kind="download",
         )
-        self._forget_deleted_archive_key("asf", out)
+        self._forget_deleted_archive_key("asf", out, use_product_subdirs=use_subdirs)
         result = self._asf_download.start(
             scenes,
             out,
@@ -3146,6 +3654,7 @@ class Api:
             proxy_url=proxy_url,
             ssl_verify=asf_ssl_verify,
             trust_env=trust_env,
+            use_product_subdirs=use_subdirs,
             activity=self._activity,
         )
         get_status = getattr(self._asf_download, "get_status", None)
@@ -3158,6 +3667,7 @@ class Api:
         output_dir: str = "",
         max_extra_workers: int = 0,
         scene_ids: list[str] | None = None,
+        task_id: str = "",
     ) -> dict:
         """Append selected ASF scenes to the currently running/paused download."""
         scenes, _, label = self._active_scene_context()
@@ -3173,6 +3683,7 @@ class Api:
             scenes,
             out,
             max_extra_workers=max(0, min(int(max_extra_workers or 0), 8)),
+            task_id=str(task_id or "").strip(),
         )
         if result.get("ok"):
             self._act(
@@ -3182,39 +3693,72 @@ class Api:
         self._archive_asf_status(self._asf_download.get_status())
         return result
 
-    def pause_asf_scenes(self, scene_ids: list[str] | None = None) -> dict:
+    def pause_asf_scenes(self, scene_ids: list[str] | None = None, task_id: str = "") -> dict:
         """Pause only selected ASF scenes without pausing the whole task."""
-        result = self._asf_download.pause_scenes(scene_ids or [])
+        result = self._asf_download.pause_scenes(scene_ids or [], task_id=str(task_id or "").strip())
         self._archive_asf_status(self._asf_download.get_status())
         return result
 
-    def resume_asf_scenes(self, scene_ids: list[str] | None = None) -> dict:
+    def append_asf_download_snapshot(
+        self,
+        output_dir: str = "",
+        scenes_snapshot: list[dict[str, Any]] | None = None,
+        scene_ids: list[str] | None = None,
+        max_extra_workers: int = 0,
+        task_id: str = "",
+    ) -> dict:
+        """Append scenes from a frozen UI task snapshot to a specific ASF task."""
+        try:
+            scenes = [_scene_from_row(row) for row in (scenes_snapshot or []) if isinstance(row, dict)]
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(f"任务快照解析失败：{exc}", "ASF001")
+        selected_ids = {str(item).strip() for item in (scene_ids or []) if str(item).strip()}
+        if selected_ids:
+            scenes = [scene for scene in scenes if str(getattr(scene, "scene_id", "")) in selected_ids]
+        if not scenes:
+            return _error_msg("请先勾选要追加下载的 SAR 影像", "ASF001")
+        out = output_dir.strip()
+        result = self._asf_download.append(
+            scenes,
+            out or None,
+            max_extra_workers=max(0, min(int(max_extra_workers or 0), 8)),
+            task_id=str(task_id or "").strip(),
+        )
+        if result.get("ok"):
+            self._act(
+                f"追加 Sentinel-1 任务快照下载：新增 {result.get('appended', 0)} 景",
+                kind="download",
+            )
+        self._archive_asf_status(self._asf_download.get_status())
+        return result
+
+    def resume_asf_scenes(self, scene_ids: list[str] | None = None, task_id: str = "") -> dict:
         """Resume selected scene-level pauses."""
-        result = self._asf_download.resume_scenes(scene_ids or [])
+        result = self._asf_download.resume_scenes(scene_ids or [], task_id=str(task_id or "").strip())
         self._archive_asf_status(self._asf_download.get_status())
         return result
 
-    def pause_asf_download(self) -> dict:
+    def pause_asf_download(self, task_id: str = "") -> dict:
         """Pause between scenes (current scene finishes first)."""
-        result = self._asf_download.pause()
+        result = self._asf_download.pause(str(task_id or "").strip())
         self._archive_asf_status(self._asf_download.get_status())
         return result
 
-    def resume_asf_download(self) -> dict:
+    def resume_asf_download(self, task_id: str = "") -> dict:
         """Resume a paused download."""
-        result = self._asf_download.resume()
+        result = self._asf_download.resume(str(task_id or "").strip())
         self._archive_asf_status(self._asf_download.get_status())
         return result
 
-    def stop_asf_download(self) -> dict:
+    def stop_asf_download(self, task_id: str = "") -> dict:
         """Cancel the in-progress download."""
-        result = self._asf_download.stop()
+        result = self._asf_download.stop(str(task_id or "").strip())
         self._archive_asf_status(self._asf_download.get_status())
         return result
 
-    def retry_asf_download(self) -> dict:
+    def retry_asf_download(self, task_id: str = "") -> dict:
         """Retry only failed/interrupted scenes from the previous ASF download."""
-        result = self._asf_download.retry_failed(activity=self._activity)
+        result = self._asf_download.retry_failed(activity=self._activity, task_id=str(task_id or "").strip())
         self._archive_asf_status(self._asf_download.get_status())
         return result
 
@@ -5008,12 +5552,65 @@ def _read_aoi_vector_features(path: str | Path) -> list[dict[str, Any]]:
     raise ValueError("暂不支持该边界格式；请使用 .shp、.kml、.kmz、.geojson 或 .json。")
 
 
+def _read_aoi_vector_features_from_text(file_name: str, text: str) -> list[dict[str, Any]]:
+    """Read AOI features from browser-dragged text content."""
+    source = Path(str(file_name or "boundary"))
+    suffix = source.suffix.lower()
+    raw = str(text or "")
+    if suffix not in {".geojson", ".json", ".kml"}:
+        if suffix in {".shp", ".kmz"}:
+            raise ValueError("该格式需要按二进制读取；请重新拖入文件，或点击“上传本地边界”选择文件。")
+        raise ValueError("仅支持 .shp、.kml、.kmz、.geojson 或 .json 边界文件。")
+    if not raw.strip():
+        raise ValueError("边界文件内容为空。")
+    if suffix in {".geojson", ".json"}:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"GeoJSON/JSON 解析失败：第 {exc.lineno} 行第 {exc.colno} 列附近格式不正确。") from exc
+        return _read_geojson_aoi_features_from_data(data)
+    return _read_kml_aoi_features(raw.encode("utf-8"), source.name)
+
+
+def _read_aoi_vector_features_from_bytes(file_name: str, raw: bytes) -> list[dict[str, Any]]:
+    """Read AOI features from browser-dragged binary content."""
+    source = Path(str(file_name or "boundary"))
+    suffix = source.suffix.lower()
+    if not raw:
+        raise ValueError("边界文件内容为空。")
+    if suffix == ".shp":
+        raise ValueError(
+            "拖拽单个 .shp 文件缺少配套 .dbf/.shx/.prj，无法可靠识别属性和坐标系；"
+            "请点击“上传本地边界”选择 .shp 文件。"
+        )
+    if suffix == ".kmz":
+        import zipfile
+
+        from insar_prep.processing.aoi_vector import _first_kml_name
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                kml_name = _first_kml_name(archive.namelist())
+                if kml_name is None:
+                    raise ValueError("KMZ 文件内没有 .kml 文件。")
+                return _read_kml_aoi_features(archive.read(kml_name), f"{source.name}!{kml_name}")
+        except zipfile.BadZipFile as exc:
+            raise ValueError("KMZ 文件不是有效压缩包。") from exc
+    if suffix in {".geojson", ".json", ".kml"}:
+        return _read_aoi_vector_features_from_text(source.name, raw.decode("utf-8", errors="replace"))
+    raise ValueError("仅支持 .shp、.kml、.kmz、.geojson 或 .json 边界文件。")
+
+
 def _read_geojson_aoi_features(source: Path) -> list[dict[str, Any]]:
+    data = json.loads(source.read_text(encoding="utf-8"))
+    return _read_geojson_aoi_features_from_data(data)
+
+
+def _read_geojson_aoi_features_from_data(data: Any) -> list[dict[str, Any]]:
     from shapely.geometry import mapping, shape
 
     from insar_prep.processing.aoi_import import _coerce_to_areal_geometry, _reject_non_wgs84_crs
 
-    data = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("GeoJSON 顶层必须是对象。")
     _reject_non_wgs84_crs(data)
@@ -5048,6 +5645,85 @@ def _read_geojson_aoi_features(source: Path) -> list[dict[str, Any]]:
     if not out:
         raise ValueError("边界文件内没有可用面要素。")
     return out
+
+
+def _feature_collection_from_aoi_features(features: list[dict[str, Any]], source: str = "") -> dict[str, Any]:
+    return {
+        "type": "FeatureCollection",
+        "properties": {"source_file": source},
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    **dict(feature.get("properties") or {}),
+                    "_insar_feature_index": index,
+                    "_insar_feature_name": _aoi_feature_name(feature),
+                },
+                "geometry": feature["geometry"],
+            }
+            for index, feature in enumerate(features)
+            if isinstance(feature.get("geometry"), dict)
+        ],
+    }
+
+
+def _selected_geojson_from_feature_collection(
+    geojson: dict,
+    feature_ids: list[Any] | None = None,
+    name_field: str = "",
+    download_mode: str = "merge",
+) -> dict[str, Any]:
+    if not isinstance(geojson, dict):
+        raise ValueError("边界数据必须是 GeoJSON 对象。")
+    features = _read_geojson_aoi_features_from_data(geojson)
+    selected_indices = _normalise_feature_indices(feature_ids, len(features))
+    if not selected_indices:
+        raise ValueError("请至少选择一个边界要素。")
+    field = str(name_field or "").strip()
+    selected = [features[index] for index in selected_indices]
+    collection_props = geojson.get("properties") if isinstance(geojson.get("properties"), dict) else {}
+    selected_geojson = {
+        "type": "FeatureCollection",
+        "properties": {
+            "source_file": str(collection_props.get("source_file") or "dragged-boundary"),
+            "selected_feature_count": len(selected),
+            "total_feature_count": len(features),
+            "download_mode": "split" if str(download_mode).strip() == "split" else "merge",
+        },
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    **dict(feature.get("properties") or {}),
+                    "_insar_feature_index": selected_indices[i],
+                    "_insar_feature_name": _aoi_feature_name(feature, field),
+                },
+                "geometry": feature["geometry"],
+            }
+            for i, feature in enumerate(selected)
+        ],
+    }
+    return selected_geojson
+
+
+def _friendly_aoi_error(exc: Exception, source: str | Path = "") -> str:
+    source_name = Path(str(source or "边界文件")).name
+    text = str(exc or "").strip()
+    if isinstance(exc, FileNotFoundError) or "不存在" in text or "not found" in text.lower():
+        return "没有读取到文件的真实本机路径。请重新拖入文件；如果仍失败，请点击“上传本地边界”选择文件。"
+    if "unsupported" in text.lower() or "暂不支持" in text or "仅支持" in text:
+        return "仅支持 .shp、.kml、.kmz、.geojson 或 .json 边界文件。"
+    if "GeoJSON" in text or "JSON" in text:
+        return text
+    if "KML" in text or "KMZ" in text:
+        return text
+    if "缺少配套" in text or ".dbf" in text or ".shx" in text:
+        return text
+    if "Shapefile" in text or "shapefile" in text:
+        return "Shapefile 读取失败；请确认它是面边界，且坐标为 WGS84 经纬度。"
+    if "边界文件内容为空" in text or "没有可用面要素" in text or "请至少选择" in text:
+        return text
+    return f"{source_name} 不是可识别的边界文件，请检查文件格式和坐标系。"
 
 
 def _read_kml_aoi_features(raw: bytes, source: str) -> list[dict[str, Any]]:
@@ -5102,6 +5778,24 @@ def _read_kml_aoi_features(raw: bytes, source: str) -> list[dict[str, Any]]:
 
 
 def _read_shapefile_aoi_features(source: Path) -> list[dict[str, Any]]:
+    from insar_prep.processing.aoi_vector import (
+        _check_shapefile_prj,
+    )
+
+    _check_shapefile_prj(source)
+    return _read_shapefile_aoi_features_from_bytes(
+        source.read_bytes(),
+        str(source),
+        dbf_rows=_read_dbf_records(source.with_suffix(".dbf")),
+    )
+
+
+def _read_shapefile_aoi_features_from_bytes(
+    data: bytes,
+    source: str,
+    *,
+    dbf_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     import struct
 
     from shapely.geometry import mapping
@@ -5111,18 +5805,15 @@ def _read_shapefile_aoi_features(source: Path) -> list[dict[str, Any]]:
         _SHP_HEADER_SIZE,
         _SHP_NULL_TYPE,
         _SHP_POLYGON_TYPES,
-        _check_shapefile_prj,
         _polygons_from_shapefile_record,
     )
 
-    _check_shapefile_prj(source)
-    data = source.read_bytes()
     if len(data) < _SHP_HEADER_SIZE or struct.unpack(">i", data[0:4])[0] != 9994:
         raise ValueError(f"不是有效 Shapefile：{source}")
     file_type = struct.unpack("<i", data[32:36])[0]
     if file_type != _SHP_NULL_TYPE and file_type not in _SHP_POLYGON_TYPES:
         raise ValueError("Shapefile 不是面要素，不能作为 AOI。")
-    dbf_rows = _read_dbf_records(source.with_suffix(".dbf"))
+    rows = dbf_rows or []
     out: list[dict[str, Any]] = []
     offset = _SHP_HEADER_SIZE
     size = len(data)
@@ -5147,7 +5838,7 @@ def _read_shapefile_aoi_features(source: Path) -> list[dict[str, Any]]:
         row_index = max(0, int(record_number) - 1)
         out.append(
             {
-                "properties": _clean_aoi_properties(dbf_rows[row_index] if row_index < len(dbf_rows) else {}),
+                "properties": _clean_aoi_properties(rows[row_index] if row_index < len(rows) else {}),
                 "geometry": dict(mapping(unary_union(polygons))),
                 "_source_index": row_index,
             }
@@ -5911,6 +6602,19 @@ def _scene_row(scene: Any) -> dict:
         "has_url": bool(d.get("url")),
         "download_url": d.get("url") or "",
     }
+
+
+def _scene_from_row(row: dict[str, Any]) -> Any:
+    """Rebuild a Scene from a frozen UI task snapshot row."""
+    from insar_prep.core.models import Scene
+
+    allowed = set(Scene.model_fields)
+    data = {key: value for key, value in row.items() if key in allowed}
+    if row.get("download_url") and not data.get("url"):
+        data["url"] = row.get("download_url")
+    if row.get("path") is not None and data.get("relative_orbit") is None:
+        data["relative_orbit"] = row.get("path")
+    return Scene.model_validate(data)
 
 
 def _sort_scenes_by_acquisition_date(scenes: list[Any]) -> list[Any]:

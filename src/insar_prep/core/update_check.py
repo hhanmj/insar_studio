@@ -70,6 +70,9 @@ class UpdateInfo:
     latest_version: str
     html_url: str
     update_available: bool
+    release_name: str = ""
+    changelog: str = ""
+    published_at: str = ""
     assets: tuple[ReleaseAsset, ...] = ()
 
 
@@ -210,6 +213,9 @@ def check_for_update(
         latest_version=str(tag),
         html_url=str(html_url),
         update_available=is_newer(tag, current_version),
+        release_name=str(payload.get("name") or tag),
+        changelog=str(payload.get("body") or "").strip(),
+        published_at=str(payload.get("published_at") or ""),
         assets=_parse_release_assets(payload),
     )
 
@@ -279,6 +285,9 @@ def _cached_update(cache: dict, current_version: str, repo: str) -> UpdateInfo |
             latest_version=str(cached_tag),
             html_url=str(cache.get("html_url") or releases_page_url(repo)),
             update_available=True,
+            release_name=str(cache.get("release_name") or cached_tag),
+            changelog=str(cache.get("changelog") or ""),
+            published_at=str(cache.get("published_at") or ""),
             assets=tuple(assets),
         )
     return None
@@ -319,6 +328,9 @@ def maybe_check_for_update(
     if info is not None:
         new_cache["latest_version"] = info.latest_version
         new_cache["html_url"] = info.html_url
+        new_cache["release_name"] = info.release_name
+        new_cache["changelog"] = info.changelog
+        new_cache["published_at"] = info.published_at
         new_cache["assets"] = [
             {
                 "name": asset.name,
@@ -331,6 +343,10 @@ def maybe_check_for_update(
     elif cache.get("latest_version"):
         new_cache["latest_version"] = cache["latest_version"]
         new_cache["html_url"] = cache.get("html_url", "")
+        new_cache["release_name"] = cache.get("release_name", "")
+        new_cache["changelog"] = cache.get("changelog", "")
+        new_cache["published_at"] = cache.get("published_at", "")
+        new_cache["assets"] = cache.get("assets", [])
     _save_cache(path, new_cache)
 
     if info is not None:

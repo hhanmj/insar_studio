@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from insar_prep.core.models import Scene
+from insar_prep.desktop.api import Api
 from insar_prep.desktop.download_job import OrbitDownloadJob
 from insar_prep.providers.orbit.downloader import OrbitDownloadOutcome, OrbitDownloadResult
 
@@ -145,3 +146,55 @@ def test_orbit_download_job_updates_live_counts_and_active_scenes(
     assert final["failed"] == 1
     assert final["has_failures"] is True
     assert final["active_scenes"] == []
+
+
+def test_api_orbit_download_snapshot_uses_frozen_scenes_not_current_candidates(
+    tmp_path: Path,
+) -> None:
+    api = Api()
+    captured: dict[str, object] = {}
+
+    class FakeOrbitDownload:
+        def start(self, scenes, output_dir, *, max_concurrent=10, use_orbit_subdir=False, activity=None):
+            captured["scene_ids"] = [scene.scene_id for scene in scenes]
+            captured["output_dir"] = str(output_dir)
+            captured["max_concurrent"] = max_concurrent
+            captured["use_orbit_subdir"] = use_orbit_subdir
+            return {"ok": True}
+
+        def get_status(self):
+            return {
+                "ok": True,
+                "state": "running",
+                "total": len(captured.get("scene_ids", [])),
+                "done": 0,
+                "concurrency": captured.get("max_concurrent", 10),
+                "current_scene": "",
+                "orbit_dir": str(tmp_path / "out"),
+                "use_orbit_subdir": captured.get("use_orbit_subdir", False),
+                "download_layout": "orbit_subdir" if captured.get("use_orbit_subdir", False) else "flat",
+                "cancelled": False,
+                "error": None,
+                "summary_line": "",
+                "log": [],
+            }
+
+    api._orbit_download = FakeOrbitDownload()
+    api._orbit_candidate_scenes = [Scene(scene_id="S1A_SECOND_BATCH")]
+
+    result = api.start_orbit_download_snapshot(
+        str(tmp_path / "out"),
+        [
+            {"scene_id": "S1A_FIRST_KEEP", "platform": "S1A", "product_type": "SLC"},
+            {"scene_id": "S1A_FIRST_DROP", "platform": "S1A", "product_type": "SLC"},
+        ],
+        ["S1A_FIRST_KEEP"],
+        6,
+        True,
+    )
+
+    assert result["ok"] is True
+    assert captured["scene_ids"] == ["S1A_FIRST_KEEP"]
+    assert captured["output_dir"] == str(tmp_path / "out")
+    assert captured["max_concurrent"] == 6
+    assert captured["use_orbit_subdir"] is True

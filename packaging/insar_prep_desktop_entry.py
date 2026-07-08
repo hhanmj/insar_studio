@@ -20,15 +20,41 @@ Because the exe is windowed (no console), a self-test failure is written to
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+
+_DLL_DIR_HANDLES: list[object] = []
+
+
+def _activate_bundled_gdal_runtime() -> None:
+    """Point GDAL/PROJ at data directories bundled by the PyInstaller build."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return
+
+    import os
+
+    root = Path(meipass)
+    if hasattr(os, "add_dll_directory"):
+        handle = os.add_dll_directory(str(root))
+        _DLL_DIR_HANDLES.append(handle)
+
+    gdal_data = root / "gdal_data"
+    proj_data = root / "proj_data"
+    if gdal_data.exists():
+        os.environ["GDAL_DATA"] = str(gdal_data)
+    if proj_data.exists():
+        os.environ["PROJ_LIB"] = str(proj_data)
+        os.environ["PROJ_DATA"] = str(proj_data)
 
 
 def _selftest() -> int:
     import os
     import tempfile
     import traceback
-    from pathlib import Path
 
     try:
+        _activate_bundled_gdal_runtime()
         from insar_prep.desktop.api import Api
         from insar_prep.desktop.app import resolve_url
 
@@ -72,6 +98,35 @@ def _selftest() -> int:
             check("plan_dem_download", api.plan_dem_download())
             check("plan_dem_conversion", api.plan_dem_conversion())
             check("generate_report", api.generate_report())
+
+            if os.environ.get("INSAR_SELFTEST_SKIP_RASTERIO") != "1":
+                import numpy as np
+                import pyproj
+                import rasterio
+                from rasterio.transform import from_origin
+
+                crs = pyproj.CRS.from_epsg(4326)
+                if crs.to_epsg() != 4326:
+                    raise RuntimeError(f"pyproj CRS check failed: {crs}")
+                raster_path = Path(tmp) / "selftest_dem.tif"
+                with rasterio.open(
+                    raster_path,
+                    "w",
+                    driver="GTiff",
+                    height=2,
+                    width=2,
+                    count=1,
+                    dtype="float32",
+                    crs="EPSG:4326",
+                    transform=from_origin(110.0, 31.0, 0.001, 0.001),
+                ) as dataset:
+                    dataset.write(np.ones((2, 2), dtype=np.float32), 1)
+                with rasterio.open(raster_path) as dataset:
+                    if dataset.crs is None or dataset.crs.to_epsg() != 4326:
+                        raise RuntimeError(f"rasterio CRS check failed: {dataset.crs}")
+                    data = dataset.read(1)
+                    if data.shape != (2, 2):
+                        raise RuntimeError(f"rasterio read shape check failed: {data.shape}")
     except Exception:  # noqa: BLE001 - windowed exe: persist the reason, fail loud
         log = Path(tempfile.gettempdir()) / "insar_desktop_selftest.log"
         try:
@@ -86,6 +141,7 @@ def _selftest() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _activate_bundled_gdal_runtime()
     args = list(sys.argv[1:] if argv is None else argv)
     if "--selftest" in args:
         return _selftest()

@@ -55,11 +55,16 @@ DOWNLOAD_RESULT_COLUMNS = [
 ]
 
 
-def write_download_results_csv(output_dir: Path | str, results: Sequence[DownloadResult]) -> Path:
+def write_download_results_csv(
+    output_dir: Path | str,
+    results: Sequence[DownloadResult],
+    *,
+    results_subdir: str | None = ASF_PLAN_SUBDIR,
+) -> Path:
     """Write a credential-masked per-scene results TXT; return its path."""
-    plan_dir = Path(output_dir) / ASF_PLAN_SUBDIR
-    plan_dir.mkdir(parents=True, exist_ok=True)
-    results_path = plan_dir / "asf_download_results.txt"
+    results_dir = Path(output_dir) / results_subdir if results_subdir else Path(output_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    results_path = results_dir / "asf_download_results.txt"
     rows = [
         {
             "scene_id": mask_text(result.scene_id),
@@ -122,10 +127,13 @@ def run_asf_download(
     downloader: AsfDownloader | None = None,
     resolver: CredentialResolver = resolve_credentials,
     max_retries: int = 3,
+    use_product_subdirs: bool = True,
+    product_subdir_base: Path | None = None,
+    results_subdir: str | None = ASF_PLAN_SUBDIR,
     progress: ProgressCallback | None = None,
     cancel_event: Event | None = None,
 ) -> DownloadRunSummary:
-    """Download the SAR products implied by ``scenes`` into ``<output_dir>/SAR_Data``.
+    """Download the SAR products implied by ``scenes`` into the requested output layout.
 
     Resolves Earthdata credentials (unless an explicit ``downloader`` is given),
     downloads each unique scene that carries a URL, writes a credential-masked
@@ -141,7 +149,17 @@ def run_asf_download(
     """
     output_path = Path(output_dir)
     unique_scenes, _duplicates = deduplicate_scenes(list(scenes))
-    requests_to_run = download_requests_from_scenes(unique_scenes, slc_dir=output_path / SLC_SUBDIR)
+    request_slc_dir = (
+        output_path / SLC_SUBDIR
+        if use_product_subdirs and product_subdir_base is None
+        else output_path
+    )
+    requests_to_run = download_requests_from_scenes(
+        unique_scenes,
+        slc_dir=request_slc_dir,
+        use_product_subdirs=use_product_subdirs,
+        product_subdir_base=product_subdir_base,
+    )
     if not requests_to_run:
         raise InsarPrepError(
             "no scenes with a download URL; import an ASF cart that includes download URLs",
@@ -176,7 +194,11 @@ def run_asf_download(
             cancelled = True
             break
 
-    results_path = write_download_results_csv(output_path, results) if results else None
+    results_path = (
+        write_download_results_csv(output_path, results, results_subdir=results_subdir)
+        if results
+        else None
+    )
     counts = {outcome: 0 for outcome in DownloadOutcome}
     for result in results:
         counts[result.outcome] += 1

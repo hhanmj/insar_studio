@@ -240,9 +240,14 @@ def download_orbit_for_scene(scene: "Scene", orbit_dir: Path | str) -> OrbitDown
 def download_orbits_for_scenes(
     scenes: "Iterable[Scene]",
     output_root: Path | str,
+    *,
+    use_orbit_subdir: bool | None = None,
 ) -> OrbitDownloadSummary:
-    """Download POEORB files for ``scenes`` under ``Sentinel_Orbit/AUX_POEORB``."""
-    orbit_dir = poeorb_directory(output_root)
+    """Download POEORB files for ``scenes`` into the requested orbit directory."""
+    if use_orbit_subdir is None:
+        orbit_dir = poeorb_directory(output_root)
+    else:
+        orbit_dir = Path(output_root) / ORBIT_ROOT_DIR if use_orbit_subdir else Path(output_root)
     results: list[OrbitDownloadResult] = []
     seen_scene_ids: set[str] = set()
     seen_orbit_files: set[str] = set()

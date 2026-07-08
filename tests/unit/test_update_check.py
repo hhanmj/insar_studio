@@ -58,12 +58,21 @@ def test_is_newer(candidate: str, current: str | None, newer: bool) -> None:
 
 
 def test_check_for_update_detects_newer() -> None:
-    payload = {"tag_name": "v0.13.0", "html_url": "https://example/releases/v0.13.0"}
+    payload = {
+        "tag_name": "v0.13.0",
+        "name": "InSAR Studio 0.13.0",
+        "html_url": "https://example/releases/v0.13.0",
+        "body": "- Startup update dialog\n- Download package",
+        "published_at": "2026-07-08T00:00:00Z",
+    }
     info = uc.check_for_update("0.12.0", fetch=lambda url, timeout: payload)
     assert info is not None
     assert info.update_available is True
     assert info.latest_version == "v0.13.0"
     assert info.html_url == "https://example/releases/v0.13.0"
+    assert info.release_name == "InSAR Studio 0.13.0"
+    assert "Startup update dialog" in info.changelog
+    assert info.published_at == "2026-07-08T00:00:00Z"
 
 
 def test_check_for_update_up_to_date() -> None:
@@ -122,6 +131,32 @@ def test_maybe_check_fetches_and_caches(tmp_path: Path) -> None:
     assert saved["last_check_ts"] == 1000.0
 
 
+def test_maybe_check_caches_changelog_for_startup_prompt(tmp_path: Path) -> None:
+    cache = tmp_path / "cache.json"
+
+    def _fetch(url: str, timeout: float) -> dict:
+        return {
+            "tag_name": "v0.13.0",
+            "name": "InSAR Studio 0.13.0",
+            "html_url": "https://example/r",
+            "body": "更新日志正文",
+            "published_at": "2026-07-08T00:00:00Z",
+        }
+
+    first = uc.maybe_check_for_update("0.12.0", env={}, now=1000.0, fetch=_fetch, cache_path=cache)
+    assert first is not None
+    assert first.changelog == "更新日志正文"
+
+    def _no_fetch(url: str, timeout: float) -> dict:
+        pytest.fail("must reuse cached update metadata inside the throttle interval")
+
+    cached = uc.maybe_check_for_update("0.12.0", env={}, now=1100.0, fetch=_no_fetch, cache_path=cache)
+    assert cached is not None
+    assert cached.release_name == "InSAR Studio 0.13.0"
+    assert cached.changelog == "更新日志正文"
+    assert cached.published_at == "2026-07-08T00:00:00Z"
+
+
 def test_maybe_check_throttles_within_interval(tmp_path: Path) -> None:
     cache = tmp_path / "cache.json"
     cache.write_text(
@@ -161,7 +196,12 @@ def test_maybe_check_network_failure_uses_cached_latest(tmp_path: Path) -> None:
     cache = tmp_path / "cache.json"
     cache.write_text(
         json.dumps(
-            {"last_check_ts": 0.0, "latest_version": "v0.13.0", "html_url": "https://example/r"}
+            {
+                "last_check_ts": 0.0,
+                "latest_version": "v0.13.0",
+                "html_url": "https://example/r",
+                "assets": [{"name": "insar-prep-desktop.exe", "download_url": "https://example/a.exe"}],
+            }
         ),
         encoding="utf-8",
     )
@@ -176,6 +216,7 @@ def test_maybe_check_network_failure_uses_cached_latest(tmp_path: Path) -> None:
     )
     assert info is not None
     assert info.latest_version == "v0.13.0"
+    assert info.assets and info.assets[0].download_url == "https://example/a.exe"
 
 
 def test_cache_dir_is_under_insar_prep() -> None:

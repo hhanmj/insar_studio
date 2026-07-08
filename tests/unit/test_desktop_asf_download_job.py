@@ -8,7 +8,7 @@ import pytest
 from insar_prep.core.models import Scene
 from insar_prep.desktop.api import Api
 from insar_prep.desktop import download_job
-from insar_prep.desktop.download_job import AsfDownloadJob
+from insar_prep.desktop.download_job import AsfDownloadJob, AsfDownloadManager
 from insar_prep.providers.asf.downloader import DownloadOutcome, DownloadResult
 
 
@@ -87,6 +87,48 @@ def test_asf_download_job_can_retry_only_failed_scenes(
     assert init_kwargs[-1]["trust_env"] is True
 
 
+def test_asf_download_manager_allows_second_task_while_first_paused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SlowDownloader:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def download(self, request: object) -> DownloadResult:
+            time.sleep(0.2)
+            return DownloadResult(
+                scene_id=str(getattr(request, "scene_id")),
+                outcome=DownloadOutcome.SUCCESS,
+                path=getattr(request, "destination", None),
+                bytes_written=1,
+                message="ok",
+            )
+
+    monkeypatch.setattr(download_job, "resolve_credentials", lambda source: object())
+    monkeypatch.setattr(download_job, "RealAsfDownloader", SlowDownloader)
+
+    manager = AsfDownloadManager()
+    first = manager.start(
+        [Scene(scene_id="S1A_first", url="https://datapool.asf.alaska.edu/SLC/first.zip")],
+        tmp_path / "first",
+    )
+    assert first["ok"] is True
+    paused = manager.pause(str(first["task_id"]))
+    assert paused["ok"] is True
+
+    second = manager.start(
+        [Scene(scene_id="S1A_second", url="https://datapool.asf.alaska.edu/SLC/second.zip")],
+        tmp_path / "second",
+    )
+
+    assert second["ok"] is True
+    assert second["task_id"] != first["task_id"]
+    status = manager.get_status()
+    assert len(status["asf_tasks"]) >= 2
+    manager.shutdown(timeout=1.0)
+
+
 def test_api_persists_paused_asf_archive_across_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -112,6 +154,51 @@ def test_api_persists_paused_asf_archive_across_restart(
     assert "Sentinel-1" in archive[0]["name"]
     assert archive[0]["kind"] == "asf"
     assert "已暂停" in archive[0]["logs"][-1]
+
+
+def test_api_persists_all_paused_asf_manager_tasks_across_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    api = Api()
+    api._archive_asf_status(
+        {
+            "state": "paused",
+            "task_id": "asf-primary",
+            "total": 2,
+            "done": 0,
+            "output_dir": str(tmp_path / "primary"),
+            "summary_line": "已暂停：0/2",
+            "asf_tasks": [
+                {
+                    "state": "paused",
+                    "task_id": "asf-first",
+                    "total": 3,
+                    "done": 1,
+                    "output_dir": str(tmp_path / "first"),
+                    "summary_line": "已暂停：1/3",
+                    "log": [{"detail": "第一批已暂停"}],
+                },
+                {
+                    "state": "paused",
+                    "task_id": "asf-second",
+                    "total": 4,
+                    "done": 2,
+                    "output_dir": str(tmp_path / "second"),
+                    "summary_line": "已暂停：2/4",
+                    "log": [{"detail": "第二批已暂停"}],
+                },
+            ],
+        }
+    )
+
+    restarted = Api()
+    archive = restarted.get_download_archive()["items"]
+    paused_dirs = {Path(item["output_dir"]).name for item in archive if item["kind"] == "asf"}
+
+    assert {"first", "second"}.issubset(paused_dirs)
+    assert all(item["status"] == "paused" for item in archive if Path(item["output_dir"]).name in {"first", "second"})
 
 
 def test_api_marks_running_archive_interrupted_on_restart(

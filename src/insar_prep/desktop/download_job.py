@@ -19,7 +19,6 @@ from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import mask_text
 from insar_prep.providers.asf.credentials import CredentialSource, resolve_credentials
-from insar_prep.providers.asf.download_plan import SLC_SUBDIR
 from insar_prep.providers.asf.download_runner import write_download_results_csv
 from insar_prep.providers.asf.downloader import (
     DownloadOutcome,
@@ -85,6 +84,7 @@ class AsfDownloadJob:
         self._cancel = threading.Event()
         self._pause = threading.Event()
         self._activity: ActivityLog | None = None
+        self._last_use_orbit_subdir: bool = False
         self._last_scenes: list[object] = []
         self._last_output_dir: Path | None = None
         self._last_credential_source: CredentialSource = CredentialSource.AUTO
@@ -93,6 +93,7 @@ class AsfDownloadJob:
         self._last_proxy_url: str = ""
         self._last_ssl_verify: bool = True
         self._last_trust_env: bool = False
+        self._last_use_product_subdirs: bool = False
         self._last_failed_scene_ids: set[str] = set()
         self._pending: Queue[object] | None = None
         self._worker_context: dict[str, Any] | None = None
@@ -173,6 +174,8 @@ class AsfDownloadJob:
                 "summary_line": s.summary_line,
                 "results_path": s.results_path,
                 "output_dir": str(self._last_output_dir) if self._last_output_dir else "",
+                "use_product_subdirs": self._last_use_product_subdirs,
+                "download_layout": "product_subdirs" if self._last_use_product_subdirs else "flat",
                 "succeeded": s.succeeded,
                 "skipped": s.skipped,
                 "failed": s.failed,
@@ -201,6 +204,7 @@ class AsfDownloadJob:
         proxy_url: str = "",
         ssl_verify: bool = True,
         trust_env: bool = False,
+        use_product_subdirs: bool = False,
         activity: ActivityLog | None = None,
     ) -> dict:
         scene_list = list(scenes)
@@ -221,6 +225,7 @@ class AsfDownloadJob:
             self._last_proxy_url = str(proxy_url or "").strip()
             self._last_ssl_verify = bool(ssl_verify)
             self._last_trust_env = bool(trust_env)
+            self._last_use_product_subdirs = bool(use_product_subdirs)
             self._last_failed_scene_ids = set()
             self._completed_scene_ids = set()
             self._paused_scene_ids = set()
@@ -244,6 +249,7 @@ class AsfDownloadJob:
                 str(proxy_url or "").strip(),
                 bool(ssl_verify),
                 bool(trust_env),
+                bool(use_product_subdirs),
             ),
             daemon=True,
         )
@@ -309,6 +315,22 @@ class AsfDownloadJob:
         with self._lock:
             if self._status.state not in ("running", "paused"):
                 return {"ok": False, "error": "当前没有进行中的下载", "code": "GUI004"}
+            self._status.cancelled = True
+            self._status.paused = False
+            self._status.paused_started_at = None
+            self._status.updated_at = time.monotonic()
+            self._status.log.append(
+                {
+                    "scene_id": "",
+                    "outcome": "cancel_requested",
+                    "bytes_written": 0,
+                    "message": "用户请求结束下载",
+                    "detail": "正在结束当前下载：已请求停止传输，未完成的 .part 文件会保留用于续传。",
+                    "ts": int(time.time() * 1000),
+                }
+            )
+            for event in self._scene_cancel_events.values():
+                event.set()
         self._cancel.set()
         self._pause.clear()
         return {"ok": True}
@@ -381,7 +403,14 @@ class AsfDownloadJob:
             }
 
         unique_scenes, _ = deduplicate_scenes(list(scenes))
-        requests = download_requests_from_scenes(unique_scenes, slc_dir=bound_output / SLC_SUBDIR)
+        with self._lock:
+            use_product_subdirs = self._last_use_product_subdirs
+        requests = download_requests_from_scenes(
+            unique_scenes,
+            slc_dir=bound_output,
+            use_product_subdirs=use_product_subdirs,
+            product_subdir_base=bound_output if use_product_subdirs else None,
+        )
         if not requests:
             return {"ok": False, "error": "所选影像没有 ASF 下载 URL，请先重新检索或导入 ASF 官方文件。", "code": "ASF003"}
 
@@ -551,6 +580,7 @@ class AsfDownloadJob:
             proxy_url = self._last_proxy_url
             ssl_verify = self._last_ssl_verify
             trust_env = self._last_trust_env
+            use_product_subdirs = self._last_use_product_subdirs
 
         retry_scenes = [
             scene
@@ -568,6 +598,7 @@ class AsfDownloadJob:
             proxy_url=proxy_url,
             ssl_verify=ssl_verify,
             trust_env=trust_env,
+            use_product_subdirs=use_product_subdirs,
             activity=activity or self._activity,
         )
 
@@ -918,11 +949,15 @@ class AsfDownloadJob:
         proxy_url: str,
         ssl_verify: bool,
         trust_env: bool,
+        use_product_subdirs: bool,
     ) -> None:
         try:
             unique_scenes, _ = deduplicate_scenes(scenes)
             requests = download_requests_from_scenes(
-                unique_scenes, slc_dir=output_path / SLC_SUBDIR
+                unique_scenes,
+                slc_dir=output_path,
+                use_product_subdirs=use_product_subdirs,
+                product_subdir_base=output_path if use_product_subdirs else None,
             )
             if not requests:
                 raise InsarPrepError(
@@ -985,7 +1020,11 @@ class AsfDownloadJob:
                 with self._results_lock:
                     self._results = list(results)
 
-            results_path = write_download_results_csv(output_path, results) if results else None
+            results_path = (
+                write_download_results_csv(output_path, results, results_subdir="")
+                if results
+                else None
+            )
             counts = {outcome: 0 for outcome in DownloadOutcome}
             for result in results:
                 counts[result.outcome] += 1
@@ -1063,6 +1102,170 @@ class AsfDownloadJob:
                 self._worker_threads = []
 
 
+class AsfDownloadManager:
+    """Manage multiple independent ASF download jobs for the desktop UI."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._jobs: dict[str, AsfDownloadJob] = {}
+        self._primary_task_id = ""
+        self._task_seq = 0
+
+    def _new_task_id(self) -> str:
+        with self._lock:
+            self._task_seq += 1
+            return f"asf-{int(time.time() * 1000)}-{self._task_seq}"
+
+    @staticmethod
+    def _is_active(status: dict[str, Any]) -> bool:
+        return status.get("state") in {"running", "paused"} and not bool(status.get("cancelled"))
+
+    @staticmethod
+    def _is_visible(status: dict[str, Any]) -> bool:
+        return status.get("state") != "idle"
+
+    def _status_with_identity(self, task_id: str, job: AsfDownloadJob) -> dict[str, Any]:
+        status = job.get_status()
+        status["task_id"] = task_id
+        status["name"] = "Sentinel-1 数据下载"
+        return status
+
+    def _visible_statuses_locked(self) -> list[dict[str, Any]]:
+        statuses = [
+            self._status_with_identity(task_id, job)
+            for task_id, job in self._jobs.items()
+        ]
+        statuses = [status for status in statuses if self._is_visible(status)]
+        return sorted(
+            statuses,
+            key=lambda item: (
+                0 if self._is_active(item) else 1,
+                str(item.get("task_id") or ""),
+            ),
+        )
+
+    def _primary_status(self, statuses: list[dict[str, Any]]) -> dict[str, Any]:
+        if not statuses:
+            return AsfDownloadJob().get_status()
+        if self._primary_task_id:
+            primary = next((item for item in statuses if item.get("task_id") == self._primary_task_id), None)
+            if primary is not None:
+                return primary
+        return statuses[0]
+
+    def get_status(self) -> dict:
+        with self._lock:
+            statuses = self._visible_statuses_locked()
+            primary = dict(self._primary_status(statuses))
+        primary["asf_tasks"] = statuses
+        primary["active_task_count"] = sum(1 for item in statuses if self._is_active(item))
+        return primary
+
+    def start(
+        self,
+        scenes: Iterable[object],
+        output_dir: str | Path,
+        *,
+        credential_source: CredentialSource = CredentialSource.AUTO,
+        max_retries: int = 5,
+        max_concurrent: int = 1,
+        proxy_url: str = "",
+        ssl_verify: bool = True,
+        trust_env: bool = False,
+        use_product_subdirs: bool = False,
+        activity: ActivityLog | None = None,
+    ) -> dict:
+        task_id = self._new_task_id()
+        job = AsfDownloadJob()
+        result = job.start(
+            scenes,
+            output_dir,
+            credential_source=credential_source,
+            max_retries=max_retries,
+            max_concurrent=max_concurrent,
+            proxy_url=proxy_url,
+            ssl_verify=ssl_verify,
+            trust_env=trust_env,
+            use_product_subdirs=use_product_subdirs,
+            activity=activity,
+        )
+        if not result.get("ok"):
+            return result
+        with self._lock:
+            self._jobs[task_id] = job
+            self._primary_task_id = task_id
+        return {**result, "task_id": task_id}
+
+    def _job_for_task(self, task_id: str = "") -> tuple[str, AsfDownloadJob | None]:
+        with self._lock:
+            if task_id and task_id in self._jobs:
+                return task_id, self._jobs[task_id]
+            statuses = self._visible_statuses_locked()
+            primary = self._primary_status(statuses)
+            primary_id = str(primary.get("task_id") or "")
+            if primary_id and primary_id in self._jobs:
+                return primary_id, self._jobs[primary_id]
+        return "", None
+
+    def append(
+        self,
+        scenes: Iterable[object],
+        output_dir: str | Path | None = None,
+        *,
+        max_extra_workers: int = 1,
+        task_id: str = "",
+    ) -> dict:
+        _, job = self._job_for_task(task_id)
+        if job is None:
+            return {"ok": False, "error": "当前没有可追加的 ASF 下载任务", "code": "GUI004"}
+        return job.append(scenes, output_dir, max_extra_workers=max_extra_workers)
+
+    def pause(self, task_id: str = "") -> dict:
+        _, job = self._job_for_task(task_id)
+        if job is None:
+            return {"ok": False, "error": "当前没有进行中的下载", "code": "GUI004"}
+        return job.pause()
+
+    def resume(self, task_id: str = "") -> dict:
+        _, job = self._job_for_task(task_id)
+        if job is None:
+            return {"ok": False, "error": "下载未处于暂停状态", "code": "GUI004"}
+        return job.resume()
+
+    def stop(self, task_id: str = "") -> dict:
+        _, job = self._job_for_task(task_id)
+        if job is None:
+            return {"ok": False, "error": "当前没有进行中的下载", "code": "GUI004"}
+        return job.stop()
+
+    def pause_scenes(self, scene_ids: Iterable[str], task_id: str = "") -> dict:
+        _, job = self._job_for_task(task_id)
+        if job is None:
+            return {"ok": False, "error": "当前没有可管理的 ASF 下载任务", "code": "GUI004"}
+        return job.pause_scenes(scene_ids)
+
+    def resume_scenes(self, scene_ids: Iterable[str] | None = None, task_id: str = "") -> dict:
+        _, job = self._job_for_task(task_id)
+        if job is None:
+            return {"ok": False, "error": "当前没有可继续的 ASF 下载任务", "code": "GUI004"}
+        return job.resume_scenes(scene_ids)
+
+    def retry_failed(self, *, activity: ActivityLog | None = None, task_id: str = "") -> dict:
+        _, job = self._job_for_task(task_id)
+        if job is None:
+            return {"ok": False, "error": "没有可重试的 ASF 下载任务", "code": "GUI004"}
+        return job.retry_failed(activity=activity)
+
+    def shutdown(self, timeout: float = 2.0) -> dict:
+        with self._lock:
+            jobs = list(self._jobs.values())
+        stopped = False
+        for job in jobs:
+            result = job.shutdown(timeout=timeout)
+            stopped = stopped or bool(result.get("stopped"))
+        return {"ok": True, "stopped": stopped}
+
+
 @dataclass
 class _OrbitJobState:
     state: str = "idle"
@@ -1126,6 +1329,8 @@ class OrbitDownloadJob:
                 "concurrency": s.concurrency,
                 "current_scene": s.current_scene,
                 "orbit_dir": s.orbit_dir,
+                "use_orbit_subdir": self._last_use_orbit_subdir,
+                "download_layout": "orbit_subdir" if self._last_use_orbit_subdir else "flat",
                 "done_bytes": s.done_bytes,
                 "bytes_per_second": s.bytes_per_second,
                 "elapsed_seconds": self._elapsed_seconds(s),
@@ -1151,6 +1356,7 @@ class OrbitDownloadJob:
         output_dir: str | Path,
         *,
         max_concurrent: int = 10,
+        use_orbit_subdir: bool = False,
         activity: ActivityLog | None = None,
     ) -> dict:
         scene_list = list(scenes)
@@ -1165,6 +1371,7 @@ class OrbitDownloadJob:
         workers = max(1, min(int(max_concurrent or 10), 10))
         with self._lock:
             now = time.monotonic()
+            self._last_use_orbit_subdir = bool(use_orbit_subdir)
             self._status = _OrbitJobState(
                 state="running",
                 concurrency=workers,
@@ -1173,7 +1380,7 @@ class OrbitDownloadJob:
             )
         self._thread = threading.Thread(
             target=self._run,
-            args=(scene_list, Path(output_dir), workers),
+            args=(scene_list, Path(output_dir), workers, bool(use_orbit_subdir)),
             daemon=True,
         )
         self._thread.start()
@@ -1309,19 +1516,25 @@ class OrbitDownloadJob:
                 kind="download",
             )
 
-    def _run(self, scenes: list[object], output_path: Path, workers: int = 10) -> None:
+    def _run(
+        self,
+        scenes: list[object],
+        output_path: Path,
+        workers: int = 10,
+        use_orbit_subdir: bool = False,
+    ) -> None:
         try:
             from insar_prep.providers.asf.scene_parser import deduplicate_scenes
             from insar_prep.providers.orbit import (
                 OrbitDownloadOutcome,
                 download_orbit_for_scene,
                 match_orbits_for_scenes,
-                poeorb_directory,
                 scan_orbit_directory,
             )
+            from insar_prep.providers.orbit.downloader import ORBIT_ROOT_DIR
 
             unique_scenes, _ = deduplicate_scenes(scenes)
-            orbit_dir = poeorb_directory(output_path)
+            orbit_dir = output_path / ORBIT_ROOT_DIR if use_orbit_subdir else output_path
             seen_scene_ids: set[str] = set()
             pending: Queue[object] = Queue()
             for scene in unique_scenes:

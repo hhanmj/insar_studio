@@ -112,6 +112,8 @@ export function Download() {
   const region = ctx?.region ?? null;
 
   const [outputDir, setOutputDir] = useState("");
+  const [asfUseProductSubdir, setAsfUseProductSubdir] = useState(false);
+  const [orbitUseSubdir, setOrbitUseSubdir] = useState(false);
   const [creds, setCreds] = useState<{
     earthdata: string;
     opentopography: string;
@@ -203,7 +205,7 @@ export function Download() {
     setDlStarting(true);
     setDlErr(null);
     try {
-      const res = await startAsfDownload(resolvedOutputDir);
+      const res = await startAsfDownload(resolvedOutputDir, "auto", 1, [], asfUseProductSubdir);
       if (!res.ok) {
         setDlErr(`${res.error}${res.code ? ` (${res.code})` : ""}`);
         return;
@@ -235,7 +237,7 @@ export function Download() {
     setAsfBusy(true);
     setAsfErr(null);
     try {
-      const res = await planAsfDownload(resolvedOutputDir);
+      const res = await planAsfDownload(resolvedOutputDir, [], asfUseProductSubdir);
       if (res.ok) setAsf(res.plan);
       else setAsfErr(`${res.error}${res.code ? ` (${res.code})` : ""}`);
     } catch (e) {
@@ -285,7 +287,7 @@ export function Download() {
     setOrbitDownloadBusy(true);
     setOrbitErr(null);
     try {
-      const res = await startOrbitDownload(resolvedOutputDir);
+      const res = await startOrbitDownload(resolvedOutputDir, [], 10, orbitUseSubdir);
       if (res.ok) {
         setOrbitStatus(await getOrbitDownloadStatus());
       } else {
@@ -441,6 +443,15 @@ export function Download() {
                 {dlStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 {confirmAsfStart ? "确认并开始" : "开始下载"}
               </Button>
+              <label className="flex min-w-[13rem] items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs">
+                <input
+                  type="checkbox"
+                  checked={asfUseProductSubdir}
+                  onChange={(event) => setAsfUseProductSubdir(event.target.checked)}
+                  className="h-4 w-4 shrink-0 accent-primary"
+                />
+                <span className="min-w-0">建立 SLC/GRD 子目录</span>
+              </label>
               <Button
                 variant="outline"
                 size="sm"
@@ -624,6 +635,15 @@ export function Download() {
               {orbitDownloadBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
               下载 POEORB
             </Button>
+            <label className="flex min-w-[14rem] items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs">
+              <input
+                type="checkbox"
+                checked={orbitUseSubdir}
+                onChange={(event) => setOrbitUseSubdir(event.target.checked)}
+                className="h-4 w-4 shrink-0 accent-primary"
+              />
+              <span className="min-w-0">建立 Sentinel_Orbit 子目录</span>
+            </label>
             <Button
               variant="outline"
               size="sm"
@@ -652,7 +672,7 @@ export function Download() {
               结束
             </Button>
             <div className="rounded-md border bg-muted/30 p-3 text-xs">
-              <KV k="自动保存目录" v="Sentinel_Orbit\\AUX_POEORB" />
+              <KV k="保存目录" v={orbitUseSubdir ? "所选目录\\Sentinel_Orbit" : "所选目录"} />
             </div>
             {orbitErr && <ErrorNote text={orbitErr} />}
             {orbitStatus && orbitStatus.state !== "idle" && (

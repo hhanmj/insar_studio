@@ -43,6 +43,11 @@ _CGCS2000_PRJ = (
     'SPHEROID["CGCS2000",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],'
     'UNIT["Degree",0.0174532925199433]]'
 )
+_NAD83_PRJ = (
+    'GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",'
+    'SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],'
+    'UNIT["Degree",0.0174532925199433]]'
+)
 
 
 def _rect(west: float, south: float, east: float, north: float) -> list[tuple[float, float]]:
@@ -158,9 +163,16 @@ def test_shapefile_projected_prj_rejected(tmp_path: Path) -> None:
         load_aoi_from_shapefile(shp)
 
 
-def test_shapefile_non_wgs84_geographic_prj_rejected(tmp_path: Path) -> None:
+def test_shapefile_geographic_cgcs2000_prj_is_accepted(tmp_path: Path) -> None:
     shp = _write_polygon_shapefile(
         tmp_path / "cgcs.shp", [_rect(_WEST, _SOUTH, _EAST, _NORTH)], prj_text=_CGCS2000_PRJ
+    )
+    _assert_demo_bounds(load_aoi_from_shapefile(shp))
+
+
+def test_shapefile_other_geographic_prj_rejected(tmp_path: Path) -> None:
+    shp = _write_polygon_shapefile(
+        tmp_path / "nad83.shp", [_rect(_WEST, _SOUTH, _EAST, _NORTH)], prj_text=_NAD83_PRJ
     )
     with pytest.raises(InputValidationError):
         load_aoi_from_shapefile(shp)

@@ -238,9 +238,98 @@ if ($copiedBoundaryCount -eq 0) {
     Write-Host "No offline administrative boundary files were bundled. The app can still run; boundary data may be supplied by cache or future online sources." -ForegroundColor Yellow
 }
 
-# Call PyInstaller through the venv interpreter directly.
-$py = Join-Path $RepoRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path $py)) { $py = "python" }
+# Call PyInstaller through the requested interpreter, then the venv interpreter.
+$py = ""
+if (-not [string]::IsNullOrWhiteSpace($env:INSAR_BUILD_PYTHON)) {
+    $py = $env:INSAR_BUILD_PYTHON
+}
+if (-not $py -or -not (Test-Path -LiteralPath $py)) {
+    $py = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+}
+if (-not (Test-Path -LiteralPath $py)) { $py = "python" }
+$extraPyInstallerArgs = @()
+
+if (Test-Path -LiteralPath $py) {
+    $pythonRoot = Split-Path -Parent (Resolve-Path -LiteralPath $py).Path
+    $condaLibraryBin = Join-Path $pythonRoot "Library\bin"
+    $pythonDlls = Join-Path $pythonRoot "DLLs"
+    $pathPrefix = @($condaLibraryBin, $pythonDlls, $pythonRoot) |
+        Where-Object { Test-Path -LiteralPath $_ }
+    if ($pathPrefix.Count -gt 0) {
+        $env:PATH = "$($pathPrefix -join ';');$env:PATH"
+    }
+    if (Test-Path -LiteralPath $condaLibraryBin) {
+        $condaDlls = @(
+            "libssl-3-x64.dll",
+            "libcrypto-3-x64.dll",
+            "libbz2.dll",
+            "liblzma.dll",
+            "ffi-8.dll",
+            "libexpat.dll",
+            "sqlite3.dll",
+            "yaml.dll"
+        )
+        if (-not $ExternalDemComponent) {
+            $condaDlls += @(
+                "archive.dll",
+                "blosc.dll",
+                "charset.dll",
+                "deflate.dll",
+                "freexl.dll",
+                "gdal.dll",
+                "geos.dll",
+                "geos_c.dll",
+                "geotiff.dll",
+                "iconv.dll",
+                "jpeg8.dll",
+                "Lerc.dll",
+                "libcurl.dll",
+                "liblz4.dll",
+                "libminizip.dll",
+                "libpng16.dll",
+                "libsharpyuv.dll",
+                "libssh2.dll",
+                "libwebp.dll",
+                "libxml2.dll",
+                "MSVCP140.dll",
+                "openjp2.dll",
+                "pcre2-8.dll",
+                "proj_9.dll",
+                "snappy.dll",
+                "spatialite.dll",
+                "tiff.dll",
+                "ucrtbase.dll",
+                "VCRUNTIME140.dll",
+                "VCRUNTIME140_1.dll",
+                "xerces-c_3_2.dll",
+                "zlib.dll",
+                "zstd.dll",
+                "lcms2.dll",
+                "libwebpdemux.dll",
+                "libwebpmux.dll"
+            )
+        }
+        foreach ($dllName in $condaDlls | Sort-Object -Unique) {
+            $dllPath = Join-Path $condaLibraryBin $dllName
+            if (Test-Path -LiteralPath $dllPath) {
+                $extraPyInstallerArgs += @("--add-binary", "$dllPath;.")
+            }
+        }
+        if (-not $ExternalDemComponent) {
+            $gdalData = Join-Path $pythonRoot "Library\share\gdal"
+            $projData = Join-Path $pythonRoot "Library\share\proj"
+            if (Test-Path -LiteralPath $gdalData) {
+                $env:GDAL_DATA = $gdalData
+                $extraPyInstallerArgs += @("--add-data", "$gdalData;gdal_data")
+            }
+            if (Test-Path -LiteralPath $projData) {
+                $env:PROJ_LIB = $projData
+                $env:PROJ_DATA = $projData
+                $extraPyInstallerArgs += @("--add-data", "$projData;proj_data")
+            }
+        }
+    }
+}
 
 $pyArgs = @(
     "-m", "PyInstaller",
@@ -280,9 +369,23 @@ $pyArgs = @(
     "--exclude-module", "pygments",
     "--exclude-module", "IPython",
     "--exclude-module", "matplotlib",
+    "--exclude-module", "pandas",
+    "--exclude-module", "scipy",
+    "--exclude-module", "dask",
+    "--exclude-module", "pyarrow",
+    "--exclude-module", "xarray",
+    "--exclude-module", "zarr",
+    "--exclude-module", "h5py",
+    "--exclude-module", "openpyxl",
+    "--exclude-module", "numexpr",
     "--exclude-module", "shapely.tests",
     "packaging/insar_prep_desktop_entry.py"
 )
+
+if ($extraPyInstallerArgs.Count -gt 0) {
+    $entry = $pyArgs[-1]
+    $pyArgs = $pyArgs[0..($pyArgs.Length - 2)] + $extraPyInstallerArgs + @($entry)
+}
 
 if ($ExternalDemComponent) {
     $entry = $pyArgs[-1]
@@ -294,6 +397,7 @@ if ($ExternalDemComponent) {
     $entry = $pyArgs[-1]
     $pyArgs = $pyArgs[0..($pyArgs.Length - 2)] + @(
         "--collect-all", "rasterio",
+        "--collect-all", "pyproj",
         "--exclude-module", "rasterio.rio"
     ) + @($entry)
     if (-not [string]::IsNullOrWhiteSpace($Egm2008GeoidNpz)) {
@@ -326,7 +430,19 @@ if ($SkipSelfTest) {
     Write-Host "== Desktop exe off-screen self-test ==" -ForegroundColor Cyan
     $log = Join-Path $env:TEMP "insar_desktop_selftest.log"
     Remove-Item -Force $log -ErrorAction SilentlyContinue
-    $proc = Invoke-DesktopSelfTest -Path $exe
+    $previousSkipRasterioSelftest = $env:INSAR_SELFTEST_SKIP_RASTERIO
+    if ($ExternalDemComponent) {
+        $env:INSAR_SELFTEST_SKIP_RASTERIO = "1"
+    }
+    try {
+        $proc = Invoke-DesktopSelfTest -Path $exe
+    } finally {
+        if ($null -eq $previousSkipRasterioSelftest) {
+            Remove-Item Env:\INSAR_SELFTEST_SKIP_RASTERIO -ErrorAction SilentlyContinue
+        } else {
+            $env:INSAR_SELFTEST_SKIP_RASTERIO = $previousSkipRasterioSelftest
+        }
+    }
     if ($proc.ExitCode -ne 0) {
         if (Test-Path $log) {
             Write-Host "--- selftest log ---" -ForegroundColor Red
