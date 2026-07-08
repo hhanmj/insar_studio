@@ -248,6 +248,8 @@ if (-not $py -or -not (Test-Path -LiteralPath $py)) {
 }
 if (-not (Test-Path -LiteralPath $py)) { $py = "python" }
 $extraPyInstallerArgs = @()
+$bundledGdalData = ""
+$bundledProjData = ""
 
 if (Test-Path -LiteralPath $py) {
     $pythonRoot = Split-Path -Parent (Resolve-Path -LiteralPath $py).Path
@@ -320,12 +322,46 @@ if (Test-Path -LiteralPath $py) {
             $projData = Join-Path $pythonRoot "Library\share\proj"
             if (Test-Path -LiteralPath $gdalData) {
                 $env:GDAL_DATA = $gdalData
+                $bundledGdalData = $gdalData
                 $extraPyInstallerArgs += @("--add-data", "$gdalData;gdal_data")
             }
             if (Test-Path -LiteralPath $projData) {
                 $env:PROJ_LIB = $projData
                 $env:PROJ_DATA = $projData
+                $bundledProjData = $projData
                 $extraPyInstallerArgs += @("--add-data", "$projData;proj_data")
+            }
+        }
+    }
+    if (-not $ExternalDemComponent) {
+        if ([string]::IsNullOrWhiteSpace($bundledGdalData)) {
+            $rasterioPackage = (& $py -c "import importlib.util; spec = importlib.util.find_spec('rasterio'); print(spec.submodule_search_locations[0] if spec and spec.submodule_search_locations else '')" 2>$null).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($rasterioPackage)) {
+                $wheelGdalData = Join-Path $rasterioPackage "gdal_data"
+                if (Test-Path -LiteralPath $wheelGdalData) {
+                    $env:GDAL_DATA = $wheelGdalData
+                    $bundledGdalData = $wheelGdalData
+                    $extraPyInstallerArgs += @("--add-data", "$wheelGdalData;gdal_data")
+                }
+                $wheelProjData = Join-Path $rasterioPackage "proj_data"
+                if ([string]::IsNullOrWhiteSpace($bundledProjData) -and (Test-Path -LiteralPath $wheelProjData)) {
+                    $env:PROJ_LIB = $wheelProjData
+                    $env:PROJ_DATA = $wheelProjData
+                    $bundledProjData = $wheelProjData
+                    $extraPyInstallerArgs += @("--add-data", "$wheelProjData;proj_data")
+                }
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($bundledProjData)) {
+            $pyprojPackage = (& $py -c "import importlib.util; spec = importlib.util.find_spec('pyproj'); print(spec.submodule_search_locations[0] if spec and spec.submodule_search_locations else '')" 2>$null).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($pyprojPackage)) {
+                $pyprojData = Join-Path $pyprojPackage "proj_dir\share\proj"
+                if (Test-Path -LiteralPath $pyprojData) {
+                    $env:PROJ_LIB = $pyprojData
+                    $env:PROJ_DATA = $pyprojData
+                    $bundledProjData = $pyprojData
+                    $extraPyInstallerArgs += @("--add-data", "$pyprojData;proj_data")
+                }
             }
         }
     }
