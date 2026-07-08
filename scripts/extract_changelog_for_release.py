@@ -41,7 +41,7 @@ def build_release_notes(version: str, date: str, body: str) -> str:
         f"# InSAR Studio {version}\n\n"
         "本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。"
         "它的定位是“处理前的数据准备助手”，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。\n\n"
-        "## 更新日志（中文）\n\n"
+        "## 更新日志\n\n"
         f"[{version}] - {date}\n\n"
         f"{body}\n\n"
         "## 下载说明\n\n"
@@ -56,10 +56,8 @@ def build_release_notes(version: str, date: str, body: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Extract a Chinese GitHub Release body from CHANGELOG.md."
-    )
-    parser.add_argument("--version", required=True, help="Version or tag, for example v2.1.4.")
+    parser = argparse.ArgumentParser(description="Extract a GitHub Release body from CHANGELOG.md.")
+    parser.add_argument("--version", required=True, help="Version or tag, for example v2.1.7.")
     parser.add_argument(
         "--changelog",
         default=str(CHANGELOG),
