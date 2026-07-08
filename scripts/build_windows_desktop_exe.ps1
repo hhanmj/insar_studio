@@ -397,7 +397,9 @@ if ($ExternalDemComponent) {
     $entry = $pyArgs[-1]
     $pyArgs = $pyArgs[0..($pyArgs.Length - 2)] + @(
         "--collect-all", "rasterio",
-        "--collect-all", "pyproj",
+        "--collect-submodules", "pyproj",
+        "--collect-data", "pyproj",
+        "--collect-binaries", "pyproj",
         "--exclude-module", "rasterio.rio"
     ) + @($entry)
     if (-not [string]::IsNullOrWhiteSpace($Egm2008GeoidNpz)) {
