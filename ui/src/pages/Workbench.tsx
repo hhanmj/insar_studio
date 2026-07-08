@@ -7454,11 +7454,8 @@ function renderOutputParameters(
         className="ios-topbar pywebview-drag-region z-[520] flex h-12 shrink-0 items-center gap-2 border-b px-3"
         data-tour="app-header"
       >
-        <div className="flex min-w-[150px] items-center gap-2">
-          <img src="/app-icon.svg" alt="" className="h-8 w-8 rounded-lg shadow-sm" />
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold tracking-normal">InSAR Studio</div>
-          </div>
+        <div className="flex min-w-[148px] items-center">
+          <img src="/app-logo.png" alt="InSAR Studio" className="h-9 w-36 object-contain" />
         </div>
 
         <nav
