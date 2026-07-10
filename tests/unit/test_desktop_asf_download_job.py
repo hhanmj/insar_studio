@@ -55,7 +55,7 @@ def test_asf_download_job_can_retry_only_failed_scenes(
     job = AsfDownloadJob()
     started = job.start(
         [
-            Scene(scene_id="S1A_ok", url="https://datapool.asf.alaska.edu/SLC/ok.zip"),
+            Scene(scene_id="S1A_ok", url="https://datapool.asf.alaska.edu/SLC/ok.zip", path=12, frame=34),
             Scene(scene_id="S1A_bad", url="https://datapool.asf.alaska.edu/SLC/bad.zip"),
         ],
         tmp_path,
@@ -71,6 +71,9 @@ def test_asf_download_job_can_retry_only_failed_scenes(
     assert status["retry_supported"] is True
     assert "network failed" in "\n".join(item["detail"] for item in status["log"])
     assert status["has_failures"] is True
+    assert status["snapshot_scenes"][0]["scene_id"] == "S1A_ok"
+    assert status["snapshot_scenes"][0]["path"] == 12
+    assert status["snapshot_scenes"][0]["frame"] == 34
     assert init_kwargs[0]["proxy_url"] == "http://127.0.0.1:7897"
     assert init_kwargs[0]["ssl_verify"] is False
     assert init_kwargs[0]["trust_env"] is True
@@ -85,6 +88,29 @@ def test_asf_download_job_can_retry_only_failed_scenes(
     assert init_kwargs[-1]["proxy_url"] == "http://127.0.0.1:7897"
     assert init_kwargs[-1]["ssl_verify"] is False
     assert init_kwargs[-1]["trust_env"] is True
+
+
+def test_asf_download_job_pauses_only_active_scene_ids() -> None:
+    job = AsfDownloadJob()
+    with job._lock:
+        job._status.state = "running"
+        job._known_scene_ids = {"S1A_active", "S1A_waiting"}
+        job._status.active_downloads = {
+            "S1A_active": {
+                "scene_id": "S1A_active",
+                "bytes": 10,
+                "expected_size": 100,
+            }
+        }
+
+    result = job.pause_scenes(["S1A_waiting", "S1A_active"])
+    status = job.get_status()
+
+    assert result["ok"] is True
+    assert result["paused"] == 1
+    assert set(result["not_found"]) == {"S1A_waiting"}
+    assert status["paused_scene_ids"] == ["S1A_active"]
+    assert status["active_scene_ids"] == ["S1A_active"]
 
 
 def test_asf_download_manager_allows_second_task_while_first_paused(
@@ -129,6 +155,46 @@ def test_asf_download_manager_allows_second_task_while_first_paused(
     manager.shutdown(timeout=1.0)
 
 
+def test_asf_download_manager_status_preserves_task_aoi_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDownloader:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def download(self, request: object) -> DownloadResult:
+            return DownloadResult(
+                scene_id=str(getattr(request, "scene_id")),
+                outcome=DownloadOutcome.SUCCESS,
+                path=getattr(request, "destination", None),
+                bytes_written=1,
+                message="ok",
+            )
+
+    monkeypatch.setattr(download_job, "resolve_credentials", lambda source: object())
+    monkeypatch.setattr(download_job, "RealAsfDownloader", FakeDownloader)
+
+    manager = AsfDownloadManager()
+    started = manager.start(
+        [Scene(scene_id="S1A_aoi", url="https://datapool.asf.alaska.edu/SLC/aoi.zip")],
+        tmp_path / "aoi",
+        aoi_name="全国",
+    )
+    assert started["ok"] is True
+
+    deadline = time.monotonic() + 3
+    status = manager.get_status()
+    while status["state"] in {"running", "paused"} and time.monotonic() < deadline:
+        time.sleep(0.01)
+        status = manager.get_status()
+
+    task_id = started["task_id"]
+    task_status = next(item for item in status["asf_tasks"] if item["task_id"] == task_id)
+    assert task_status["aoi_name"] == "全国"
+    assert status["aoi_name"] == "全国"
+
+
 def test_api_persists_paused_asf_archive_across_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -143,6 +209,14 @@ def test_api_persists_paused_asf_archive_across_restart(
             "concurrency": 2,
             "output_dir": str(tmp_path / "out"),
             "summary_line": "已暂停：2/30",
+            "snapshot_scenes": [
+                {
+                    "scene_id": "S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234",
+                    "path": 88,
+                    "frame": 456,
+                    "download_url": "https://datapool.asf.alaska.edu/SLC/test.zip",
+                }
+            ],
             "log": [{"detail": "已暂停：当前 .part 文件保留，可继续或结束后断点续传。"}],
         }
     )
@@ -153,6 +227,11 @@ def test_api_persists_paused_asf_archive_across_restart(
     assert archive[0]["status"] == "paused"
     assert "Sentinel-1" in archive[0]["name"]
     assert archive[0]["kind"] == "asf"
+    assert archive[0]["snapshot"][0]["path"] == 88
+    assert archive[0]["snapshot"][0]["frame"] == 456
+    assert archive[0]["scene_ids"] == [
+        "S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234"
+    ]
     assert "已暂停" in archive[0]["logs"][-1]
 
 

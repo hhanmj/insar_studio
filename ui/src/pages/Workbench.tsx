@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent, type UIEvent, type WheelEvent } from "react";
+﻿import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent, type UIEvent, type WheelEvent } from "react";
 import {
   Activity,
   AlertCircle,
@@ -103,6 +103,7 @@ import {
   previewScenesDirectory,
   previewScenesFile,
   previewAoiFile,
+  previewAoiFileBundle,
   previewAoiFileBytes,
   previewAoiFileContent,
   retryAsfDownload,
@@ -160,6 +161,17 @@ import {
   type SceneRow,
   type SimpleOk,
   type UpdateInfo,
+  ProviderInfo,
+  V3SearchResult,
+  V3PlanResult,
+  V3SearchRequest,
+  V3PlanRequest,
+  V3ProviderProduct,
+  getV3Providers,
+  searchV3Provider,
+  planV3Provider,
+  gacosWebFormDryRun,
+  gacosWebFormSubmit,
 } from "@/lib/bridge";
 import { usePrepContext } from "@/lib/useContext";
 import { cn } from "@/lib/utils";
@@ -199,6 +211,7 @@ const DOWNLOAD_ARCHIVE_KEY = "insar.downloadArchive.v1";
 const LOCAL_BOUNDARY_EXTENSIONS = new Set([".shp", ".kml", ".kmz", ".geojson", ".json"]);
 const TEXT_BOUNDARY_EXTENSIONS = new Set([".kml", ".geojson", ".json"]);
 const BINARY_BOUNDARY_EXTENSIONS = new Set([".shp", ".kmz"]);
+const SHAPEFILE_BUNDLE_EXTENSIONS = new Set([".shp", ".dbf", ".shx", ".prj"]);
 const MAX_DRAGGED_BINARY_BOUNDARY_BYTES = 50 * 1024 * 1024;
 
 type AoiPreviewSource =
@@ -1009,6 +1022,14 @@ function isSupportedLocalBoundaryPath(path: string) {
   return LOCAL_BOUNDARY_EXTENSIONS.has(localPathExtension(path));
 }
 
+function isShapefileBundlePath(path: string) {
+  return SHAPEFILE_BUNDLE_EXTENSIONS.has(localPathExtension(path));
+}
+
+function shapefileBundleStem(path: string) {
+  return fileStem(pathBaseName(path)).toLowerCase();
+}
+
 function isFileDrag(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types ?? []).includes("Files");
 }
@@ -1644,6 +1665,29 @@ export function Workbench({
   const [gacosPlan, setGacosPlan] = useState<Json | null>(null);
   const [gacosError, setGacosError] = useState<string | null>(null);
 
+  // v3 Provider Debug states
+  const [v3Providers, setV3Providers] = useState<ProviderInfo[]>([]);
+  const [v3ProviderId, setV3ProviderId] = useState("");
+  const [v3UseCurrentAoi, setV3UseCurrentAoi] = useState(true);
+  const [v3Bbox, setV3Bbox] = useState({ west: "", east: "", south: "", north: "" });
+  const [v3SceneSources, setV3SceneSources] = useState("");
+  const [v3OutputRoot, setV3OutputRoot] = useState("");
+  const [v3Busy, setV3Busy] = useState<"providers" | "search" | "plan" | null>(null);
+  const [v3Elapsed, setV3Elapsed] = useState<{ providers?: number; search?: number; plan?: number }>({});
+  const [v3Error, setV3Error] = useState<string | null>(null);
+  const [v3SearchResult, setV3SearchResult] = useState<V3SearchResult | null>(null);
+  const [v3PlanResult, setV3PlanResult] = useState<V3PlanResult | null>(null);
+
+  // GACOS WebForm helper states
+  const [v3GacosEmail, setV3GacosEmail] = useState("");
+  const [v3GacosDryResult, setV3GacosDryResult] = useState<any>(null);
+  const [v3GacosSubmitError, setV3GacosSubmitError] = useState<string | null>(null);
+  const [v3GacosSubmitSuccess, setV3GacosSubmitSuccess] = useState<string | null>(null);
+  const [v3GacosCopySuccess, setV3GacosCopySuccess] = useState<string | null>(null);
+  const [v3GacosManualHour, setV3GacosManualHour] = useState("");
+  const [v3GacosManualMinute, setV3GacosManualMinute] = useState("");
+  const [v3GacosManualDates, setV3GacosManualDates] = useState("");
+
   const [creds, setCreds] = useState<CredentialStatus | null>(null);
   const [earthToken, setEarthToken] = useState("");
   const [earthUser, setEarthUser] = useState("");
@@ -1915,6 +1959,10 @@ export function Workbench({
     };
     window.addEventListener("insar-context-changed", reloadFromBridge);
     return () => window.removeEventListener("insar-context-changed", reloadFromBridge);
+  }, []);
+
+  useEffect(() => {
+    void refreshV3Providers();
   }, []);
 
   useEffect(() => {
@@ -2905,6 +2953,50 @@ export function Workbench({
       }
       return;
     }
+    if (extension === ".shp") {
+      const stem = shapefileBundleStem(fileName);
+      const bundleFiles = files.filter((item) => {
+        const name = item.name || item.path || "";
+        return shapefileBundleStem(name) === stem && isShapefileBundlePath(name);
+      });
+      const suffixes = new Set(bundleFiles.map((item) => localPathExtension(item.name || item.path || "")));
+      const missing = [".dbf", ".shx"].filter((suffix) => !suffixes.has(suffix));
+      if (missing.length) {
+        setAoiError(
+          `拖拽单个 .shp 时没有本机路径，无法自动查找同目录配套文件；请同时拖入同名 .shp/.dbf/.shx，投影坐标请一并拖入 .prj。缺少：${missing.join("/")}`,
+        );
+        setAoiNote(null);
+        return;
+      }
+      const oversize = bundleFiles.find((item) => item.size > MAX_DRAGGED_BINARY_BOUNDARY_BYTES);
+      if (oversize) {
+        setAoiError("拖拽边界配套文件超过 50 MB，请点击“上传本地边界”选择 .shp 文件。");
+        setAoiNote(null);
+        return;
+      }
+      setAoiBusy(true);
+      setAoiError(null);
+      setAoiNote(null);
+      try {
+        const res = await previewAoiFileBundle(
+          await Promise.all(bundleFiles.map(async (item) => ({ name: item.name || "boundary", base64: await fileToBase64(item) }))),
+        );
+        if (!res.ok) {
+          setAoiError(`${res.error}${res.code ? ` (${res.code})` : ""}`);
+          return;
+        }
+        if (!res.geojson) {
+          setAoiError("已识别边界，但未生成可绑定的边界快照；请使用上传本地边界按钮选择文件。");
+          return;
+        }
+        applyAoiPreviewResult(res, { kind: "geojson", fileName: res.file_name || fileName, geojson: res.geojson });
+      } catch (e) {
+        setAoiError(formatBridgeError(e));
+      } finally {
+        setAoiBusy(false);
+      }
+      return;
+    }
     if (BINARY_BOUNDARY_EXTENSIONS.has(extension)) {
       if (file.size > MAX_DRAGGED_BINARY_BOUNDARY_BYTES) {
         setAoiError("拖拽边界文件超过 50 MB，请点击“上传本地边界”选择文件。");
@@ -3045,9 +3137,9 @@ export function Workbench({
         const featureCount = Number(res.aoi_feature_count ?? selectedIds.length ?? 0);
         setBoundAoiFeatureCount(featureCount > 1 ? featureCount : 0);
         setAoiNote(
-          typeof res.aoi_feature_count === "number" && res.aoi_feature_count > 1
-            ? `已导入 ${res.aoi_feature_count} 个边界要素，已合并绑定为 AOI：${res.region_name}`
-            : `已从边界文件绑定 AOI：${res.region_name}`,
+          featureCount > 1
+            ? `已导入 ${featureCount} 个边界要素，已合并绑定为 AOI：${aoiName}`
+            : `已从边界文件绑定 AOI：${aoiName}`,
         );
         await refresh();
         await refreshTree();
@@ -7430,8 +7522,589 @@ function renderOutputParameters(
               正在读取网络设置
             </div>
           )}
-        </Section>
+        
+      {renderV3ProviderDebugPanel()}
+      </Section>
       </div>
+    );
+  }
+
+
+
+  // =============================================== V3 Provider Debug & GACOS WebForm Helper
+  async function refreshV3Providers() {
+    if (!hasBridge()) return;
+    setV3Busy("providers");
+    setV3Error(null);
+    const started = performance.now();
+    try {
+      const res = await getV3Providers();
+      setV3Elapsed((value) => ({ ...value, providers: Math.round(performance.now() - started) }));
+      if (res.ok) {
+        setV3Providers(res.providers ?? []);
+        if (res.providers && !res.providers.some((provider: any) => provider.provider_id === v3ProviderId)) {
+          setV3ProviderId(res.providers[0]?.provider_id ?? "");
+        }
+      } else {
+        setV3Error(formatBridgeError(res));
+      }
+      return res;
+    } catch (error) {
+      setV3Error(formatBridgeError(error));
+      return null;
+    } finally {
+      setV3Busy((value) => (value === "providers" ? null : value));
+    }
+  }
+
+  function currentV3BboxText() {
+    const bbox = ctx?.region?.bbox;
+    if (!bbox) return "No current AOI";
+    return `W${bbox.west} S${bbox.south} E${bbox.east} N${bbox.north}`;
+  }
+
+  function parseV3ManualBbox() {
+    const values = [v3Bbox.west, v3Bbox.east, v3Bbox.south, v3Bbox.north].map((value) => value.trim());
+    if (values.every((value) => !value)) return null;
+    if (values.some((value) => !value)) {
+      throw new Error("Manual bbox requires west/east/south/north.");
+    }
+    const [west, east, south, north] = values.map(Number);
+    if ([west, east, south, north].some((value) => !Number.isFinite(value))) {
+      throw new Error("bbox coordinates must be numbers.");
+    }
+    if (!(-180 <= west && west < east && east <= 180 && -90 <= south && south < north && north <= 90)) {
+      throw new Error("bbox must satisfy -180<=west<east<=180 and -90<=south<north<=90.");
+    }
+    return { west, east, south, north, crs: "EPSG:4326" };
+  }
+
+  function buildV3Query(): V3SearchRequest & V3PlanRequest {
+    const filters: Record<string, unknown> = {};
+    const lines = v3SceneSources
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length) filters.scene_sources = lines;
+    if (v3ProviderId === "opentopography.dem") filters.dataset = dataset;
+    if (v3ProviderId === "gacos.atmosphere") {
+      if (v3GacosManualHour.trim()) {
+        filters.hour = parseInt(v3GacosManualHour.trim(), 10);
+      }
+      if (v3GacosManualMinute.trim()) {
+        filters.minute = parseInt(v3GacosManualMinute.trim(), 10);
+      }
+      if (v3GacosManualDates.trim()) {
+        const parsedDates = v3GacosManualDates
+          .split(/[\s,;\n]+/)
+          .map((d) => d.trim())
+          .filter((d) => /^\d{8}$/.test(d));
+        if (parsedDates.length > 0) {
+          filters.dates = parsedDates;
+        }
+      }
+    }
+    const query: V3SearchRequest & V3PlanRequest = { filters };
+    if (!v3UseCurrentAoi) {
+      const bbox = parseV3ManualBbox();
+      if (bbox) query.bbox = bbox;
+    }
+    if (v3OutputRoot.trim()) query.output_root = v3OutputRoot.trim();
+    return query;
+  }
+
+  async function runV3Search() {
+    if (!v3ProviderId) return;
+    setV3Busy("search");
+    setV3Error(null);
+    setV3SearchResult(null);
+    const started = performance.now();
+    try {
+      const query = buildV3Query();
+      const res = await searchV3Provider(v3ProviderId, query);
+      setV3Elapsed((value) => ({ ...value, search: Math.round(performance.now() - started) }));
+      setV3SearchResult(res);
+      if (!res.ok) setV3Error(formatBridgeError(res));
+    } catch (error) {
+      setV3Error(formatBridgeError(error));
+    } finally {
+      setV3Busy((value) => (value === "search" ? null : value));
+    }
+  }
+
+  async function runV3Plan() {
+    if (!v3ProviderId) return;
+    setV3Busy("plan");
+    setV3Error(null);
+    setV3PlanResult(null);
+    const started = performance.now();
+    try {
+      const query = buildV3Query();
+      const products: V3ProviderProduct[] | undefined =
+        v3SearchResult?.ok && v3SearchResult.products && v3SearchResult.products.length ? v3SearchResult.products : undefined;
+      const res = await planV3Provider(v3ProviderId, query, products);
+      setV3Elapsed((value) => ({ ...value, plan: Math.round(performance.now() - started) }));
+      setV3PlanResult(res);
+      if (!res.ok) setV3Error(formatBridgeError(res));
+    } catch (error) {
+      setV3Error(formatBridgeError(error));
+    } finally {
+      setV3Busy((value) => (value === "plan" ? null : value));
+    }
+  }
+
+  // Hook to calculate dry-run preview when Email is input
+  useEffect(() => {
+    if (v3PlanResult?.ok && v3PlanResult.plan?.provider_id === "gacos.atmosphere" && v3PlanResult.plan.submission) {
+      const payload = v3PlanResult.plan.submission;
+      let active = true;
+      gacosWebFormDryRun(payload, v3GacosEmail)
+        .then((res: any) => {
+          if (active) setV3GacosDryResult(res);
+        })
+        .catch(() => {
+          if (active) setV3GacosDryResult(null);
+        });
+      return () => {
+        active = false;
+      };
+    } else {
+      setV3GacosDryResult(null);
+    }
+  }, [v3PlanResult, v3GacosEmail]);
+
+  // legacy helper placeholders cleanups
+  function archiveTaskDisplayDetail(item: any) {
+    return item.detail || "";
+  }
+
+  function archiveTaskLogLine(item: any, line: string) {
+    return line;
+  }
+
+  function earthdataTokenUrl(username: string) {
+    return "https://urs.earthdata.nasa.gov/profile";
+  }
+
+  function renderV3Json(value: unknown) {
+    if (!value) return null;
+    return (
+      <pre className="max-h-64 overflow-auto rounded-md border bg-muted/20 p-2 font-mono text-[10.5px] leading-4 text-muted-foreground">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    );
+  }
+
+  function renderV3ProviderDebugPanel() {
+    const provider = v3Providers.find((item) => item.provider_id === v3ProviderId);
+    const debugProducts = v3SearchResult?.ok ? v3SearchResult.products ?? [] : [];
+    const planItems = v3PlanResult?.ok && v3PlanResult.plan ? v3PlanResult.plan.items ?? [] : [];
+    const isGacos = v3ProviderId === "gacos.atmosphere";
+
+    return (
+      <Section
+        title="v3 Provider Debug"
+        desc="Developer-only provider API check. It does not change existing Sentinel-1, DEM, Orbit, map, or download flows."
+        icon={Database}
+        defaultOpen={false}
+        storageKey="settings-v3-provider-debug"
+        headerExtra={<Badge variant="neutral">Dev</Badge>}
+      >
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" disabled={v3Busy === "providers"} onClick={() => void refreshV3Providers()}>
+              {v3Busy === "providers" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+              Refresh Providers
+            </Button>
+            {v3Elapsed.providers != null && (
+              <span className="font-mono text-[11px] text-muted-foreground">{v3Elapsed.providers} ms</span>
+            )}
+          </div>
+
+          <div className="overflow-hidden rounded-md border border-white/45 bg-white/30 text-xs dark:border-white/10 dark:bg-white/10">
+            <div className="grid grid-cols-[1.15fr_1fr_1fr] gap-2 border-b border-white/45 px-2 py-1.5 font-medium text-muted-foreground dark:border-white/10">
+              <span>Provider</span>
+              <span>Source</span>
+              <span>Capabilities</span>
+            </div>
+            {v3Providers.map((item) => (
+              <button
+                key={item.provider_id}
+                type="button"
+                className={cn(
+                  "grid w-full grid-cols-[1.15fr_1fr_1fr] gap-2 px-2 py-1.5 text-left transition-colors hover:bg-white/45 dark:hover:bg-white/10",
+                  item.provider_id === v3ProviderId && "bg-primary/10 text-primary",
+                )}
+                onClick={() => setV3ProviderId(item.provider_id)}
+              >
+                <span className="min-w-0 truncate font-mono" title={item.provider_id}>
+                  {item.provider_id}
+                </span>
+                <span className="min-w-0 truncate">{item.source_kind}</span>
+                <span className="min-w-0 truncate" title={item.capabilities.join(", ")}>
+                  {item.capabilities.join(", ")}
+                </span>
+              </button>
+            ))}
+            {!v3Providers.length && <div className="px-2 py-2 text-muted-foreground">No providers loaded.</div>}
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Provider</span>
+              <select
+                value={v3ProviderId}
+                onChange={(event) => setV3ProviderId(event.target.value)}
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+              >
+                {!v3Providers.length && <option value="">No provider loaded</option>}
+                {v3Providers.map((item) => (
+                  <option key={item.provider_id} value={item.provider_id}>
+                    {item.display_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Output root</span>
+              <Input
+                value={v3OutputRoot}
+                onChange={(event) => setV3OutputRoot(event.target.value)}
+                placeholder={ctx?.region?.root || ctx?.project?.root || ctx?.workspace?.root || "Default current region output"}
+                className="font-mono text-xs"
+              />
+            </label>
+          </div>
+
+          {isGacos && (
+            <>
+              <div className="grid gap-2 grid-cols-2 border-t pt-2 mt-1">
+                <label className="space-y-1 text-xs">
+                  <span className="text-muted-foreground font-medium text-primary">Manual UTC Hour (0-23) [Optional]</span>
+                  <Input
+                    value={v3GacosManualHour}
+                    onChange={(event) => setV3GacosManualHour(event.target.value)}
+                    placeholder="e.g. 10"
+                    inputMode="numeric"
+                    className="font-mono text-xs"
+                  />
+                </label>
+                <label className="space-y-1 text-xs">
+                  <span className="text-muted-foreground font-medium text-primary">Manual UTC Minute (0-59) [Optional]</span>
+                  <Input
+                    value={v3GacosManualMinute}
+                    onChange={(event) => setV3GacosManualMinute(event.target.value)}
+                    placeholder="e.g. 26"
+                    inputMode="numeric"
+                    className="font-mono text-xs"
+                  />
+                </label>
+              </div>
+              <label className="space-y-1 text-xs block border-t pt-2 mt-1">
+                <span className="text-muted-foreground font-medium text-primary">Manual YYYYMMDD Dates (Comma or space separated) [Optional]</span>
+                <Input
+                  value={v3GacosManualDates}
+                  onChange={(event) => setV3GacosManualDates(event.target.value)}
+                  placeholder="e.g. 20240101, 20240102"
+                  className="font-mono text-xs"
+                />
+              </label>
+            </>
+          )}
+
+          <label className="flex items-center justify-between rounded-md border bg-muted/25 px-3 py-2 text-sm">
+            <span>
+              <span className="block font-medium">Reuse current AOI bbox</span>
+              <span className="font-mono text-[11px] text-muted-foreground">{currentV3BboxText()}</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={v3UseCurrentAoi}
+              onChange={(event) => setV3UseCurrentAoi(event.target.checked)}
+              className="h-4 w-4"
+            />
+          </label>
+
+          {!v3UseCurrentAoi && (
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              {(["west", "east", "south", "north"] as const).map((key) => (
+                <Input
+                  key={key}
+                  value={v3Bbox[key]}
+                  onChange={(event) => setV3Bbox((value) => ({ ...value, [key]: event.target.value }))}
+                  placeholder={key}
+                  inputMode="decimal"
+                  className="font-mono text-xs"
+                />
+              ))}
+            </div>
+          )}
+
+          <Textarea
+            value={v3SceneSources}
+            onChange={(event) => setV3SceneSources(event.target.value)}
+            placeholder="Manual scene names (one per line, e.g. S1A_IW_SLC__1SDV_...)"
+            rows={3}
+            className="font-mono text-[11px]"
+            spellCheck={false}
+          />
+
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" disabled={v3Busy === "search" || !v3ProviderId} onClick={runV3Search}>
+              {v3Busy === "search" && <Loader2 className="h-4 w-4 animate-spin" />}
+              Search Provider
+            </Button>
+            <Button size="sm" disabled={v3Busy === "plan" || !v3ProviderId} onClick={runV3Plan}>
+              {v3Busy === "plan" && <Loader2 className="h-4 w-4 animate-spin" />}
+              Plan Provider
+            </Button>
+          </div>
+
+          <ErrorLine text={v3Error} />
+
+          {v3SearchResult && (
+            <div className="space-y-2 rounded-md border bg-muted/15 p-2">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-semibold">Search Result</span>
+                <Badge variant={v3SearchResult.ok ? "success" : "warning"}>
+                  {v3SearchResult.ok && v3SearchResult.products ? `${debugProducts.length} products` : v3SearchResult.code ?? "error"}
+                </Badge>
+              </div>
+              {debugProducts.length > 0 && (
+                <div className="max-h-40 overflow-auto rounded-md border bg-background/55 text-[11px]">
+                  {debugProducts.map((item: any, index: number) => (
+                    <div
+                      key={`${item.product_id ?? index}`}
+                      className="grid grid-cols-[1.4fr_.8fr_.8fr] gap-2 border-b px-2 py-1 last:border-b-0"
+                    >
+                      <span className="truncate font-mono" title={item.product_id}>
+                        {item.product_id ?? "-"}
+                      </span>
+                      <span className="truncate">{item.product_kind ?? "-"}</span>
+                      <span className="truncate">{item.source_kind ?? "-"}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {renderV3Json(v3SearchResult)}
+            </div>
+          )}
+
+          {v3PlanResult && (
+            <div className="space-y-2 rounded-md border bg-muted/15 p-2">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-semibold">Plan Result</span>
+                <Badge variant={v3PlanResult.ok ? "success" : "warning"}>
+                  {v3PlanResult.ok && v3PlanResult.plan ? `${planItems.length} items` : v3PlanResult.code ?? "error"}
+                </Badge>
+              </div>
+              {planItems.length > 0 && (
+                <div className="max-h-40 overflow-auto rounded-md border bg-background/55 text-[11px]">
+                  {planItems.map((item: any, index: number) => (
+                    <div
+                      key={`${item.product_id ?? index}`}
+                      className="grid grid-cols-[1.2fr_1.8fr] gap-2 border-b px-2 py-1 last:border-b-0"
+                    >
+                      <span className="truncate font-mono" title={item.product_id}>
+                        {item.product_id ?? "-"}
+                      </span>
+                      <span className="truncate font-mono text-muted-foreground" title={item.target_path}>
+                        {item.target_path ?? "-"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {renderV3Json(v3PlanResult)}
+
+              {/* Render GACOS Browser Assisted form helper card */}
+              {v3PlanResult.ok && v3PlanResult.plan?.provider_id === "gacos.atmosphere" && v3PlanResult.plan.submission && (
+                <div className="mt-3 space-y-3 rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs leading-5">
+                  <div className="flex items-center gap-1.5 font-medium text-primary">
+                    <Mail className="h-4 w-4" />
+                    <span>GACOS WebForm Client (Browser Assisted Form)</span>
+                  </div>
+
+                  <div className="text-muted-foreground text-[11px]">
+                    Due to GACOS mandatory human interaction and email notifications, this panel provides matching form parameters and one-click copy helper.
+                  </div>
+
+                  <div className="overflow-hidden rounded-md border text-[11px]">
+                    <div className="grid grid-cols-[1.5fr_2fr_1fr] border-b bg-muted/30 px-2 py-1 font-medium text-muted-foreground">
+                      <span>Form Field (CN / EN)</span>
+                      <span>Value</span>
+                      <span className="text-right">Action</span>
+                    </div>
+
+                    {[
+                      { label: "W (West Longitude)", key: "W" },
+                      { label: "E (East Longitude)", key: "E" },
+                      { label: "S (South Latitude)", key: "S" },
+                      { label: "N (North Latitude)", key: "N" },
+                      { label: "H (UTC Hour)", key: "H" },
+                      { label: "M (UTC Minute)", key: "M" },
+                      { label: "date (Date List)", key: "date", multiline: true },
+                      { label: "type (Format Type)", key: "type" },
+                      { label: "seq (Background Map)", key: "seq" }
+                    ].map((row) => {
+                      const submissionPayload = v3PlanResult.plan?.submission;
+                      const batch = submissionPayload?.batches?.[0];
+                      const val = batch?.form_fields?.[row.key] ?? "";
+                      return (
+                        <div key={row.key} className="grid grid-cols-[1.5fr_2fr_1fr] border-b items-center px-2 py-1 last:border-b-0">
+                          <span className="font-medium">{row.label}</span>
+                          <span className="font-mono truncate text-muted-foreground max-w-[180px]" title={String(val)}>
+                            {row.multiline ? `[Multiple dates, ${String(val).split("\n").filter(Boolean).length} days]` : String(val)}
+                          </span>
+                          <span className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-1.5 text-primary"
+                              onClick={() => {
+                                navigator.clipboard.writeText(String(val));
+                                setV3GacosCopySuccess(row.key);
+                                setTimeout(() => setV3GacosCopySuccess(null), 1000);
+                              }}
+                            >
+                              {v3GacosCopySuccess === row.key ? "Copied" : "Copy"}
+                            </Button>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="space-y-2 border-t pt-2.5">
+                    <label className="space-y-1 text-xs block">
+                      <span className="font-medium text-foreground flex items-center gap-1">
+                        Notification Email (No Persist: Local memory state only)
+                        <span className="text-[10px] text-muted-foreground font-normal">(Will not save to local configs or states)</span>
+                      </span>
+                      <Input
+                        value={v3GacosEmail}
+                        onChange={(event) => setV3GacosEmail(event.target.value)}
+                        placeholder="your-email@gacos-notified.com"
+                        type="email"
+                        className="font-mono text-xs h-8 bg-background"
+                      />
+                    </label>
+
+                    {v3GacosDryResult?.ok && (
+                      <div className="space-y-2 text-[11px]">
+                        {v3GacosDryResult.batches?.map((batch: any, index: number) => (
+                          <div key={batch.batch_id} className="space-y-1.5 rounded border bg-background/50 p-2">
+                            <div className="font-semibold text-muted-foreground">Batch {batch.batch_index} / {v3GacosDryResult.batches.length}</div>
+                            
+                            <div className="space-y-1">
+                              <div className="flex justify-between items-center">
+                                <span className="font-medium">Curl CLI Masked Preview:</span>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-5 px-1.5 text-primary text-[10px]"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(batch.curl_preview_masked);
+                                    setV3GacosCopySuccess(`curl_masked_${index}`);
+                                    setTimeout(() => setV3GacosCopySuccess(null), 1000);
+                                  }}
+                                >
+                                  {v3GacosCopySuccess === `curl_masked_${index}` ? "Copied" : "Copy"}
+                                </Button>
+                              </div>
+                              <pre className="p-1.5 bg-muted/40 rounded text-[10px] overflow-auto max-h-20 font-mono select-all whitespace-pre">
+                                {batch.curl_preview_masked}
+                              </pre>
+                            </div>
+
+                            {batch.curl_preview_real ? (
+                              <div className="space-y-1 border-t pt-1.5">
+                                <div className="flex justify-between items-center text-primary">
+                                  <span className="font-semibold">Curl CLI Real Preview (Includes real email):</span>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-5 px-1.5 text-primary text-[10px] font-bold"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(batch.curl_preview_real);
+                                      setV3GacosCopySuccess(`curl_real_${index}`);
+                                      setTimeout(() => setV3GacosCopySuccess(null), 1000);
+                                    }}
+                                  >
+                                    {v3GacosCopySuccess === `curl_real_${index}` ? "Copied" : "Copy"}
+                                  </Button>
+                                </div>
+                                <pre className="p-1.5 bg-primary/5 rounded border border-primary/20 text-[10px] overflow-auto max-h-20 font-mono select-all whitespace-pre text-primary">
+                                  {batch.curl_preview_real}
+                                </pre>
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-muted-foreground/80 italic border-t pt-1.5">
+                                Please enter a valid email address to generate the real curl commands.
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 border-t pt-2.5">
+                    <Button
+                      size="sm"
+                      disabled={!v3GacosEmail.trim() || !/^[^@]+@[^@]+\.[^@]+$/.test(v3GacosEmail.trim())}
+                      onClick={async () => {
+                        setV3GacosSubmitError(null);
+                        setV3GacosSubmitSuccess(null);
+                        try {
+                          const res = await gacosWebFormSubmit(v3PlanResult.plan?.submission, v3GacosEmail);
+                          if (res.ok) {
+                            setV3GacosSubmitSuccess("Submit Success (Dev Placeholder)");
+                          } else {
+                            setV3GacosSubmitError(res.error || "Submit failed");
+                          }
+                        } catch (err: any) {
+                          setV3GacosSubmitError(err.message || "Request error");
+                        }
+                      }}
+                      title={
+                        !v3GacosEmail.trim()
+                          ? "Please enter email to unlock submit button"
+                          : "Disabled in Phase 1 (dry-run and manual CLI only)"
+                      }
+                    >
+                      Submit (Disabled in Phase 1)
+                    </Button>
+                    
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const fullDebug = {
+                          ...v3PlanResult.plan,
+                          submission_with_email: {
+                            ...v3PlanResult.plan?.submission,
+                            email_value: v3GacosEmail
+                          }
+                        };
+                        navigator.clipboard.writeText(JSON.stringify(fullDebug, null, 2));
+                        setV3GacosCopySuccess("full_debug_json");
+                        setTimeout(() => setV3GacosCopySuccess(null), 1500);
+                      }}
+                      title="Copy Full Debug JSON"
+                    >
+                      {v3GacosCopySuccess === "full_debug_json" ? "Copied" : "Copy Full Debug JSON"}
+                    </Button>
+                  </div>
+
+                  <ErrorLine text={v3GacosSubmitError} />
+                  {v3GacosSubmitSuccess && <div className="text-xs text-success">{v3GacosSubmitSuccess}</div>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </Section>
     );
   }
 

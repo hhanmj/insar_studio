@@ -26,6 +26,7 @@ import time
 import base64
 import binascii
 import io
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,11 @@ from insar_prep import __version__
 from insar_prep.core.exceptions import InsarPrepError
 from insar_prep.core.logging import mask_text
 from insar_prep.desktop.activity_log import ActivityLog
+from insar_prep.desktop.download_archive_service import DownloadArchiveService
+from insar_prep.desktop.download_status_service import DownloadStatusService
 from insar_prep.desktop.download_job import AsfDownloadManager, DemDownloadJob, OrbitDownloadJob
+from insar_prep.desktop.v3_provider_service import V3ProviderDesktopService
+from insar_prep.desktop.gacos_webform_service import GacosWebFormService
 from insar_prep.gui.state import GuiState, workspace_display_name
 
 _EARTHDATA_AUTH_FAILURE_COOLDOWN_SECONDS = 5 * 60
@@ -291,6 +296,40 @@ def _download_archive_layout(kind: str, item: dict[str, Any]) -> str:
     return layout
 
 
+def _clean_archive_scene_rows(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    allowed = {
+        "scene_id",
+        "platform",
+        "product_type",
+        "beam_mode",
+        "polarization",
+        "acquisition_datetime",
+        "absolute_orbit",
+        "relative_orbit",
+        "path",
+        "frame",
+        "orbit_direction",
+        "file_size_remote",
+        "footprint_bbox",
+        "footprint_geojson",
+        "has_url",
+        "download_url",
+    }
+    rows: list[dict[str, Any]] = []
+    for raw in value[:10000]:
+        if not isinstance(raw, dict):
+            continue
+        scene_id = str(raw.get("scene_id") or "").strip()
+        if not scene_id:
+            continue
+        row = {key: raw.get(key) for key in allowed if key in raw}
+        row["scene_id"] = scene_id[:260]
+        rows.append(row)
+    return rows
+
+
 def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
     """Return safe, compact download history records for persistence/UI."""
     if not isinstance(value, list):
@@ -326,6 +365,22 @@ def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
         use_product_subdirs = _coerce_bool(item.get("use_product_subdirs"), False)
         use_orbit_subdir = _coerce_bool(item.get("use_orbit_subdir"), False)
         layout = _download_archive_layout(kind, item)
+        snapshot = _clean_archive_scene_rows(
+            item.get("snapshot") or item.get("scenes") or item.get("snapshot_scenes")
+        )
+        raw_scene_ids = item.get("scene_ids")
+        scene_ids = (
+            [str(scene_id).strip()[:260] for scene_id in raw_scene_ids[:10000] if str(scene_id).strip()]
+            if isinstance(raw_scene_ids, list)
+            else []
+        )
+        if not scene_ids and snapshot:
+            scene_ids = [str(row.get("scene_id") or "") for row in snapshot if row.get("scene_id")]
+        aoi_name = str(item.get("aoi_name") or item.get("aoiName") or "").strip()
+        try:
+            elapsed_seconds = float(item.get("elapsed_seconds") or 0)
+        except (TypeError, ValueError):
+            elapsed_seconds = 0.0
         out.append(
             {
                 "id": task_id[:240],
@@ -340,6 +395,10 @@ def _clean_download_archive(value: Any) -> list[dict[str, Any]]:
                 "use_product_subdirs": use_product_subdirs,
                 "use_orbit_subdir": use_orbit_subdir,
                 "download_layout": layout[:40],
+                "snapshot": snapshot,
+                "scene_ids": scene_ids,
+                "aoi_name": aoi_name[:200],
+                "elapsed_seconds": max(0.0, elapsed_seconds),
                 "logs": logs,
             }
         )
@@ -603,15 +662,43 @@ class Api:
 
     def __init__(self) -> None:
         self._state = GuiState()
+        self._v3_provider_service = V3ProviderDesktopService(self._state)
+        self._gacos_webform_service = GacosWebFormService()
         # The DEM dataset is chosen once (in the download step); the vertical-datum
         # conversion is then auto-detected from it, never chosen by the user.
         self._dem_dataset = "COP30"
         self._asf_download = AsfDownloadManager()
         self._orbit_download = OrbitDownloadJob()
         self._dem_download = DemDownloadJob()
+        self._download_status = DownloadStatusService(
+            asf_status=lambda: self._asf_download.get_status(),
+            orbit_status=lambda: self._orbit_download.get_status(),
+            dem_status=lambda: self._dem_download.get_status(),
+            archive_asf_status=self._archive_asf_status,
+            archive_orbit_status=self._archive_orbit_status,
+        )
         self._activity = ActivityLog()
         self._download_archive: list[dict[str, Any]] = []
         self._deleted_archive_keys: set[str] = set()
+        self._download_archive_service = DownloadArchiveService(
+            get_items=lambda: self._download_archive,
+            set_items=lambda items: setattr(self, "_download_archive", items),
+            get_deleted_keys=lambda: self._deleted_archive_keys,
+            set_deleted_keys=lambda keys: setattr(self, "_deleted_archive_keys", keys),
+            save_state=self._save_state,
+            helpers={
+                "clean_download_archive": _clean_download_archive,
+                "filter_deleted_download_archive": _filter_deleted_download_archive,
+                "dedupe_download_archive": _dedupe_download_archive,
+                "merge_download_archive": _merge_download_archive,
+                "download_archive_identity": _download_archive_identity,
+                "download_archive_identity_candidates": _download_archive_identity_candidates,
+                "normalise_download_archive_path": _normalise_download_archive_path,
+                "clean_archive_scene_rows": _clean_archive_scene_rows,
+                "format_status_log_entry": _format_status_log_entry,
+                "coerce_bool": _coerce_bool,
+            },
+        )
         self._standalone_scenes: list[Any] = []
         self._orbit_candidate_scenes: list[Any] = []
         self._last_orbit_report: Any | None = None
@@ -1118,6 +1205,30 @@ class Api:
         return scenes[:requested_limit]
 
     @staticmethod
+    def _cached_asf_partial_scenes(
+        entry: dict[str, Any] | None,
+        requested_query: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        if entry is None:
+            return []
+        return Api._filter_cached_asf_scenes(list(entry.get("scenes") or []), requested_query or {})
+
+    @staticmethod
+    def _scene_acquisition_text(scene: Any) -> str:
+        value = getattr(scene, "acquisition_datetime", None)
+        return str(value or "").strip()
+
+    @staticmethod
+    def _incremental_asf_end_from_cache(scenes: list[Any]) -> str:
+        dated = [Api._scene_acquisition_text(scene) for scene in scenes if Api._scene_acquisition_text(scene)]
+        if not dated:
+            return ""
+        oldest = min(dated)
+        if "T" in oldest:
+            return oldest
+        return f"{oldest[:10]}T00:00:00Z" if len(oldest) >= 10 else ""
+
+    @staticmethod
     def _filter_cached_asf_scenes(scenes: list[Any], query: dict[str, Any]) -> list[Any]:
         if not query:
             return scenes
@@ -1330,50 +1441,10 @@ class Api:
 
     def get_download_archive(self) -> dict:
         """Return persisted download/task history across app restarts."""
-        return {
-            "ok": True,
-            "items": _dedupe_download_archive(
-                _filter_deleted_download_archive(
-                    _clean_download_archive(self._download_archive),
-                    self._deleted_archive_keys,
-                )
-            ),
-        }
+        return self._download_archive_service.get_archive()
 
     def _upsert_download_archive_item(self, item: dict[str, Any]) -> None:
-        cleaned = _clean_download_archive([item])
-        if not cleaned:
-            return
-        next_item = cleaned[0]
-        next_keys = _download_archive_identity_candidates(next_item)
-        if next_keys & self._deleted_archive_keys:
-            return
-        previous = next(
-            (
-                old
-                for old in self._download_archive
-                if _download_archive_identity_candidates(old) & next_keys
-            ),
-            None,
-        )
-        if previous is not None:
-            same = all(
-                previous.get(key) == next_item.get(key)
-                for key in ("name", "status", "detail", "logs")
-            )
-            if same:
-                return
-            if previous.get("status") == "paused" and next_item.get("status") == "paused":
-                next_item["ts"] = previous.get("ts") or next_item["ts"]
-        self._download_archive = _dedupe_download_archive([
-            next_item,
-            *(
-                old
-                for old in self._download_archive
-                if not (_download_archive_identity_candidates(old) & next_keys)
-            ),
-        ])
-        self._save_state()
+        self._download_archive_service.upsert(item)
 
     def _forget_deleted_archive_key(
         self,
@@ -1384,190 +1455,29 @@ class Api:
         use_orbit_subdir: bool = False,
     ) -> None:
         """Allow an explicitly started new task to reuse a previously deleted slot."""
-        cleaned = _clean_download_archive(
-            [
-                {
-                    "id": f"{kind}:{output_dir}:0",
-                    "name": kind,
-                    "status": "running",
-                    "detail": "new task",
-                    "ts": int(time.time() * 1000),
-                    "kind": kind,
-                    "output_dir": output_dir,
-                    "use_product_subdirs": use_product_subdirs,
-                    "use_orbit_subdir": use_orbit_subdir,
-                }
-            ]
+        self._download_archive_service.forget_deleted_key(
+            kind,
+            output_dir,
+            use_product_subdirs=use_product_subdirs,
+            use_orbit_subdir=use_orbit_subdir,
         )
-        if cleaned:
-            keys = _download_archive_identity_candidates(cleaned[0], include_legacy=True)
-            stable_path = _normalise_download_archive_path(output_dir)
-            stable_prefixes = {f"{kind}:{stable_path}"} if stable_path else set()
-            self._deleted_archive_keys.difference_update(keys)
-            for prefix in stable_prefixes:
-                self._deleted_archive_keys = {
-                    key
-                    for key in self._deleted_archive_keys
-                    if key != prefix
-                    and not key.startswith(f"{prefix}:")
-                    and not key.startswith(f"{prefix}\\")
-                }
 
     def _archive_asf_status(self, status: dict[str, Any]) -> None:
-        tasks = status.get("asf_tasks")
-        if isinstance(tasks, list) and tasks:
-            for task in tasks:
-                if isinstance(task, dict):
-                    self._archive_asf_status(task)
-            return
-        state = str(status.get("state") or "")
-        if bool(status.get("cancelled")):
-            state = "cancelled"
-        if state not in {"running", "paused", "finished", "failed", "cancelled", "interrupted"}:
-            return
-        active = status.get("active_downloads")
-        active_names = ""
-        if isinstance(active, list):
-            active_names = "；".join(
-                str(item.get("scene_id") or "")
-                for item in active[: int(status.get("concurrency") or 1)]
-                if isinstance(item, dict) and item.get("scene_id")
-            )
-        detail = (
-            str(status.get("error") or "")
-            or str(status.get("summary_line") or "")
-            or (f"正在下载：{active_names}" if active_names else "")
-            or f"{int(status.get('done') or 0)}/{int(status.get('total') or 0)}"
-        )
-        logs = [
-            _format_status_log_entry(entry)
-            for entry in (status.get("log") or [])
-            if isinstance(entry, dict) and entry.get("detail")
-        ]
-        archive_key = status.get("results_path") or status.get("output_dir") or "active"
-        self._upsert_download_archive_item(
-            {
-                "id": f"asf:{archive_key}:{int(status.get('total') or 0)}",
-                "name": "Sentinel-1 下载任务",
-                "status": state,
-                "detail": detail,
-                "ts": int(time.time() * 1000),
-                "kind": "asf",
-                "output_dir": str(status.get("output_dir") or ""),
-                "total": int(status.get("total") or 0),
-                "concurrency": int(status.get("concurrency") or 0),
-                "use_product_subdirs": _coerce_bool(status.get("use_product_subdirs"), False),
-                "download_layout": str(status.get("download_layout") or "flat"),
-                "logs": logs,
-            }
-        )
+        self._download_archive_service.archive_asf_status(status)
 
     def _archive_orbit_status(self, status: dict[str, Any]) -> None:
-        state = str(status.get("state") or "")
-        if bool(status.get("cancelled")):
-            state = "cancelled"
-        if state not in {"running", "paused", "finished", "failed", "cancelled", "interrupted"}:
-            return
-        detail = (
-            str(status.get("error") or "")
-            or str(status.get("summary_line") or "")
-            or (
-                f"正在处理：{status.get('current_scene')}"
-                if status.get("current_scene")
-                else ""
-            )
-            or f"{int(status.get('done') or 0)}/{int(status.get('total') or 0)}"
-        )
-        logs = [
-            _format_status_log_entry(entry)
-            for entry in (status.get("log") or [])
-            if isinstance(entry, dict) and entry.get("detail")
-        ]
-        archive_key = status.get("orbit_dir") or "active"
-        self._upsert_download_archive_item(
-            {
-                "id": f"orbit:{archive_key}:{int(status.get('total') or 0)}",
-                "name": "Sentinel-1 精密轨道下载",
-                "status": state,
-                "detail": detail,
-                "ts": int(time.time() * 1000),
-                "kind": "orbit",
-                "output_dir": str(status.get("orbit_dir") or ""),
-                "total": int(status.get("total") or 0),
-                "use_orbit_subdir": _coerce_bool(status.get("use_orbit_subdir"), False),
-                "download_layout": str(status.get("download_layout") or "flat"),
-                "logs": logs,
-            }
-        )
+        self._download_archive_service.archive_orbit_status(status)
 
     def _archive_dem_status(self, status: dict[str, Any]) -> None:
-        state = str(status.get("state") or "")
-        if bool(status.get("cancelled")):
-            state = "cancelled"
-        if state not in {"running", "finished", "failed", "cancelled", "interrupted"}:
-            return
-        output_dir = str(status.get("output_dir") or "").strip()
-        dataset = str(status.get("dataset") or "DEM").strip()
-        detail = (
-            str(status.get("error") or "")
-            or str(status.get("summary_line") or "")
-            or f"正在下载：{dataset}"
-        )
-        logs = [
-            _format_status_log_entry(entry)
-            for entry in (status.get("log") or [])
-            if isinstance(entry, dict) and entry.get("detail")
-        ]
-        self._upsert_download_archive_item(
-            {
-                "id": f"dem:{output_dir or status.get('results_path') or dataset}:{int(status.get('total') or 1)}:{dataset}",
-                "name": "DEM 下载并转换椭球高" if bool(status.get("convert")) else "DEM 下载",
-                "status": state,
-                "detail": detail,
-                "ts": int(time.time() * 1000),
-                "kind": "dem",
-                "output_dir": output_dir,
-                "total": int(status.get("total") or 1),
-                "concurrency": 1,
-                "logs": logs,
-            }
-        )
+        self._download_archive_service.archive_dem_status(status)
 
     def save_download_archive(self, items: list[dict[str, Any]] | None = None) -> dict:
         """Persist the UI download/task history."""
-        incoming = _filter_deleted_download_archive(
-            _clean_download_archive(items or [])[:40],
-            self._deleted_archive_keys,
-        )
-        if not incoming and self._download_archive:
-            return self.get_download_archive()
-        self._download_archive = _merge_download_archive(
-            incoming,
-            _filter_deleted_download_archive(
-                _clean_download_archive(self._download_archive),
-                self._deleted_archive_keys,
-            ),
-        )
-        self._save_state()
-        return self.get_download_archive()
+        return self._download_archive_service.save_archive(items)
 
     def delete_download_archive_item(self, item: dict[str, Any] | None = None) -> dict:
         """Delete a persisted history record without touching output files."""
-        cleaned = _clean_download_archive([item] if isinstance(item, dict) else [])
-        if not cleaned:
-            return _error_msg("Missing download history item", "GUI003")
-        key = _download_archive_identity(cleaned[0])
-        if not key:
-            return _error_msg("Missing download history item identity", "GUI003")
-        keys = _download_archive_identity_candidates(cleaned[0], include_legacy=True)
-        self._deleted_archive_keys.update(keys)
-        self._download_archive = [
-            row
-            for row in self._download_archive
-            if not (_download_archive_identity_candidates(row) & keys)
-        ]
-        self._save_state()
-        return self.get_download_archive()
+        return self._download_archive_service.delete_archive_item(item)
 
     # ------------------------------------------------------------------ app
     def get_app_info(self) -> dict:
@@ -2018,6 +1928,59 @@ class Api:
             "current_project_id": self._state.current_project_id,
             "current_region_id": self._state.current_region_id,
         }
+
+    # --------------------------------------------------------------- v3 CORE
+    def get_v3_providers(self) -> dict:
+        """Return providers exposed through the v3 adapter registry."""
+        try:
+            providers = self._v3_provider_service.provider_metadata()
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "GUI003")
+        return {"ok": True, "providers": [_dump(item) for item in providers]}
+
+    def v3_search_provider(self, provider_id: str, query: dict | None = None) -> dict:
+        """Search a v3 provider through the compatibility adapter layer."""
+        try:
+            products = self._v3_provider_service.search_provider(provider_id, query)
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "GUI003")
+        return {"ok": True, "products": [_dump(item) for item in products]}
+
+    def v3_plan_provider(
+        self,
+        provider_id: str,
+        query: dict | None = None,
+        products: list[dict] | None = None,
+    ) -> dict:
+        """Build an offline v3 provider plan without executing downloads."""
+        try:
+            plan = self._v3_provider_service.plan_provider(provider_id, query, products)
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "GUI003")
+        self._act(f"v3 provider plan: {provider_id}", kind="download")
+        return {"ok": True, "plan": _dump(plan)}
+
+    def gacos_webform_dry_run(self, payload: dict, email: str = "") -> dict:
+        """Dry-run format GACOS web form fields and generate curl previews."""
+        try:
+            return self._gacos_webform_service.dry_run_preview(payload, email)
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "GUI003")
+
+    def gacos_webform_submit(self, payload: dict, email: str) -> dict:
+        """Reserved for future GACOS web form real POST submissions."""
+        try:
+            return self._gacos_webform_service.submit_webform(payload, email)
+        except InsarPrepError as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "GUI003")
 
     # ----------------------------------------------------- native dialogs
     def window_minimize(self) -> dict:
@@ -2488,6 +2451,43 @@ class Api:
             return _error_msg(_friendly_aoi_error(exc, file_name), "AOI001")
         return self._aoi_preview_response(file_name, features, source_kind="content", include_geojson=True)
 
+    def preview_aoi_file_bundle(self, files: list[dict[str, Any]] | None = None) -> dict:
+        """Return selectable features from a dragged Shapefile sidecar bundle."""
+        bundle = [item for item in (files or []) if isinstance(item, dict)]
+        names = [str(item.get("name") or "").strip() for item in bundle]
+        shp_names = [name for name in names if Path(name).suffix.lower() == ".shp"]
+        if not shp_names:
+            return _error_msg("请同时拖入 .shp/.dbf/.shx，或点击“上传本地边界”选择 .shp 文件。", "AOI001")
+        shp_name = shp_names[0]
+        stem = Path(shp_name).stem.lower()
+        required = {".shp", ".dbf", ".shx"}
+        allowed = required | {".prj"}
+        with tempfile.TemporaryDirectory(prefix="insar_aoi_") as tmp:
+            root = Path(tmp)
+            written: set[str] = set()
+            for item in bundle:
+                name = Path(str(item.get("name") or "")).name
+                suffix = Path(name).suffix.lower()
+                if Path(name).stem.lower() != stem or suffix not in allowed:
+                    continue
+                try:
+                    raw = base64.b64decode(str(item.get("base64") or item.get("base64Data") or ""), validate=True)
+                except binascii.Error as exc:
+                    return _error_msg(_friendly_aoi_error(exc, name), "AOI001")
+                (root / f"{stem}{suffix}").write_bytes(raw)
+                written.add(suffix)
+            missing = sorted(required - written)
+            if missing:
+                return _error_msg(
+                    f"拖拽 Shapefile 需要同名配套文件：缺少 {'/'.join(missing)}；请同时拖入 .shp/.dbf/.shx，或使用上传按钮选择 .shp。",
+                    "AOI001",
+                )
+            try:
+                features = _read_aoi_vector_features(root / f"{stem}.shp")
+            except Exception as exc:  # noqa: BLE001
+                return _error_msg(_friendly_aoi_error(exc, shp_name), "AOI001")
+        return self._aoi_preview_response(shp_name, features, source_kind="content", include_geojson=True)
+
     def set_region_aoi_geojson_features(
         self,
         geojson: dict,
@@ -2517,21 +2517,24 @@ class Api:
     ) -> dict:
         fields = _aoi_feature_fields(features)
         display_field = _suggest_aoi_name_field(fields)
+        preview_features = features[:_AOI_PREVIEW_FEATURE_LIMIT]
         response = {
             "ok": True,
             "path": str(path),
             "file_name": Path(path).name,
             "source_kind": source_kind,
             "total_features": len(features),
+            "feature_preview_limit": _AOI_PREVIEW_FEATURE_LIMIT,
+            "features_truncated": len(features) > len(preview_features),
             "fields": fields,
             "display_field": display_field,
             "features": [
                 _aoi_feature_preview_row(index, feature, display_field)
-                for index, feature in enumerate(features)
+                for index, feature in enumerate(preview_features)
             ],
         }
         if include_geojson:
-            response["geojson"] = _feature_collection_from_aoi_features(features, str(path))
+            response["geojson"] = _feature_collection_from_aoi_features(preview_features, str(path))
         return response
 
     def set_region_aoi_file_features(
@@ -2543,7 +2546,7 @@ class Api:
     ) -> dict:
         """Bind selected features from a local AOI vector file as the current AOI."""
         try:
-            from shapely.geometry import shape
+            from shapely.geometry import mapping, shape
             from shapely.ops import unary_union
 
             from insar_prep.core.enums import AoiSource
@@ -2592,7 +2595,12 @@ class Api:
                     for i, feature in enumerate(selected)
                 ],
             }
-            saved_geojson = _write_region_aoi_geojson(region, selected_geojson)
+            bound_geojson = {
+                "type": "Feature",
+                "properties": dict(selected_geojson.get("properties") or {}),
+                "geometry": dict(mapping(merged_geometry)),
+            }
+            saved_geojson = _write_region_aoi_geojson(region, bound_geojson)
             if saved_geojson is not None:
                 region.aoi.geometry_path = saved_geojson
             else:
@@ -2610,7 +2618,7 @@ class Api:
         return {
             "ok": True,
             "aoi": _dump(aoi),
-            "aoi_geojson": _extract_geojson_geometry(selected_geojson),
+            "aoi_geojson": _extract_geojson_geometry(bound_geojson),
             "aoi_feature_count": len(selected),
             "aoi_total_feature_count": len(features),
             "download_mode": "split" if str(download_mode).strip() == "split" else "merge",
@@ -2622,6 +2630,7 @@ class Api:
         """Bind an AOI from an in-memory GeoJSON Feature / Geometry (map drawing)."""
         try:
             from insar_prep.core.enums import AoiSource
+            from shapely.geometry import mapping
             from insar_prep.processing.aoi_import import (
                 _geometry_from_geojson,
                 geometry_to_processing_aoi,
@@ -2635,7 +2644,12 @@ class Api:
             aoi = geometry_to_processing_aoi(geometry, source=AoiSource.MANUAL_BBOX)
             self._ensure_current_region()
             region = self._state.set_current_region_aoi(aoi)
-            saved_geojson = _write_region_aoi_geojson(region, geojson)
+            cleaned_geojson = {
+                "type": "Feature",
+                "properties": dict(geojson.get("properties") or {}) if isinstance(geojson.get("properties"), dict) else {},
+                "geometry": dict(mapping(geometry)),
+            }
+            saved_geojson = _write_region_aoi_geojson(region, cleaned_geojson)
             if saved_geojson is not None:
                 region.aoi.geometry_path = saved_geojson
         except InsarPrepError as exc:
@@ -2647,7 +2661,34 @@ class Api:
         return {
             "ok": True,
             "aoi": _dump(aoi),
-            "aoi_geojson": _extract_geojson_geometry(geojson),
+            "aoi_geojson": _extract_geojson_geometry(cleaned_geojson),
+            "region_id": region.region_id,
+            "region_name": region.region_name,
+        }
+
+    def clear_region_aoi(self) -> dict:
+        """Clear only the active region AOI/boundary, keeping searched scenes."""
+        region = self._state.current_region()
+        if region is None:
+            self._act("清除边界/AOI：当前没有已选研究区", kind="aoi")
+            return {"ok": True, "cleared_aoi": False}
+        try:
+            from insar_prep.core.enums import AoiRole, AoiSource
+            from insar_prep.core.models import Aoi
+
+            cleared_aoi = bool(region.aoi is not None and region.aoi.bbox is not None)
+            region.aoi = Aoi(
+                source=AoiSource.MANUAL_BBOX,
+                role=AoiRole.PROCESSING_AOI,
+                bbox=None,
+            )
+            self._save_state()
+        except Exception as exc:  # noqa: BLE001
+            return _error_msg(str(exc), "AOI001")
+        self._act(f"清除边界/AOI：{region.region_name}", kind="aoi")
+        return {
+            "ok": True,
+            "cleared_aoi": cleared_aoi,
             "region_id": region.region_id,
             "region_name": region.region_name,
         }
@@ -2679,13 +2720,20 @@ class Api:
             district=str(district or ""),
             query=str(query or ""),
         ):
-            self._act("行政边界搜索：全国（内置范围）", kind="aoi")
+            results, datav_error = _search_datav_admin_boundaries(
+                province=str(province or ""),
+                city=str(city or ""),
+                district=str(district or ""),
+                query=str(query or ""),
+                limit=1,
+            )
+            self._act("行政边界搜索：全国", kind="aoi")
             return {
                 "ok": True,
                 "query": "全国",
-                "provider": "builtin",
-                "results": [_builtin_china_boundary()],
-                "warning": "全国范围使用内置省级边界合成预览；正式项目建议上传权威国界面文件。",
+                "provider": "datav" if results and results[0].get("source") == "DataV 行政区划服务" else "builtin",
+                "results": results or [_builtin_china_boundary()],
+                "warning": f"DataV 全国边界不可用，已使用内置全国范围：{datav_error}" if datav_error else None,
             }
         terms = [term for term in terms if term and term not in {"全部", "不限"}]
         search_text = " ".join(dict.fromkeys(terms)).strip()
@@ -2693,6 +2741,25 @@ class Api:
             return _error_msg("请输入地名，或选择省/市/区后再加载行政边界", "AOI001")
 
         source_warnings: list[str] = []
+        datav_results, datav_error = _search_datav_admin_boundaries(
+            province=str(province or ""),
+            city=str(city or ""),
+            district=str(district or ""),
+            query=str(query or ""),
+            limit=limit,
+        )
+        if datav_results:
+            self._act(f"DataV 行政边界搜索：{search_text}（{len(datav_results)} 条）", kind="aoi")
+            return {
+                "ok": True,
+                "query": search_text,
+                "provider": "datav",
+                "results": datav_results,
+                "warning": None,
+            }
+        if datav_error:
+            source_warnings.append(datav_error)
+
         local_results, local_error = _search_local_admin_boundaries(
             province=str(province or ""),
             city=str(city or ""),
@@ -2707,7 +2774,7 @@ class Api:
                 "query": search_text,
                 "provider": "local",
                 "results": local_results,
-                "warning": None,
+                "warning": "DataV 行政区服务不可用，已回退到本地边界。" if source_warnings else None,
             }
         if local_error:
             source_warnings.append(local_error)
@@ -2803,12 +2870,17 @@ class Api:
         }
 
     def get_admin_options(self, province: str = "", city: str = "") -> dict:
-        """Return province/city/county option lists from the bundled local boundaries."""
+        """Return province/city/county option lists from DataV, with local fallback."""
+        try:
+            options = _datav_admin_options(province=province, city=city)
+            return {"ok": True, **options}
+        except Exception as exc:  # noqa: BLE001
+            datav_error = str(exc)
         try:
             options = _local_admin_options(province=province, city=city)
         except Exception as exc:  # noqa: BLE001
-            return _error_msg(f"本地行政区划选项读取失败：{exc}", "AOI001")
-        return {"ok": True, **options}
+            return _error_msg(f"行政区划选项读取失败：DataV {datav_error}；本地边界 {exc}", "AOI001")
+        return {"ok": True, **options, "warning": f"DataV 行政区服务不可用，已回退到本地边界：{datav_error}"}
 
     # ------------------------------------------------------------ 2. SCENES
     def import_scenes_text(self, text: str) -> dict:
@@ -3187,6 +3259,7 @@ class Api:
                         "requested_limit": explicit_limit,
                         "query_limit": len(cache_entry.get("scenes") or []) if cache_entry else len(scenes),
                         "total_count": cached_total,
+                        "candidate_count": cached_total if cached_total is not None else len(scenes),
                         "returned_count": len(stored),
                         "source": "ASF_CACHE",
                     },
@@ -3197,6 +3270,94 @@ class Api:
                         "path": cache_entry.get("path") if cache_entry else "",
                     },
                 }
+            partial_cached_scenes = self._cached_asf_partial_scenes(cache_entry, cache_query)
+            incremental_end = self._incremental_asf_end_from_cache(partial_cached_scenes)
+            incremental_missing = (
+                max(0, int(explicit_limit or 0) - len(partial_cached_scenes))
+                if explicit_limit and partial_cached_scenes and incremental_end
+                else 0
+            )
+            if incremental_missing > 0:
+                payload_end = str(payload.get("end") or "").strip() or None
+                search_end = incremental_end
+                if payload_end and payload_end < incremental_end:
+                    search_end = payload_end
+                self._set_metadata_status(
+                    "running",
+                    len(partial_cached_scenes),
+                    explicit_limit,
+                    f"已有缓存 {len(partial_cached_scenes)} 景，补查 {incremental_missing} 景",
+                )
+                extra_stats: dict[str, Any] = {}
+                try:
+                    extra_scenes = search_scenes_from_asf(
+                        bbox=bbox,
+                        aoi_geojson=aoi_geojson,
+                        start=str(payload.get("start") or "").strip() or None,
+                        end=search_end,
+                        product_type=str(payload.get("product_type") or "SLC"),
+                        beam_mode=str(payload.get("beam_mode") or "IW"),
+                        polarization=str(payload.get("polarization") or ""),
+                        orbit_direction=str(payload.get("orbit_direction") or ""),
+                        relative_orbit=relative_orbit,
+                        frame=frame,
+                        max_results=incremental_missing,
+                        progress=lambda done, total, msg: self._set_metadata_status("running", done, total, msg),
+                        stats=extra_stats,
+                        cancelled=lambda: self._asf_search_cancel.is_set(),
+                        allow_cmr_fallback=True,
+                    )
+                    from insar_prep.providers.asf.scene_parser import deduplicate_scenes
+
+                    scenes, _ = deduplicate_scenes([*partial_cached_scenes, *extra_scenes])
+                    scenes = _sort_scenes_by_acquisition_date(scenes)[:explicit_limit]
+                    search_stats.update(
+                        {
+                            "requested_limit": explicit_limit,
+                            "query_limit": len(partial_cached_scenes)
+                            + int(extra_stats.get("query_limit") or incremental_missing),
+                            "total_count": extra_stats.get("total_count") or (cache_entry or {}).get("total_count"),
+                            "candidate_count": extra_stats.get("candidate_count") or (cache_entry or {}).get("total_count"),
+                            "returned_count": len(scenes),
+                            "source": "ASF_INCREMENTAL",
+                        }
+                    )
+                    self._write_asf_search_cache(
+                        cache_key=cache_key,
+                        cache_path=cache_path,
+                        key_payload=cache_query,
+                        scenes=scenes,
+                        stats={**search_stats, "source": "ASF"},
+                        existing=cache_entry,
+                    )
+                    stored, label = self._store_imported_scenes(scenes)
+                    self._set_metadata_status("finished", 1, 1, f"ASF 补量完成：导入 {len(stored)} 景")
+                    self._act(f"ASF 补量导入 {len(stored)} 景 → {label}", kind="scenes")
+                    return {
+                        "ok": True,
+                        "scenes": [_scene_row(s) for s in stored],
+                        "duplicates": [],
+                        "errors": [],
+                        "queried": len(scenes),
+                        "search": {
+                            "requested_limit": search_stats.get("requested_limit"),
+                            "query_limit": search_stats.get("query_limit"),
+                            "total_count": search_stats.get("total_count"),
+                            "candidate_count": search_stats.get("candidate_count"),
+                            "returned_count": len(stored),
+                            "source": "ASF_INCREMENTAL",
+                        },
+                        "cache": {
+                            "hit": True,
+                            "key": cache_entry.get("cache_key") if cache_entry else cache_key,
+                            "count": len(scenes),
+                            "path": cache_entry.get("path") if cache_entry else str(cache_path or ""),
+                        },
+                    }
+                except InsarPrepError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    self._activity.add(f"ASF 缓存补量失败，改为完整检索：{exc}", kind="warning")
             scenes = search_scenes_from_asf(
                 bbox=bbox,
                 aoi_geojson=aoi_geojson,
@@ -3226,7 +3387,14 @@ class Api:
                 existing=cache_entry,
             )
             stored, label = self._store_imported_scenes(scenes)
-            self._set_metadata_status("finished", 1, 1, "ASF 检索与元数据解析完成")
+            candidate_count = search_stats.get("candidate_count") or search_stats.get("total_count") or len(scenes)
+            target_count = search_stats.get("requested_limit") or explicit_limit or len(stored)
+            self._set_metadata_status(
+                "finished",
+                1,
+                1,
+                f"ASF 检索完成：目标 {target_count} 景，候选 {candidate_count} 景，导入 {len(stored)} 景",
+            )
         except InsarPrepError as exc:
             if getattr(exc, "code", None) and str(getattr(exc, "code")) == "DL001":
                 self._set_metadata_status("cancelled", 0, 1, "ASF 检索已停止")
@@ -3248,6 +3416,7 @@ class Api:
                 "requested_limit": search_stats.get("requested_limit"),
                 "query_limit": search_stats.get("query_limit"),
                 "total_count": search_stats.get("total_count"),
+                "candidate_count": search_stats.get("candidate_count"),
                 "returned_count": len(stored),
                 "source": search_stats.get("source") or "ASF",
             },
@@ -3390,6 +3559,7 @@ class Api:
         scene_ids: list[str] | None = None,
         max_concurrent: int = 10,
         use_orbit_subdir: bool = False,
+        aoi_name: str = "",
     ) -> dict:
         """Start POEORB downloads from a frozen Orbit task snapshot."""
         try:
@@ -3402,6 +3572,7 @@ class Api:
         return self._start_orbit_download_for_scenes(
             scenes,
             label=f"轨道任务快照（选中 {len(scenes)} 景）",
+            aoi_name=aoi_name,
             output_dir=output_dir,
             max_concurrent=max_concurrent,
             use_orbit_subdir=use_orbit_subdir,
@@ -3412,6 +3583,7 @@ class Api:
         scenes: list[Any],
         *,
         label: str,
+        aoi_name: str = "",
         output_dir: str = "",
         max_concurrent: int = 10,
         use_orbit_subdir: bool = False,
@@ -3424,12 +3596,13 @@ class Api:
         self._act(f"开始精密轨道下载：{label}（{len(scenes)} 景）", kind="download")
         use_subdir = _coerce_bool(use_orbit_subdir, False)
         orbit_dir = Path(out) / "Sentinel_Orbit" if use_subdir else Path(out)
-        self._forget_deleted_archive_key("orbit", str(orbit_dir), use_orbit_subdir=use_subdir)
+        self._forget_deleted_archive_key("orbit", out, use_orbit_subdir=use_subdir)
         result = self._orbit_download.start(
             scenes,
             out,
             max_concurrent=max_concurrent,
             use_orbit_subdir=use_subdir,
+            aoi_name=aoi_name or label,
             activity=self._activity,
         )
         self._archive_orbit_status(self._orbit_download.get_status())
@@ -3455,9 +3628,7 @@ class Api:
 
     def get_orbit_download_status(self) -> dict:
         """Poll orbit download progress."""
-        status = self._orbit_download.get_status()
-        self._archive_orbit_status(status)
-        return status
+        return self._download_status.get_orbit_status()
 
     # ----------------------------------------------------------- 3. DOWNLOAD
     def plan_asf_download(
@@ -3505,6 +3676,7 @@ class Api:
         max_concurrent: int = 1,
         scene_ids: list[str] | None = None,
         use_product_subdirs: bool = False,
+        aoi_name: str = "",
     ) -> dict:
         """Start a real ASF Sentinel-1 download on a background thread."""
         scenes, _, label = self._active_scene_context()
@@ -3515,6 +3687,7 @@ class Api:
         return self._start_asf_download_for_scenes(
             scenes,
             label=label,
+            aoi_name=aoi_name or label,
             output_dir=output_dir,
             credential_source=credential_source,
             max_concurrent=max_concurrent,
@@ -3529,6 +3702,7 @@ class Api:
         credential_source: str = "auto",
         max_concurrent: int = 1,
         use_product_subdirs: bool = False,
+        aoi_name: str = "",
     ) -> dict:
         """Start ASF downloading from a frozen UI task snapshot.
 
@@ -3544,6 +3718,7 @@ class Api:
             scenes = [scene for scene in scenes if str(getattr(scene, "scene_id", "")) in selected_ids]
         return self._start_asf_download_for_scenes(
             scenes,
+            aoi_name=aoi_name,
             label=f"任务快照（选中 {len(scenes)} 景）",
             output_dir=output_dir,
             credential_source=credential_source,
@@ -3556,6 +3731,7 @@ class Api:
         scenes: list[Any],
         *,
         label: str,
+        aoi_name: str = "",
         output_dir: str = "",
         credential_source: str = "auto",
         max_concurrent: int = 1,
@@ -3655,6 +3831,7 @@ class Api:
             ssl_verify=asf_ssl_verify,
             trust_env=trust_env,
             use_product_subdirs=use_subdirs,
+            aoi_name=aoi_name or label,
             activity=self._activity,
         )
         get_status = getattr(self._asf_download, "get_status", None)
@@ -3764,9 +3941,7 @@ class Api:
 
     def get_download_status(self) -> dict:
         """Poll ASF download progress (state, counts, recent log lines)."""
-        status = self._asf_download.get_status()
-        self._archive_asf_status(status)
-        return status
+        return self._download_status.get_asf_status()
 
     def plan_dem_download(self, output_dir: str = "", dataset: str = "COP30") -> dict:
         """Build + validate (dry-run) the DEM request plan for the region AOI."""
@@ -4042,7 +4217,7 @@ class Api:
 
     def get_dem_download_status(self) -> dict:
         """Return current background DEM download status."""
-        return self._dem_download.get_status()
+        return self._download_status.get_dem_status()
 
     def run_dem_conversion(self, output_dir: str = "") -> dict:
         """Run DEM vertical-datum conversion for the current region."""
@@ -5460,6 +5635,46 @@ def _geojson_feature_for_storage(geojson: dict) -> dict:
 
 
 _LOCAL_BOUNDARY_CACHE: dict[str, list[dict]] = {}
+_DATAV_CHILDREN_CACHE: dict[str, list[dict[str, str]]] = {}
+_DATAV_BOUNDARY_CACHE: dict[str, dict] = {}
+_DATAV_BOUNDARY_ROOT = "https://geo.datav.aliyun.com/areas_v3/bound"
+_AOI_PREVIEW_FEATURE_LIMIT = 500
+_DATAV_PROVINCES: tuple[tuple[str, str], ...] = (
+    ("110000", "北京市"),
+    ("120000", "天津市"),
+    ("130000", "河北省"),
+    ("140000", "山西省"),
+    ("150000", "内蒙古自治区"),
+    ("210000", "辽宁省"),
+    ("220000", "吉林省"),
+    ("230000", "黑龙江省"),
+    ("310000", "上海市"),
+    ("320000", "江苏省"),
+    ("330000", "浙江省"),
+    ("340000", "安徽省"),
+    ("350000", "福建省"),
+    ("360000", "江西省"),
+    ("370000", "山东省"),
+    ("410000", "河南省"),
+    ("420000", "湖北省"),
+    ("430000", "湖南省"),
+    ("440000", "广东省"),
+    ("450000", "广西壮族自治区"),
+    ("460000", "海南省"),
+    ("500000", "重庆市"),
+    ("510000", "四川省"),
+    ("520000", "贵州省"),
+    ("530000", "云南省"),
+    ("540000", "西藏自治区"),
+    ("610000", "陕西省"),
+    ("620000", "甘肃省"),
+    ("630000", "青海省"),
+    ("640000", "宁夏回族自治区"),
+    ("650000", "新疆维吾尔自治区"),
+    ("710000", "台湾省"),
+    ("810000", "香港特别行政区"),
+    ("820000", "澳门特别行政区"),
+)
 
 
 def _geojson_from_aoi_file(path: str | Path) -> dict | None:
@@ -5580,7 +5795,7 @@ def _read_aoi_vector_features_from_bytes(file_name: str, raw: bytes) -> list[dic
         raise ValueError("边界文件内容为空。")
     if suffix == ".shp":
         raise ValueError(
-            "拖拽单个 .shp 文件缺少配套 .dbf/.shx/.prj，无法可靠识别属性和坐标系；"
+            "拖拽单个 .shp 文件缺少配套 .dbf/.shx，无法可靠识别属性；"
             "请点击“上传本地边界”选择 .shp 文件。"
         )
     if suffix == ".kmz":
@@ -5719,8 +5934,10 @@ def _friendly_aoi_error(exc: Exception, source: str | Path = "") -> str:
         return text
     if "缺少配套" in text or ".dbf" in text or ".shx" in text:
         return text
+    if "缺少同名 .prj" in text or "无法自动转换" in text or ".prj 坐标系无法识别" in text:
+        return text
     if "Shapefile" in text or "shapefile" in text:
-        return "Shapefile 读取失败；请确认它是面边界，且坐标为 WGS84 经纬度。"
+        return "Shapefile 读取失败；请确认它是面边界，并保留同名 .dbf/.shx/.prj 配套文件。"
     if "边界文件内容为空" in text or "没有可用面要素" in text or "请至少选择" in text:
         return text
     return f"{source_name} 不是可识别的边界文件，请检查文件格式和坐标系。"
@@ -5787,6 +6004,7 @@ def _read_shapefile_aoi_features(source: Path) -> list[dict[str, Any]]:
         source.read_bytes(),
         str(source),
         dbf_rows=_read_dbf_records(source.with_suffix(".dbf")),
+        source_path=source,
     )
 
 
@@ -5795,6 +6013,7 @@ def _read_shapefile_aoi_features_from_bytes(
     source: str,
     *,
     dbf_rows: list[dict[str, Any]] | None = None,
+    source_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     import struct
 
@@ -5805,6 +6024,7 @@ def _read_shapefile_aoi_features_from_bytes(
         _SHP_HEADER_SIZE,
         _SHP_NULL_TYPE,
         _SHP_POLYGON_TYPES,
+        _normalise_shapefile_geometry_crs,
         _polygons_from_shapefile_record,
     )
 
@@ -5835,11 +6055,14 @@ def _read_shapefile_aoi_features_from_bytes(
         polygons = _polygons_from_shapefile_record(content)
         if not polygons:
             continue
+        geometry = unary_union(polygons)
+        if source_path is not None:
+            geometry = _normalise_shapefile_geometry_crs(geometry, Path(source_path))
         row_index = max(0, int(record_number) - 1)
         out.append(
             {
                 "properties": _clean_aoi_properties(rows[row_index] if row_index < len(rows) else {}),
-                "geometry": dict(mapping(unary_union(polygons))),
+                "geometry": dict(mapping(geometry)),
                 "_source_index": row_index,
             }
         )
@@ -5999,6 +6222,320 @@ def _normalise_feature_indices(feature_ids: list[Any] | None, total: int) -> lis
     return out
 
 
+def _datav_cache_dir() -> Path:
+    env_path = os.environ.get("INSAR_ADMIN_CACHE_DIR")
+    if env_path:
+        return Path(env_path)
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        return Path(local_appdata) / "InSAR Assistant" / "admin_cache"
+    return Path.home() / ".insar_assistant" / "admin_cache"
+
+
+def _datav_cache_file(kind: str, code: str) -> Path:
+    safe_code = re.sub(r"[^0-9A-Za-z_-]+", "_", str(code or "").strip() or "empty")
+    return _datav_cache_dir() / f"datav_{kind}_{safe_code}.json"
+
+
+def _read_datav_json_cache(kind: str, code: str) -> dict | None:
+    path = _datav_cache_file(kind, code)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - stale cache is non-fatal
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_datav_json_cache(kind: str, code: str, data: dict) -> None:
+    try:
+        path = _datav_cache_file(kind, code)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:  # noqa: BLE001 - cache write must not break AOI search
+        return
+
+
+def _fetch_datav_json(kind: str, code: str) -> dict:
+    suffix = "_full" if kind == "children" else ""
+    url = f"{_DATAV_BOUNDARY_ROOT}/{code}{suffix}.json"
+    try:
+        import requests  # noqa: PLC0415 - desktop optional network extra
+
+        response = requests.get(
+            url,
+            headers={"User-Agent": "InSAR-Studio/2 DataV administrative boundary"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("DataV 返回的行政区数据不是 JSON 对象")
+        _write_datav_json_cache(kind, code, data)
+        return data
+    except Exception as exc:  # noqa: BLE001
+        cached = _read_datav_json_cache(kind, code)
+        if cached is not None:
+            return cached
+        raise RuntimeError(f"DataV 行政区服务不可用，且本机没有缓存：{exc}") from exc
+
+
+def _datav_children(code: str) -> list[dict[str, str]]:
+    clean_code = str(code or "").strip()
+    if not clean_code:
+        return []
+    cached = _DATAV_CHILDREN_CACHE.get(clean_code)
+    if cached is not None:
+        return cached
+    try:
+        data = _fetch_datav_json("children", clean_code)
+    except Exception as exc:  # noqa: BLE001
+        # DataV has no *_full.json for leaf districts/counties. Treat that as
+        # "no children" instead of falling back to mismatched local options.
+        text = str(exc)
+        if "404" in text or "Not Found" in text:
+            _DATAV_CHILDREN_CACHE[clean_code] = []
+            return []
+        raise
+    rows: list[dict[str, str]] = []
+    for feature in data.get("features") or []:
+        if not isinstance(feature, dict):
+            continue
+        props = feature.get("properties")
+        if not isinstance(props, dict):
+            continue
+        raw_code = props.get("adcode")
+        name = str(props.get("name") or "").strip()
+        if raw_code is None or not name:
+            continue
+        rows.append({"code": str(raw_code), "name": name})
+    _DATAV_CHILDREN_CACHE[clean_code] = rows
+    return rows
+
+
+def _datav_province_rows() -> list[dict[str, str]]:
+    return [{"code": code, "name": name} for code, name in _DATAV_PROVINCES]
+
+
+def _datav_name_matches(name: str, query: str) -> bool:
+    if not query:
+        return True
+    return name == query or query in name or name in query
+
+
+def _datav_resolve_row(value: str, rows: list[dict[str, str]]) -> dict[str, str] | None:
+    text = _admin_value(value)
+    if not text:
+        return None
+    exact = [row for row in rows if row["code"] == text or row["name"] == text]
+    if exact:
+        return exact[0]
+    fuzzy = [row for row in rows if _datav_name_matches(row["name"], text)]
+    return fuzzy[0] if fuzzy else None
+
+
+def _datav_admin_options(*, province: str = "", city: str = "") -> dict[str, list[str]]:
+    province_rows = _datav_province_rows()
+    province_row = _datav_resolve_row(province, province_rows)
+    city_rows = _datav_children(province_row["code"]) if province_row else []
+    city_row = _datav_resolve_row(city, city_rows) if city_rows else None
+    district_rows = _datav_children(city_row["code"]) if city_row else []
+    return {
+        "provinces": ["全国", *[row["name"] for row in province_rows]],
+        "cities": ["全部", *[row["name"] for row in city_rows]],
+        "districts": ["全部", *[row["name"] for row in district_rows]],
+    }
+
+
+def _out_of_china(lng: float, lat: float) -> bool:
+    return not (73.66 < lng < 135.05 and 3.86 < lat < 53.55)
+
+
+def _transform_lat(x: float, y: float) -> float:
+    import math
+
+    ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * abs(x) ** 0.5
+    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
+    ret += (160.0 * math.sin(y / 12.0 * math.pi) + 320.0 * math.sin(y * math.pi / 30.0)) * 2.0 / 3.0
+    return ret
+
+
+def _transform_lng(x: float, y: float) -> float:
+    import math
+
+    ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * abs(x) ** 0.5
+    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
+    ret += (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi)) * 2.0 / 3.0
+    return ret
+
+
+def _gcj02_to_wgs84(lng: float, lat: float) -> tuple[float, float]:
+    import math
+
+    if _out_of_china(lng, lat):
+        return lng, lat
+    a = 6378245.0
+    ee = 0.00669342162296594323
+    x = lng - 105.0
+    y = lat - 35.0
+    dlat = _transform_lat(x, y)
+    dlng = _transform_lng(x, y)
+    radlat = lat / 180.0 * math.pi
+    magic = math.sin(radlat)
+    magic = 1.0 - ee * magic * magic
+    sqrtmagic = math.sqrt(magic)
+    dlat = (dlat * 180.0) / ((a * (1.0 - ee)) / (magic * sqrtmagic) * math.pi)
+    dlng = (dlng * 180.0) / (a / sqrtmagic * math.cos(radlat) * math.pi)
+    mglat = lat + dlat
+    mglng = lng + dlng
+    return lng * 2.0 - mglng, lat * 2.0 - mglat
+
+
+def _transform_datav_coordinates(value: Any) -> None:
+    if isinstance(value, dict):
+        coords = value.get("coordinates")
+        if isinstance(coords, list):
+            _transform_datav_coordinates(coords)
+        for key, child in value.items():
+            if key != "coordinates":
+                _transform_datav_coordinates(child)
+        return
+    if isinstance(value, list):
+        if len(value) >= 2 and isinstance(value[0], (int, float)) and isinstance(value[1], (int, float)):
+            lng, lat = _gcj02_to_wgs84(float(value[0]), float(value[1]))
+            value[0] = lng
+            value[1] = lat
+            return
+        for child in value:
+            _transform_datav_coordinates(child)
+
+
+def _walk_datav_positions(value: Any, out: list[tuple[float, float]]) -> None:
+    if isinstance(value, dict):
+        if "coordinates" in value:
+            _walk_datav_positions(value.get("coordinates"), out)
+        for key in ("geometry", "geometries", "features"):
+            _walk_datav_positions(value.get(key), out)
+        return
+    if isinstance(value, list):
+        if len(value) >= 2 and isinstance(value[0], (int, float)) and isinstance(value[1], (int, float)):
+            lng, lat = float(value[0]), float(value[1])
+            if -180 <= lng <= 180 and -90 <= lat <= 90:
+                out.append((lng, lat))
+            return
+        for child in value:
+            _walk_datav_positions(child, out)
+
+
+def _datav_geojson_bbox(geojson: dict) -> dict | None:
+    positions: list[tuple[float, float]] = []
+    _walk_datav_positions(geojson, positions)
+    if not positions:
+        return None
+    lngs = [item[0] for item in positions]
+    lats = [item[1] for item in positions]
+    west, east, south, north = min(lngs), max(lngs), min(lats), max(lats)
+    if not _valid_lonlat_bbox(west, east, south, north):
+        return None
+    return {"west": west, "east": east, "south": south, "north": north, "crs": "EPSG:4326"}
+
+
+def _datav_boundary(code: str) -> dict:
+    clean_code = str(code or "").strip()
+    if not clean_code:
+        raise ValueError("缺少行政区代码")
+    cached = _DATAV_BOUNDARY_CACHE.get(clean_code)
+    if cached is not None:
+        return cached
+    geojson = _fetch_datav_json("boundary", clean_code)
+    _transform_datav_coordinates(geojson)
+    _DATAV_BOUNDARY_CACHE[clean_code] = geojson
+    return geojson
+
+
+def _datav_boundary_result(code: str, label: str, *, admin_type: str | None = None) -> dict:
+    try:
+        geojson = _datav_boundary(code)
+    except Exception:
+        raise
+    bbox = _datav_geojson_bbox(geojson) if isinstance(geojson, dict) else None
+    if bbox is None:
+        raise ValueError(f"DataV 行政边界缺少有效坐标：{label}")
+    return {
+        "label": label,
+        "bbox": bbox,
+        "geojson": geojson,
+        "source": "DataV 行政区划服务",
+        "class": "boundary",
+        "type": "administrative",
+        "osm_type": None,
+        "osm_id": code,
+        "city_code": code,
+        "admin_type": admin_type,
+    }
+
+
+def _search_datav_admin_boundaries(
+    *,
+    province: str,
+    city: str,
+    district: str,
+    query: str,
+    limit: int = 8,
+) -> tuple[list[dict], str | None]:
+    if _is_national_admin_request(province=province, city=city, district=district, query=query):
+        try:
+            return [_datav_boundary_result("100000", "全国", admin_type="country")], None
+        except Exception as exc:  # noqa: BLE001
+            return [_builtin_china_boundary()], str(exc)
+
+    max_items = max(1, min(int(limit or 8), 50))
+    province_rows = _datav_province_rows()
+    province_row = _datav_resolve_row(province, province_rows)
+    city_rows = _datav_children(province_row["code"]) if province_row else []
+    city_row = _datav_resolve_row(city, city_rows) if city_rows else None
+    district_rows = _datav_children(city_row["code"]) if city_row else []
+    district_row = _datav_resolve_row(district, district_rows) if district_rows else None
+    query_text = _admin_value(query)
+    results: list[dict] = []
+
+    def add(row: dict[str, str], parts: list[str], admin_type: str) -> bool:
+        if len(results) >= max_items:
+            return True
+        label = " / ".join(dict.fromkeys([*parts, row["name"]]))
+        try:
+            results.append(_datav_boundary_result(row["code"], label, admin_type=admin_type))
+        except Exception:
+            return False
+        return len(results) >= max_items
+
+    if district_row:
+        add(district_row, [province_row["name"] if province_row else "", city_row["name"] if city_row else ""], "district")
+        return results, None
+    if city_row:
+        add(city_row, [province_row["name"] if province_row else ""], "city")
+        return results, None
+    if province_row:
+        add(province_row, [], "province")
+        return results, None
+    if query_text:
+        for row in province_rows:
+            if _datav_name_matches(row["name"], query_text) and add(row, [], "province"):
+                return results, None
+        for prow in province_rows:
+            try:
+                for crow in _datav_children(prow["code"]):
+                    if _datav_name_matches(crow["name"], query_text) and add(crow, [prow["name"]], "city"):
+                        return results, None
+            except Exception:
+                continue
+        return results, None
+    return results, None
+
+
 def _local_boundary_dir() -> Path | None:
     candidates: list[Path] = []
     env_path = os.environ.get("INSAR_BOUNDARY_DIR")
@@ -6108,6 +6645,8 @@ def _builtin_china_boundary() -> dict:
         if province_features
         else None
     )
+    if geojson is None:
+        raise ValueError("缺少可用的本地全国真实行政边界")
     return {
         "label": "全国",
         "bbox": {
@@ -6284,7 +6823,7 @@ def _local_admin_options(*, province: str = "", city: str = "") -> dict[str, lis
     ]
     county_names = sorted({_local_feature_name(feature) for feature in county_features})
     return {
-        "provinces": ["全部", *province_names],
+        "provinces": ["全国", *province_names],
         "cities": ["全部", *city_names],
         "districts": ["全部", *county_names],
     }

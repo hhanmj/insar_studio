@@ -4,17 +4,31 @@ import json
 import os
 import base64
 import io
+import struct
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import insar_prep.desktop.api as desktop_api
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import CredentialError
+from insar_prep.core.models import Scene
 from insar_prep.desktop.api import Api
 from insar_prep.providers.asf.downloader import DownloadOutcome, DownloadResult
 
 
 _DRAG_KML_COORDS = "110.1,30.8,0 110.6,30.8,0 110.6,31.2,0 110.1,31.2,0 110.1,30.8,0"
+_DRAG_WEST, _DRAG_SOUTH, _DRAG_EAST, _DRAG_NORTH = 110.1, 30.8, 110.6, 31.2
+_UTM49_PRJ = (
+    'PROJCS["WGS_1984_UTM_Zone_49N",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",'
+    'SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],'
+    'UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],'
+    'PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],'
+    'PARAMETER["Central_Meridian",111.0],PARAMETER["Scale_Factor",0.9996],'
+    'PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]'
+)
 
 
 def _drag_kml_text(name: str = "AOI001") -> str:
@@ -27,28 +41,199 @@ def _drag_kml_text(name: str = "AOI001") -> str:
     )
 
 
-def test_local_admin_options_include_city_and_county() -> None:
+def _rect(west: float, south: float, east: float, north: float) -> list[tuple[float, float]]:
+    return [(west, south), (east, south), (east, north), (west, north), (west, south)]
+
+
+def _projected_drag_rect() -> list[tuple[float, float]]:
+    pyproj = pytest.importorskip("pyproj")
+    transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32649", always_xy=True)
+    return [transformer.transform(x, y) for x, y in _rect(_DRAG_WEST, _DRAG_SOUTH, _DRAG_EAST, _DRAG_NORTH)]
+
+
+def _write_polygon_shp(path: Path, ring: list[tuple[float, float]], prj_text: str) -> Path:
+    xs = [p[0] for p in ring]
+    ys = [p[1] for p in ring]
+    xmin, ymin, xmax, ymax = min(xs), min(ys), max(xs), max(ys)
+    content = struct.pack("<i", 5)
+    content += struct.pack("<4d", xmin, ymin, xmax, ymax)
+    content += struct.pack("<ii", 1, len(ring))
+    content += struct.pack("<i", 0)
+    for x, y in ring:
+        content += struct.pack("<2d", x, y)
+    record = struct.pack(">ii", 1, len(content) // 2) + content
+    file_length_words = (100 + len(record)) // 2
+    header = struct.pack(">i", 9994) + b"\x00" * 20 + struct.pack(">i", file_length_words)
+    header += struct.pack("<i", 1000) + struct.pack("<i", 5)
+    header += struct.pack("<4d", xmin, ymin, xmax, ymax) + struct.pack("<4d", 0.0, 0.0, 0.0, 0.0)
+    path.write_bytes(header + record)
+    path.with_suffix(".prj").write_text(prj_text, encoding="utf-8")
+    path.with_suffix(".dbf").write_bytes(b"")
+    path.with_suffix(".shx").write_bytes(b"")
+    return path
+
+
+def _bundle_item(path: Path) -> dict[str, str]:
+    return {"name": path.name, "base64": base64.b64encode(path.read_bytes()).decode("ascii")}
+
+
+def test_datav_admin_options_include_city_and_county(monkeypatch) -> None:
+    def fake_children(code: str) -> list[dict[str, str]]:
+        if code == "150000":
+            return [{"code": "150200", "name": "包头市"}]
+        if code == "150200":
+            return [
+                {"code": "150203", "name": "昆都仑区"},
+                {"code": "150223", "name": "达尔罕茂明安联合旗"},
+            ]
+        return []
+
+    monkeypatch.setattr(desktop_api, "_datav_children", fake_children)
     api = Api()
 
     options = api.get_admin_options("内蒙古自治区", "包头市")
 
     assert options["ok"] is True
-    assert options["provinces"][0] == "全部"
+    assert options["provinces"][0] == "全国"
     assert "包头市" in options["cities"]
     assert "昆都仑区" in options["districts"]
     assert "达尔罕茂明安联合旗" in options["districts"]
 
 
-def test_admin_all_option_returns_national_boundary() -> None:
+def test_datav_leaf_district_has_no_children_instead_of_fallback(monkeypatch) -> None:
+    desktop_api._DATAV_CHILDREN_CACHE.clear()
+
+    def fake_fetch(kind: str, code: str) -> dict:
+        assert kind == "children"
+        assert code == "310112"
+        raise RuntimeError(
+            "DataV 行政区服务不可用，且本机没有缓存：404 Client Error: Not Found"
+        )
+
+    monkeypatch.setattr(desktop_api, "_fetch_datav_json", fake_fetch)
+
+    assert desktop_api._datav_children("310112") == []
+
+
+def test_datav_municipality_district_search_ignores_stale_child_selection(monkeypatch) -> None:
+    desktop_api._DATAV_CHILDREN_CACHE.clear()
+
+    def fake_children(code: str) -> list[dict[str, str]]:
+        if code == "310000":
+            return [
+                {"code": "310112", "name": "闵行区"},
+                {"code": "310120", "name": "奉贤区"},
+            ]
+        if code == "310112":
+            return []
+        return []
+
+    def fake_boundary(code: str) -> dict:
+        assert code == "310112"
+        return {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [121.3, 31.0],
+                                [121.6, 31.0],
+                                [121.6, 31.3],
+                                [121.3, 31.3],
+                                [121.3, 31.0],
+                            ]
+                        ],
+                    },
+                    "properties": {"name": "闵行区"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(desktop_api, "_datav_children", fake_children)
+    monkeypatch.setattr(desktop_api, "_datav_boundary", fake_boundary)
+    api = Api()
+
+    options = api.get_admin_options("上海市", "闵行区")
+    result = api.search_admin_boundaries("", "上海市", "闵行区", "奉贤区", 3)
+
+    assert options["ok"] is True
+    assert options["cities"] == ["全部", "闵行区", "奉贤区"]
+    assert options["districts"] == ["全部"]
+    assert result["ok"] is True
+    assert result["provider"] == "datav"
+    assert result["results"][0]["label"] == "上海市 / 闵行区"
+
+
+def test_admin_all_option_returns_datav_national_boundary(monkeypatch) -> None:
+    def fake_boundary(_code: str) -> dict:
+        return {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [73.4, 18.0],
+                                [135.2, 18.0],
+                                [135.2, 53.6],
+                                [73.4, 53.6],
+                                [73.4, 18.0],
+                            ]
+                        ],
+                    },
+                    "properties": {"name": "全国"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(desktop_api, "_datav_boundary", fake_boundary)
     api = Api()
 
     result = api.search_admin_boundaries(province="全部")
 
     assert result["ok"] is True
-    assert result["provider"] == "builtin"
+    assert result["provider"] == "datav"
     assert result["results"][0]["label"] == "全国"
     assert result["results"][0]["bbox"]["west"] <= 73.5
     assert result["results"][0]["bbox"]["east"] >= 135.0
+    assert result["results"][0]["geojson"]["type"] == "FeatureCollection"
+
+
+def test_admin_invalid_complex_boundary_is_repaired_before_binding(tmp_path: Path) -> None:
+    api = Api()
+    api._state_path = tmp_path / "desktop_state.json"
+    api._state.workspace = None
+    api._state.current_project_id = None
+    api._state.current_region_id = None
+    monkeypatch_root = tmp_path / "projects"
+    api._default_workspace_root = lambda: monkeypatch_root  # type: ignore[method-assign]
+
+    result = api.set_region_aoi_geojson(
+        {
+            "type": "Feature",
+            "properties": {"name": "全国"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [73.5, 18.0],
+                        [135.1, 53.6],
+                        [135.1, 18.0],
+                        [73.5, 53.6],
+                        [73.5, 18.0],
+                    ]
+                ],
+            },
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["aoi_geojson"]["type"] in {"Polygon", "MultiPolygon"}
 
 
 def test_aoi_bind_auto_creates_default_region(tmp_path: Path, monkeypatch) -> None:
@@ -113,6 +298,43 @@ def test_dragged_shp_bytes_reports_sidecar_hint_instead_of_guessing() -> None:
     assert preview["ok"] is False
     assert "上传本地边界" in preview["error"]
     assert ".dbf" in preview["error"]
+
+
+def test_dragged_projected_shapefile_bundle_previews_and_binds(tmp_path: Path) -> None:
+    api = Api()
+    api._state_path = tmp_path / "desktop_state.json"
+    shp = _write_polygon_shp(tmp_path / "sichuan.shp", _projected_drag_rect(), _UTM49_PRJ)
+
+    preview = api.preview_aoi_file_bundle(
+        [_bundle_item(shp), _bundle_item(shp.with_suffix(".dbf")), _bundle_item(shp.with_suffix(".shx")), _bundle_item(shp.with_suffix(".prj"))]
+    )
+
+    assert preview["ok"] is True
+    assert preview["file_name"] == "sichuan.shp"
+    assert preview["features"][0]["bbox"]["west"] == pytest.approx(_DRAG_WEST)
+    assert preview["features"][0]["bbox"]["east"] == pytest.approx(_DRAG_EAST)
+
+    bound = api.set_region_aoi_geojson_features(preview["geojson"], ["0"], "", "merge")
+
+    assert bound["ok"] is True
+    assert bound["aoi"]["bbox"]["south"] == pytest.approx(_DRAG_SOUTH)
+    assert bound["aoi"]["bbox"]["north"] == pytest.approx(_DRAG_NORTH)
+
+
+def test_clear_region_aoi_keeps_scenes(tmp_path: Path) -> None:
+    api = Api()
+    api._state_path = tmp_path / "desktop_state.json"
+    assert api.set_region_aoi_bbox(109.0, 110.0, 30.0, 31.0)["ok"] is True
+    api._state.set_current_region_scenes([Scene(scene_id="S1A_KEEP")])
+
+    result = api.clear_region_aoi()
+
+    assert result["ok"] is True
+    assert result["cleared_aoi"] is True
+    context = api.get_context()
+    assert context["region"]["has_aoi"] is False
+    assert context["region"]["scene_count"] == 1
+    assert api.list_scenes()["scenes"][0]["scene_id"] == "S1A_KEEP"
 
 
 def test_dem_download_plan_rejects_user_local_with_actionable_message(tmp_path: Path) -> None:

@@ -74,6 +74,54 @@ class _CombinedEvent:
         return any(event.is_set() for event in self._events)
 
 
+def _jsonable_scene_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        try:
+            return value.model_dump(mode="json")
+        except Exception:  # noqa: BLE001 - status serialization must stay best-effort.
+            return None
+    if hasattr(value, "value"):
+        return value.value
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _scene_snapshot_row(scene: Any) -> dict[str, Any]:
+    if hasattr(scene, "model_dump"):
+        try:
+            data = scene.model_dump(mode="json")
+        except Exception:  # noqa: BLE001 - fall back to attribute access below.
+            data = {}
+    else:
+        data = {}
+
+    def pick(name: str) -> Any:
+        if name in data:
+            return data.get(name)
+        return _jsonable_scene_value(getattr(scene, name, None))
+
+    path = pick("path") or pick("relative_orbit")
+    return {
+        "scene_id": pick("scene_id"),
+        "platform": pick("platform"),
+        "product_type": pick("product_type"),
+        "beam_mode": pick("beam_mode"),
+        "polarization": pick("polarization"),
+        "acquisition_datetime": pick("acquisition_datetime"),
+        "absolute_orbit": pick("absolute_orbit"),
+        "relative_orbit": pick("relative_orbit"),
+        "path": path,
+        "frame": pick("frame"),
+        "orbit_direction": pick("orbit_direction"),
+        "file_size_remote": pick("file_size_remote"),
+        "footprint_bbox": pick("footprint_bbox"),
+        "footprint_geojson": pick("footprint_geojson"),
+        "has_url": bool(pick("url")),
+        "download_url": pick("url") or "",
+    }
+
+
 class AsfDownloadJob:
     """Single-flight ASF download runner (thread-safe status for JS polling)."""
 
@@ -94,6 +142,7 @@ class AsfDownloadJob:
         self._last_ssl_verify: bool = True
         self._last_trust_env: bool = False
         self._last_use_product_subdirs: bool = False
+        self._last_aoi_name: str = ""
         self._last_failed_scene_ids: set[str] = set()
         self._pending: Queue[object] | None = None
         self._worker_context: dict[str, Any] | None = None
@@ -162,6 +211,7 @@ class AsfDownloadJob:
                 "concurrency": s.concurrency,
                 "current_scene": s.current_scene,
                 "active_downloads": list(s.active_downloads.values()),
+                "active_scene_ids": sorted(s.active_downloads.keys()),
                 "total_bytes": s.total_bytes,
                 "done_bytes": s.done_bytes,
                 "current_bytes": s.current_bytes,
@@ -176,6 +226,8 @@ class AsfDownloadJob:
                 "output_dir": str(self._last_output_dir) if self._last_output_dir else "",
                 "use_product_subdirs": self._last_use_product_subdirs,
                 "download_layout": "product_subdirs" if self._last_use_product_subdirs else "flat",
+                "snapshot_scenes": [_scene_snapshot_row(scene) for scene in self._last_scenes],
+                "aoi_name": self._last_aoi_name,
                 "succeeded": s.succeeded,
                 "skipped": s.skipped,
                 "failed": s.failed,
@@ -205,6 +257,7 @@ class AsfDownloadJob:
         ssl_verify: bool = True,
         trust_env: bool = False,
         use_product_subdirs: bool = False,
+        aoi_name: str = "",
         activity: ActivityLog | None = None,
     ) -> dict:
         scene_list = list(scenes)
@@ -226,6 +279,7 @@ class AsfDownloadJob:
             self._last_ssl_verify = bool(ssl_verify)
             self._last_trust_env = bool(trust_env)
             self._last_use_product_subdirs = bool(use_product_subdirs)
+            self._last_aoi_name = str(aoi_name or "").strip()
             self._last_failed_scene_ids = set()
             self._completed_scene_ids = set()
             self._paused_scene_ids = set()
@@ -492,7 +546,7 @@ class AsfDownloadJob:
                 if scene_id in self._completed_scene_ids:
                     not_found.append(scene_id)
                     continue
-                if scene_id not in self._known_scene_ids:
+                if scene_id not in self._status.active_downloads:
                     not_found.append(scene_id)
                     continue
                 self._paused_scene_ids.add(scene_id)
@@ -1173,6 +1227,7 @@ class AsfDownloadManager:
         ssl_verify: bool = True,
         trust_env: bool = False,
         use_product_subdirs: bool = False,
+        aoi_name: str = "",
         activity: ActivityLog | None = None,
     ) -> dict:
         task_id = self._new_task_id()
@@ -1187,6 +1242,7 @@ class AsfDownloadManager:
             ssl_verify=ssl_verify,
             trust_env=trust_env,
             use_product_subdirs=use_product_subdirs,
+            aoi_name=aoi_name,
             activity=activity,
         )
         if not result.get("ok"):
@@ -1268,11 +1324,13 @@ class AsfDownloadManager:
 
 @dataclass
 class _OrbitJobState:
+    task_id: str = ""
     state: str = "idle"
     total: int = 0
     done: int = 0
     concurrency: int = 10
     current_scene: str = ""
+    output_dir: str = ""
     orbit_dir: str = ""
     done_bytes: int = 0
     bytes_per_second: float = 0.0
@@ -1305,6 +1363,14 @@ class OrbitDownloadJob:
         self._cancel = threading.Event()
         self._pause = threading.Event()
         self._activity: ActivityLog | None = None
+        self._last_scenes: list[object] = []
+        self._last_aoi_name: str = ""
+        self._last_use_orbit_subdir: bool = False
+        self._task_seq = 0
+
+    def _new_task_id(self) -> str:
+        self._task_seq += 1
+        return f"orbit-{int(time.time() * 1000)}-{self._task_seq}"
 
     @staticmethod
     def _elapsed_seconds(s: _OrbitJobState) -> float:
@@ -1323,11 +1389,13 @@ class OrbitDownloadJob:
             s = self._status
             return {
                 "ok": True,
+                "task_id": s.task_id,
                 "state": s.state,
                 "total": s.total,
                 "done": s.done,
                 "concurrency": s.concurrency,
                 "current_scene": s.current_scene,
+                "output_dir": s.output_dir,
                 "orbit_dir": s.orbit_dir,
                 "use_orbit_subdir": self._last_use_orbit_subdir,
                 "download_layout": "orbit_subdir" if self._last_use_orbit_subdir else "flat",
@@ -1344,9 +1412,11 @@ class OrbitDownloadJob:
                 "failed": s.failed,
                 "has_failures": s.has_failures,
                 "active_scenes": list(s.active_scenes.values()),
-                "results": list(s.results[-120:]),
-                "log": list(s.log[-120:]),
+                "results": list(s.results),
+                "log": list(s.log),
                 "report": s.report,
+                "snapshot_scenes": [_scene_snapshot_row(scene) for scene in self._last_scenes],
+                "aoi_name": self._last_aoi_name,
                 "pause_hint": "轨道文件较小，暂停/结束会在当前 EOF 请求结束后生效。",
             }
 
@@ -1357,6 +1427,7 @@ class OrbitDownloadJob:
         *,
         max_concurrent: int = 10,
         use_orbit_subdir: bool = False,
+        aoi_name: str = "",
         activity: ActivityLog | None = None,
     ) -> dict:
         scene_list = list(scenes)
@@ -1365,6 +1436,7 @@ class OrbitDownloadJob:
         with self._lock:
             if self._status.state in ("running", "paused"):
                 return {"ok": False, "error": "已有轨道下载任务在进行", "code": "GUI004"}
+            task_id = self._new_task_id()
         self._cancel.clear()
         self._pause.clear()
         self._activity = activity
@@ -1372,9 +1444,13 @@ class OrbitDownloadJob:
         with self._lock:
             now = time.monotonic()
             self._last_use_orbit_subdir = bool(use_orbit_subdir)
+            self._last_scenes = list(scene_list)
+            self._last_aoi_name = str(aoi_name or "").strip()
             self._status = _OrbitJobState(
+                task_id=task_id,
                 state="running",
                 concurrency=workers,
+                output_dir=str(output_dir),
                 started_at=now,
                 updated_at=now,
             )
@@ -1384,7 +1460,7 @@ class OrbitDownloadJob:
             daemon=True,
         )
         self._thread.start()
-        return {"ok": True}
+        return {"ok": True, "task_id": task_id}
 
     def pause(self) -> dict:
         now = time.monotonic()
@@ -1545,6 +1621,7 @@ class OrbitDownloadJob:
             with self._lock:
                 self._status.total = len(seen_scene_ids)
                 self._status.concurrency = max(1, min(int(workers or 10), 10))
+                self._status.output_dir = str(output_path)
                 self._status.orbit_dir = str(orbit_dir)
                 self._status.updated_at = time.monotonic()
 
@@ -1624,17 +1701,31 @@ class OrbitDownloadJob:
             failed = sum(1 for r in results if r.get("outcome") == OrbitDownloadOutcome.FAILED.value)
             report = None
             verification_line = "总体核对：未能扫描轨道目录。"
+            missing_line = ""
             try:
                 orbit_files = scan_orbit_directory(orbit_dir, recursive=True)
                 report = match_orbits_for_scenes(unique_scenes, orbit_files).model_dump(mode="json")
                 matched = int(report.get("matched_scenes") or 0)
                 total = int(report.get("total_scenes") or len(unique_scenes))
                 verification_line = f"总体核对：匹配 {matched}/{total} 景。"
+                missing_count = max(0, total - matched)
+                if missing_count:
+                    missing_ids: list[str] = []
+                    for item in report.get("results") or []:
+                        if not isinstance(item, dict) or item.get("is_matched"):
+                            continue
+                        scene_id = str(item.get("scene_id") or "").strip()
+                        if scene_id:
+                            missing_ids.append(mask_text(scene_id))
+                    visible = "、".join(missing_ids[:8])
+                    more = f" 等 {missing_count} 景" if missing_count > 8 else ""
+                    missing_line = f"缺失 {missing_count} 景：{visible}{more}。"
             except Exception:  # noqa: BLE001 - a download result is still useful
                 report = None
             summary_line = (
                 f"单景结果：成功 {succeeded}，已存在/复用 {skipped}，"
                 f"未发布/不可用 {unavailable}，失败 {failed}；{verification_line}"
+                f"{missing_line}"
             )
             cancelled = self._cancel.is_set()
             with self._lock:

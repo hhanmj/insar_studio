@@ -35,10 +35,6 @@
     Skip launching the frozen exe with --selftest. Useful on local machines where
     Windows Application Control blocks freshly built test executables.
 
-.PARAMETER BoundaryDir
-    Optional local administrative boundary directory to bundle. It may contain
-    either 中国_省/市/县.geojson or normalized china_province/city/county.geojson.
-
 .NOTES
     Run from anywhere; resolves the repo root from its own location. Requires the
     `desktop`, `download`, and `convert` extras installed in the active env
@@ -50,8 +46,7 @@ param(
     [switch]$SkipUi,
     [switch]$ExternalDemComponent,
     [switch]$SkipSelfTest,
-    [string]$Egm2008GeoidNpz = "",
-    [string]$BoundaryDir = ""
+    [string]$Egm2008GeoidNpz = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -164,79 +159,13 @@ if (-not [string]::IsNullOrWhiteSpace($Egm2008GeoidNpz)) {
     $Egm2008GeoidNpz = $stagedEgm2008GeoidNpz
 }
 
-$boundaryDirName = "$([char]0x8FB9)$([char]0x754C)"
-$chinaName = "$([char]0x4E2D)$([char]0x56FD)"
-$provinceName = "$([char]0x7701)"
-$cityName = "$([char]0x5E02)"
-$countyName = "$([char]0x53BF)"
-$boundaryCandidates = @()
-if (-not [string]::IsNullOrWhiteSpace($BoundaryDir)) {
-    $boundaryCandidates += $BoundaryDir
-}
-$boundaryCandidates += @(
-    (Join-Path $RepoRoot $boundaryDirName),
-    (Join-Path (Split-Path $RepoRoot -Parent) $boundaryDirName),
-    (Join-Path $RepoRoot "src\insar_prep\desktop\boundaries")
-)
-$boundarySource = $null
-foreach ($candidateRaw in $boundaryCandidates) {
-    if ([string]::IsNullOrWhiteSpace([string]$candidateRaw)) { continue }
-    try {
-        $candidate = (Resolve-Path -LiteralPath $candidateRaw -ErrorAction Stop).Path
-    } catch {
-        $candidate = [string]$candidateRaw
-    }
-    if (Test-Path -LiteralPath $candidate -PathType Container) {
-        $boundarySource = $candidate
-        break
-    }
-}
-$boundaryStage = Join-Path $RepoRoot ".build_boundaries"
-if ($boundarySource) {
-    Write-Host "Using local boundary directory: $boundarySource" -ForegroundColor Green
-} else {
-    Write-Host "Local boundary directory not found; building without bundled offline administrative boundaries." -ForegroundColor Yellow
-    Write-Host "Tried: $($boundaryCandidates -join '; ')" -ForegroundColor DarkYellow
-}
-
 # 2. Clean previous desktop build artifacts (leave other dist\ files in place).
 Write-Host ""
 Write-Host "== Clean previous desktop build artifacts ==" -ForegroundColor Cyan
 if (Test-Path (Join-Path $RepoRoot "build")) { Remove-Item -Recurse -Force (Join-Path $RepoRoot "build") }
-if (Test-Path $boundaryStage) { Remove-Item -Recurse -Force $boundaryStage }
 Get-ChildItem -Path $RepoRoot -Filter "insar-prep-desktop.spec" -File -ErrorAction SilentlyContinue |
     Remove-Item -Force
 Remove-Item -Force (Join-Path $RepoRoot "dist\insar-prep-desktop.exe") -ErrorAction SilentlyContinue
-
-New-Item -ItemType Directory -Force -Path $boundaryStage | Out-Null
-$boundaryCopies = @(
-    @{ Sources = @("$chinaName`_$provinceName.geojson", "china_province.geojson"); Target = "china_province.geojson" },
-    @{ Sources = @("$chinaName`_$cityName.geojson", "china_city.geojson"); Target = "china_city.geojson" },
-    @{ Sources = @("$chinaName`_$countyName.geojson", "china_county.geojson"); Target = "china_county.geojson" }
-)
-$copiedBoundaryCount = 0
-if ($boundarySource -and (Test-Path -LiteralPath $boundarySource)) {
-    foreach ($item in $boundaryCopies) {
-        $src = $null
-        foreach ($sourceName in $item.Sources) {
-            $candidate = Join-Path $boundarySource $sourceName
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                $src = $candidate
-                break
-            }
-        }
-        $dst = Join-Path $boundaryStage $item.Target
-        if (-not $src) {
-            Write-Host "Boundary file not found; skipping target $($item.Target). Expected one of: $($item.Sources -join ', ')" -ForegroundColor Yellow
-            continue
-        }
-        Copy-Item -LiteralPath $src -Destination $dst -Force
-        $copiedBoundaryCount += 1
-    }
-}
-if ($copiedBoundaryCount -eq 0) {
-    Write-Host "No offline administrative boundary files were bundled. The app can still run; boundary data may be supplied by cache or future online sources." -ForegroundColor Yellow
-}
 
 # Call PyInstaller through the requested interpreter, then the venv interpreter.
 $py = ""
@@ -378,8 +307,6 @@ $pyArgs = @(
     "--paths", "src",
     # Bundle the built web frontend so the WebView loads it from file:// offline.
     "--add-data", "ui/dist;insar_prep/desktop/web",
-    # Bundle local administrative boundaries for offline province/city/county AOI.
-    "--add-data", ".build_boundaries;insar_prep/desktop/boundaries",
     # pywebview + its WebView2 backend (pythonnet / clr_loader) + http helpers.
     "--collect-all", "webview",
     "--collect-all", "pythonnet",
@@ -490,7 +417,6 @@ if ($SkipSelfTest) {
     }
     Write-Host "Desktop exe self-test OK (core exercised end-to-end, exit 0)" -ForegroundColor Green
 }
-Remove-Item -Recurse -Force $boundaryStage -ErrorAction SilentlyContinue
 if ($stagedEgm2008GeoidNpz) {
     Remove-Item -Force $stagedEgm2008GeoidNpz -ErrorAction SilentlyContinue
 }

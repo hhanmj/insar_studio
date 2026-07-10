@@ -87,6 +87,26 @@ def test_cmr_entry_to_scene_adds_polygon_bbox_and_download_url() -> None:
     assert scene.url and scene.url.startswith("https://datapool.asf.alaska.edu/")
 
 
+def test_cmr_entry_to_scene_adds_path_frame_from_attributes() -> None:
+    entry = {
+        "producer_granule_id": "S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234",
+        "orbit_calculated_spatial_domains": [{"orbit_number": "52000"}],
+        "additional_attributes": [
+            {"name": "PATH_NUMBER", "values": ["88"]},
+            {"name": "FRAME_NUMBER", "values": ["456"]},
+            {"name": "ASCENDING_DESCENDING", "values": ["ASCENDING"]},
+        ],
+    }
+
+    scene = metadata._cmr_entry_to_scene(entry)
+
+    assert scene is not None
+    assert scene.path == 88
+    assert scene.relative_orbit == 88
+    assert scene.frame == 456
+    assert scene.orbit_direction == OrbitDirection.ASCENDING
+
+
 def test_asf_search_passes_grd_beam_and_polarization(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, str] = {}
 
@@ -222,15 +242,73 @@ def test_asf_search_overfetches_for_aoi_and_filters_footprints(monkeypatch: pyte
         aoi_geojson=aoi,
         product_type="SLC",
         beam_mode="IW",
-        max_results=10,
+        max_results=60,
     )
 
     assert captured["intersectsWith"].startswith("POLYGON")
     assert "-10" not in captured["intersectsWith"]
-    assert captured["maxResults"] == "60"
+    assert captured["maxResults"] == "240"
     assert [scene.scene_id for scene in scenes] == [
         "S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_052000_064ABC_1234"
     ]
+
+
+def test_asf_search_refills_when_aoi_filter_underfills_requested_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+    aoi = {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+    }
+
+    def feature(index: int, inside: bool) -> dict:
+        west, south, east, north = (0.2, 0.2, 0.8, 0.8) if inside else (2.0, 2.0, 3.0, 3.0)
+        return {
+            "type": "Feature",
+            "properties": {
+                "sceneName": (
+                    "S1A_IW_SLC__1SDV_20240101T100000_20240101T100027_"
+                    f"{52000 + index:06d}_064ABC_{index:04X}"
+                ),
+            },
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[west, south], [east, south], [east, north], [west, north], [west, south]]
+                ],
+            },
+        }
+
+    def fake_get_asf_geojson(params):
+        limit = int(params["maxResults"])
+        calls.append(limit)
+        inside_count = 27 if limit == 120 else 30
+        return {
+            "features": [
+                feature(index, inside=index < inside_count)
+                for index in range(limit)
+            ]
+        }
+
+    monkeypatch.setattr(metadata, "_get_asf_count", lambda _params: 500)
+    monkeypatch.setattr(metadata, "_get_asf_geojson", fake_get_asf_geojson)
+
+    stats: dict[str, object] = {}
+    scenes = metadata.search_scenes_from_asf(
+        bbox=BBox(west=-10, east=10, south=-10, north=10),
+        aoi_geojson=aoi,
+        product_type="SLC",
+        beam_mode="IW",
+        max_results=30,
+        stats=stats,
+    )
+
+    assert calls == [120, 240]
+    assert len(scenes) == 30
+    assert stats["requested_limit"] == 30
+    assert stats["query_limit"] == 240
+    assert stats["candidate_count"] == 500
 
 
 def test_asf_search_without_aoi_uses_requested_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,29 +341,37 @@ def test_asf_search_accepts_requested_limit_above_500(monkeypatch: pytest.Monkey
     assert captured["maxResults"] == "600"
 
 
-def test_asf_search_keeps_large_explicit_limit_with_aoi(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, str] = {}
+def test_asf_search_large_aoi_tries_direct_query_before_split_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_limits: list[int] = []
     aoi = {
         "type": "Polygon",
         "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
     }
 
     def fake_get_asf_geojson(params):
-        captured.update(params)
+        captured_limits.append(int(params["maxResults"]))
         return {"features": []}
 
+    monkeypatch.setattr(metadata, "_get_asf_count", lambda _params: 6000)
     monkeypatch.setattr(metadata, "_get_asf_geojson", fake_get_asf_geojson)
 
+    stats: dict[str, object] = {}
     scenes = metadata.search_scenes_from_asf(
         bbox=BBox(west=-10, east=10, south=-10, north=10),
         aoi_geojson=aoi,
         product_type="SLC",
         beam_mode="IW",
-        max_results=1900,
+        max_results=2500,
+        stats=stats,
     )
 
     assert scenes == []
-    assert captured["maxResults"] == "1900"
+    assert captured_limits
+    assert captured_limits[0] == 6000
+    assert 2000 in captured_limits[1:]
+    assert stats["requested_limit"] == 2500
+    assert stats["query_limit"] == 6000
+    assert stats["source"] == "ASF_BATCH"
 
 
 def test_asf_search_rejects_invalid_date_text() -> None:
@@ -438,15 +524,17 @@ def test_asf_search_large_explicit_limit_does_not_auto_fallback_to_cmr(
     assert cmr_called is False
 
 
-def test_asf_search_reports_total_count_when_stats_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_asf_search_small_explicit_limit_counts_candidates_but_keeps_bounded_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     messages: list[str] = []
 
     def fake_get_asf_count(params):
         assert params["processingLevel"] == "SLC"
-        assert params["maxResults"] == "10"
-        return 123
+        return 27
 
     def fake_get_asf_geojson(params):
+        assert params["maxResults"] == "10"
         return {
             "features": [
                 {
@@ -470,7 +558,40 @@ def test_asf_search_reports_total_count_when_stats_requested(monkeypatch: pytest
     )
 
     assert len(scenes) == 1
-    assert stats["total_count"] == 123
+    assert stats["total_count"] == 27
+    assert stats["candidate_count"] == 27
     assert stats["requested_limit"] == 10
+    assert stats["query_limit"] == 10
     assert stats["returned_count"] == 1
-    assert "匹配总量 123 景" in messages[0]
+    assert any("27" in message for message in messages)
+
+
+def test_asf_search_one_scene_uses_single_direct_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"geojson": 0}
+
+    def fake_get_asf_count(_params):
+        raise AssertionError("max_results=1 must not count all matching ASF scenes")
+
+    def fake_split_search(*_args, **_kwargs):
+        raise AssertionError("max_results=1 must not use split ASF search")
+
+    def fake_get_asf_geojson(params):
+        calls["geojson"] += 1
+        assert params["maxResults"] == "1"
+        return {"features": []}
+
+    monkeypatch.setattr(metadata, "_get_asf_count", fake_get_asf_count)
+    monkeypatch.setattr(metadata, "_search_asf_geojson_by_date_windows", fake_split_search)
+    monkeypatch.setattr(metadata, "_get_asf_geojson", fake_get_asf_geojson)
+
+    scenes = metadata.search_scenes_from_asf(
+        bbox=metadata.BBox(west=100, south=30, east=101, north=31),
+        product_type="SLC",
+        beam_mode="IW",
+        max_results=1,
+        stats={},
+        progress=lambda *_args: None,
+    )
+
+    assert scenes == []
+    assert calls["geojson"] == 1

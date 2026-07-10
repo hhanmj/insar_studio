@@ -26,6 +26,9 @@ venv/
 .uv-python/
 uv.lock.bak
 
+# ---- Rust ----
+target/
+
 # ---- PyInstaller / packaging artifacts ----
 *.spec
 *.manifest

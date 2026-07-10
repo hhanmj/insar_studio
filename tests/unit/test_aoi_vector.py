@@ -3,9 +3,9 @@
 Covers the happy paths (a single polygon and a multi-part polygon shapefile, a
 KML Polygon, a KMZ-wrapped KML), the dispatcher
 :func:`~insar_prep.processing.aoi_vector.load_aoi_from_file`, and the error
-paths (missing file, wrong extension, projected / non-WGS84 ``.prj``, non-areal
-geometry, malformed XML, non-zip KMZ). All fixtures are generated in-test with
-the standard library only -- no sample data files and no extra dependencies.
+paths (missing file, wrong extension, missing ``.prj`` for projected
+coordinates, non-areal geometry, malformed XML, non-zip KMZ). All fixtures are
+generated in-test -- no sample data files are needed.
 """
 
 from __future__ import annotations
@@ -36,6 +36,9 @@ _PROJECTED_PRJ = (
     'PROJCS["WGS_1984_UTM_Zone_49N",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",'
     'SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],'
     'UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],'
+    'PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],'
+    'PARAMETER["Central_Meridian",111.0],PARAMETER["Scale_Factor",0.9996],'
+    'PARAMETER["Latitude_Of_Origin",0.0],'
     'UNIT["Meter",1.0]]'
 )
 _CGCS2000_PRJ = (
@@ -52,6 +55,12 @@ _NAD83_PRJ = (
 
 def _rect(west: float, south: float, east: float, north: float) -> list[tuple[float, float]]:
     return [(west, south), (east, south), (east, north), (west, north), (west, south)]
+
+
+def _projected_demo_rect() -> list[tuple[float, float]]:
+    pyproj = pytest.importorskip("pyproj")
+    transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32649", always_xy=True)
+    return [transformer.transform(x, y) for x, y in _rect(_WEST, _SOUTH, _EAST, _NORTH)]
 
 
 def _write_polygon_shapefile(
@@ -155,11 +164,18 @@ def test_shapefile_wrong_extension_raises(tmp_path: Path) -> None:
         load_aoi_from_shapefile(other)
 
 
-def test_shapefile_projected_prj_rejected(tmp_path: Path) -> None:
+def test_shapefile_projected_prj_is_reprojected(tmp_path: Path) -> None:
     shp = _write_polygon_shapefile(
-        tmp_path / "utm.shp", [_rect(_WEST, _SOUTH, _EAST, _NORTH)], prj_text=_PROJECTED_PRJ
+        tmp_path / "utm.shp", [_projected_demo_rect()], prj_text=_PROJECTED_PRJ
     )
-    with pytest.raises(InputValidationError):
+    _assert_demo_bounds(load_aoi_from_shapefile(shp))
+
+
+def test_shapefile_projected_coords_without_prj_raise_clear_error(tmp_path: Path) -> None:
+    shp = _write_polygon_shapefile(
+        tmp_path / "utm_without_prj.shp", [_projected_demo_rect()], prj_text=None
+    )
+    with pytest.raises(InputValidationError, match=r"缺少同名 \.prj"):
         load_aoi_from_shapefile(shp)
 
 
@@ -170,12 +186,11 @@ def test_shapefile_geographic_cgcs2000_prj_is_accepted(tmp_path: Path) -> None:
     _assert_demo_bounds(load_aoi_from_shapefile(shp))
 
 
-def test_shapefile_other_geographic_prj_rejected(tmp_path: Path) -> None:
+def test_shapefile_other_geographic_prj_is_reprojected(tmp_path: Path) -> None:
     shp = _write_polygon_shapefile(
         tmp_path / "nad83.shp", [_rect(_WEST, _SOUTH, _EAST, _NORTH)], prj_text=_NAD83_PRJ
     )
-    with pytest.raises(InputValidationError):
-        load_aoi_from_shapefile(shp)
+    _assert_demo_bounds(load_aoi_from_shapefile(shp))
 
 
 def test_shapefile_point_type_rejected(tmp_path: Path) -> None:

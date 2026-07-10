@@ -58,7 +58,8 @@ def test_orbit_download_job_uses_default_ten_workers_and_reports_rate(
     job = OrbitDownloadJob()
     started = job.start([Scene(scene_id=f"S1A_{idx}") for idx in range(12)], tmp_path)
 
-    assert started == {"ok": True}
+    assert started["ok"] is True
+    assert started["task_id"]
     status = _wait_for_idle(job)
     assert status["state"] == "finished"
     assert status["concurrency"] == 10
@@ -117,7 +118,8 @@ def test_orbit_download_job_updates_live_counts_and_active_scenes(
 
     job = OrbitDownloadJob()
     started = job.start([Scene(scene_id=f"S1A_{idx}") for idx in range(4)], tmp_path, max_concurrent=4)
-    assert started == {"ok": True}
+    assert started["ok"] is True
+    assert started["task_id"]
 
     deadline = time.monotonic() + 3
     status = job.get_status()
@@ -148,6 +150,59 @@ def test_orbit_download_job_updates_live_counts_and_active_scenes(
     assert final["active_scenes"] == []
 
 
+def test_orbit_download_job_keeps_full_log_and_reports_unmatched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenes = [Scene(scene_id=f"S1A_{idx:03d}") for idx in range(130)]
+
+    def fake_download(scene: Scene, orbit_dir: Path) -> OrbitDownloadResult:
+        return OrbitDownloadResult(
+            scene_id=scene.scene_id,
+            outcome=OrbitDownloadOutcome.SUCCESS,
+            orbit_file=f"{scene.scene_id}.EOF",
+            orbit_type="POEORB",
+            path=orbit_dir / f"{scene.scene_id}.EOF",
+            bytes_written=512,
+            message="ok",
+        )
+
+    monkeypatch.setattr("insar_prep.providers.orbit.download_orbit_for_scene", fake_download)
+    monkeypatch.setattr("insar_prep.providers.orbit.scan_orbit_directory", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "insar_prep.providers.orbit.match_orbits_for_scenes",
+        lambda scenes, _files: type(
+            "Report",
+            (),
+            {
+                "model_dump": lambda self, mode="json": {
+                    "matched_scenes": 128,
+                    "total_scenes": len(list(scenes)),
+                    "results": [
+                        {"scene_id": "S1A_128", "is_matched": False, "issues": [{"message": "no orbit validity period covers the scene time"}]},
+                        {"scene_id": "S1A_129", "is_matched": False, "issues": [{"message": "no orbit files"}]},
+                    ],
+                }
+            },
+        )(),
+    )
+
+    job = OrbitDownloadJob()
+    started = job.start(scenes, tmp_path, max_concurrent=10)
+
+    assert started["ok"] is True
+    assert started["task_id"]
+    status = _wait_for_idle(job)
+    assert status["state"] == "finished"
+    assert status["done"] == 130
+    assert len(status["results"]) == 130
+    assert len(status["log"]) >= 131
+    assert "匹配 128/130 景" in status["summary_line"]
+    assert "缺失 2 景" in status["summary_line"]
+    assert "S1A_128" in status["summary_line"]
+    assert "S1A_129" in status["summary_line"]
+
+
 def test_api_orbit_download_snapshot_uses_frozen_scenes_not_current_candidates(
     tmp_path: Path,
 ) -> None:
@@ -155,11 +210,21 @@ def test_api_orbit_download_snapshot_uses_frozen_scenes_not_current_candidates(
     captured: dict[str, object] = {}
 
     class FakeOrbitDownload:
-        def start(self, scenes, output_dir, *, max_concurrent=10, use_orbit_subdir=False, activity=None):
+        def start(
+            self,
+            scenes,
+            output_dir,
+            *,
+            max_concurrent=10,
+            use_orbit_subdir=False,
+            aoi_name="",
+            activity=None,
+        ):
             captured["scene_ids"] = [scene.scene_id for scene in scenes]
             captured["output_dir"] = str(output_dir)
             captured["max_concurrent"] = max_concurrent
             captured["use_orbit_subdir"] = use_orbit_subdir
+            captured["aoi_name"] = aoi_name
             return {"ok": True}
 
         def get_status(self):
@@ -198,3 +263,4 @@ def test_api_orbit_download_snapshot_uses_frozen_scenes_not_current_candidates(
     assert captured["output_dir"] == str(tmp_path / "out")
     assert captured["max_concurrent"] == 6
     assert captured["use_orbit_subdir"] is True
+    assert captured["aoi_name"] == "轨道任务快照（选中 1 景）"

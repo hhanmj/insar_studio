@@ -27,12 +27,14 @@ import {
   Pentagon,
   Plus,
   Square,
+  Tags,
   Trash2,
 } from "lucide-react";
 import type { Bbox, Json, SceneRow } from "@/lib/bridge";
 import { cn } from "@/lib/utils";
 
 export type WorkbenchDrawMode = "rect" | "polygon" | "point";
+type AnnotationOverlayKey = "image" | "vector";
 
 export type MapLayerKey =
   | "osm"
@@ -57,6 +59,7 @@ const DEFAULT_BBOX: Bbox = {
   north: 53.6,
   crs: "EPSG:4326",
 };
+const DEFAULT_TIANDITU_ANNOTATION_TOKEN = "436ce7e50d27eede2f2929307e6b33c0";
 const MAP_SCENE_DISPLAY_LIMIT = 300;
 
 const MAP_LAYERS: Record<
@@ -199,6 +202,24 @@ const MAP_LAYERS: Record<
   },
 };
 
+const ANNOTATION_OVERLAYS: Record<
+  AnnotationOverlayKey,
+  { label: string; desc: string; layer: string; sourceKey: string }
+> = {
+  image: {
+    label: "影像注记",
+    desc: "白字描边，适合卫星影像",
+    layer: "cia",
+    sourceKey: "cia_w",
+  },
+  vector: {
+    label: "矢量注记",
+    desc: "黑字地名，适合浅色矢量图",
+    layer: "cva",
+    sourceKey: "cva_w",
+  },
+};
+
 function fmt(v: number): string {
   return Number.isFinite(v) ? v.toFixed(4) : "-";
 }
@@ -310,6 +331,145 @@ function geometryPolygons(value: unknown): LatLngExpression[][][] {
     return geometry.features.flatMap((feature) => geometryPolygons(feature));
   }
   return [];
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function fmtCoord(value: number): string {
+  return Number(value.toFixed(7)).toString();
+}
+
+function kmlCoordinateText(ring: unknown): string | null {
+  if (!Array.isArray(ring)) return null;
+  const points: [number, number][] = [];
+  for (const item of ring) {
+    if (
+      Array.isArray(item) &&
+      item.length >= 2 &&
+      typeof item[0] === "number" &&
+      typeof item[1] === "number" &&
+      Number.isFinite(item[0]) &&
+      Number.isFinite(item[1])
+    ) {
+      points.push([item[0], item[1]]);
+    }
+  }
+  if (points.length < 3) return null;
+  const first = points[0];
+  const last = points[points.length - 1];
+  const closed = first[0] === last[0] && first[1] === last[1] ? points : [...points, first];
+  return closed.map(([lng, lat]) => `${fmtCoord(lng)},${fmtCoord(lat)},0`).join(" ");
+}
+
+function polygonCoordinatesToKml(coordinates: unknown): string | null {
+  if (!Array.isArray(coordinates) || coordinates.length === 0) return null;
+  const outer = kmlCoordinateText(coordinates[0]);
+  if (!outer) return null;
+  const inner = coordinates
+    .slice(1)
+    .map(kmlCoordinateText)
+    .filter((value): value is string => !!value)
+    .map((value) => `<innerBoundaryIs><LinearRing><coordinates>${value}</coordinates></LinearRing></innerBoundaryIs>`)
+    .join("");
+  return `<Polygon><outerBoundaryIs><LinearRing><coordinates>${outer}</coordinates></LinearRing></outerBoundaryIs>${inner}</Polygon>`;
+}
+
+function geometryToKmlPolygons(value: unknown): string[] {
+  const geometry = asRecord(value);
+  if (!geometry) return [];
+  const type = String(geometry.type || "");
+  const coordinates = geometry.coordinates;
+  if (type === "Polygon") {
+    const polygon = polygonCoordinatesToKml(coordinates);
+    return polygon ? [polygon] : [];
+  }
+  if (type === "MultiPolygon" && Array.isArray(coordinates)) {
+    return coordinates
+      .map(polygonCoordinatesToKml)
+      .filter((polygon): polygon is string => !!polygon);
+  }
+  if (type === "Feature") return geometryToKmlPolygons(geometry.geometry);
+  if (type === "FeatureCollection" && Array.isArray(geometry.features)) {
+    return geometry.features.flatMap((feature) => geometryToKmlPolygons(feature));
+  }
+  if (type === "GeometryCollection" && Array.isArray(geometry.geometries)) {
+    return geometry.geometries.flatMap((item) => geometryToKmlPolygons(item));
+  }
+  return [];
+}
+
+function countGeometryVertices(value: unknown): number {
+  const geometry = asRecord(value);
+  if (!geometry) return 0;
+  const type = String(geometry.type || "");
+  const coordinates = geometry.coordinates;
+  if (type === "Polygon" && Array.isArray(coordinates)) {
+    return coordinates.reduce((sum, ring) => {
+      if (!Array.isArray(ring)) return sum;
+      const closed =
+        ring.length > 1 &&
+        Array.isArray(ring[0]) &&
+        Array.isArray(ring[ring.length - 1]) &&
+        ring[0][0] === ring[ring.length - 1][0] &&
+        ring[0][1] === ring[ring.length - 1][1];
+      return sum + Math.max(0, ring.length - (closed ? 1 : 0));
+    }, 0);
+  }
+  if (type === "MultiPolygon" && Array.isArray(coordinates)) {
+    return coordinates.reduce((sum, polygon) => sum + countGeometryVertices({ type: "Polygon", coordinates: polygon }), 0);
+  }
+  if (type === "Feature") return countGeometryVertices(geometry.geometry);
+  if (type === "FeatureCollection" && Array.isArray(geometry.features)) {
+    return geometry.features.reduce((sum, feature) => sum + countGeometryVertices(feature), 0);
+  }
+  if (type === "GeometryCollection" && Array.isArray(geometry.geometries)) {
+    return geometry.geometries.reduce((sum, item) => sum + countGeometryVertices(item), 0);
+  }
+  return 0;
+}
+
+function bboxPolygonKml(bbox: Bbox): string {
+  const ring = [
+    [bbox.west, bbox.south],
+    [bbox.east, bbox.south],
+    [bbox.east, bbox.north],
+    [bbox.west, bbox.north],
+    [bbox.west, bbox.south],
+  ];
+  return polygonCoordinatesToKml([ring]) ?? "";
+}
+
+function kmlDocument(name: string, bbox: Bbox, polygons: string[]): string {
+  const geometry =
+    polygons.length === 1
+      ? polygons[0]
+      : `<MultiGeometry>${polygons.join("")}</MultiGeometry>`;
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2">',
+    "<Document>",
+    `<name>${xmlEscape(name)}</name>`,
+    "<Placemark>",
+    `<name>${xmlEscape(name)}</name>`,
+    "<ExtendedData>",
+    `<Data name="west"><value>${fmtCoord(bbox.west)}</value></Data>`,
+    `<Data name="south"><value>${fmtCoord(bbox.south)}</value></Data>`,
+    `<Data name="east"><value>${fmtCoord(bbox.east)}</value></Data>`,
+    `<Data name="north"><value>${fmtCoord(bbox.north)}</value></Data>`,
+    '<Data name="crs"><value>EPSG:4326</value></Data>',
+    "</ExtendedData>",
+    geometry,
+    "</Placemark>",
+    "</Document>",
+    "</kml>",
+  ].join("\n");
 }
 
 function scenePolygons(scene: SceneRow): LatLngExpression[][][] {
@@ -501,7 +661,7 @@ function MapToolbar({
         </MapToolButton>
       </div>
       <div className="overflow-hidden rounded-2xl border border-white/55 bg-white/42 shadow-lg backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/38">
-        <MapToolButton title="清空地图图层" onClick={onClearLayers}>
+        <MapToolButton title="删除所有图层" onClick={onClearLayers}>
           <Trash2 className="h-4 w-4" />
         </MapToolButton>
       </div>
@@ -774,6 +934,10 @@ export function WorkbenchMap({
   const [layersOpen, setLayersOpen] = useState(false);
   const [mapApi, setMapApi] = useState<LeafletMap | null>(null);
   const [scenePopup, setScenePopup] = useState<{ sceneId: string; position: LatLngExpression } | null>(null);
+  const [annotationOverlays, setAnnotationOverlays] = useState<Record<AnnotationOverlayKey, boolean>>({
+    image: true,
+    vector: false,
+  });
   const layerBackdropRef = useRef<HTMLDivElement | null>(null);
   const layerPanelRef = useRef<HTMLDivElement | null>(null);
   const validFootprintScenes = useMemo(
@@ -798,6 +962,8 @@ export function WorkbenchMap({
     ];
   }, [selectedSceneId, visibleScenes]);
   const aoiPolygons = useMemo(() => geometryPolygons(aoiGeometry), [aoiGeometry]);
+  const aoiKmlPolygons = useMemo(() => geometryToKmlPolygons(aoiGeometry), [aoiGeometry]);
+  const aoiVertexCount = useMemo(() => countGeometryVertices(aoiGeometry), [aoiGeometry]);
   const footprintCount = visibleScenes.length;
   const totalFootprintCount = validFootprintScenes.length;
   const footprintLabel =
@@ -805,23 +971,38 @@ export function WorkbenchMap({
       ? `地图 ${footprintCount} / ${totalFootprintCount} 景`
       : `影像 ${footprintCount} 景`;
   const bboxLabel = `W${fmt(fitBbox.west)} S${fmt(fitBbox.south)} E${fmt(fitBbox.east)} N${fmt(fitBbox.north)}`;
-  const bboxCopyText = `west=${fitBbox.west}, south=${fitBbox.south}, east=${fitBbox.east}, north=${fitBbox.north}`;
+  const copyLabel =
+    aoiKmlPolygons.length > 0 && aoiVertexCount > 0
+      ? `AOI ${aoiKmlPolygons.length > 1 ? `${aoiKmlPolygons.length}面 ` : ""}${aoiVertexCount}点  ${bboxLabel}`
+      : bboxLabel;
+  const kmlCopyText = useMemo(() => {
+    const polygons = aoiKmlPolygons.length > 0 ? aoiKmlPolygons : [bboxPolygonKml(fitBbox)];
+    return kmlDocument(aoiKmlPolygons.length > 0 ? "InSAR Studio AOI" : "InSAR Studio AOI bbox", fitBbox, polygons);
+  }, [aoiKmlPolygons, fitBbox]);
   const [bboxCopied, setBboxCopied] = useState(false);
   const copyFitBbox = useCallback(() => {
     const done = () => {
       setBboxCopied(true);
       window.setTimeout(() => setBboxCopied(false), 1200);
     };
-    const writer = navigator.clipboard?.writeText?.(bboxCopyText);
+    const writer = navigator.clipboard?.writeText?.(kmlCopyText);
     if (writer) {
       void writer.then(done).catch(done);
     } else {
       done();
     }
-  }, [bboxCopyText]);
+  }, [kmlCopyText]);
   const token = tiandituToken.trim();
+  const annotationToken = token || DEFAULT_TIANDITU_ANNOTATION_TOKEN;
   const layer = MAP_LAYERS[layerKey].requiresToken && !token ? MAP_LAYERS.cartoLight : MAP_LAYERS[layerKey];
   const layerUrl = layer.url.replace("{token}", encodeURIComponent(token));
+  const annotationUrl = useCallback(
+    (key: AnnotationOverlayKey) => {
+      const item = ANNOTATION_OVERLAYS[key];
+      return `https://t{s}.tianditu.gov.cn/${item.sourceKey}/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${item.layer}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${encodeURIComponent(annotationToken)}`;
+    },
+    [annotationToken],
+  );
   const popupScene = useMemo(() => {
     if (!scenePopup?.sceneId) return null;
     const scene = scenes.find((item) => item.scene_id === scenePopup.sceneId);
@@ -862,6 +1043,34 @@ export function WorkbenchMap({
           detectRetina={false}
           eventHandlers={{ load: () => setTilesReady(true) }}
         />
+        {annotationToken && annotationOverlays.image && (
+          <TileLayer
+            key="tianditu-cia"
+            url={annotationUrl("image")}
+            subdomains="01234567"
+            attribution="&copy; 天地图"
+            maxNativeZoom={18}
+            opacity={0.95}
+            updateWhenIdle
+            updateWhenZooming={false}
+            keepBuffer={1}
+            detectRetina={false}
+          />
+        )}
+        {annotationToken && annotationOverlays.vector && (
+          <TileLayer
+            key="tianditu-cva"
+            url={annotationUrl("vector")}
+            subdomains="01234567"
+            attribution="&copy; 天地图"
+            maxNativeZoom={18}
+            opacity={0.95}
+            updateWhenIdle
+            updateWhenZooming={false}
+            keepBuffer={1}
+            detectRetina={false}
+          />
+        )}
         <MapApiBridge onReady={setMapApi} />
         <FitToData bbox={fitBbox} />
         {isValidBbox(sceneBbox) && (
@@ -982,9 +1191,9 @@ export function WorkbenchMap({
             type="button"
             className="pointer-events-auto min-w-[15rem] flex-1 truncate rounded-md px-3 py-1.5 text-left font-mono text-[12px] text-foreground tabular-nums transition-colors hover:bg-white/70 hover:text-primary dark:hover:bg-white/10"
             onClick={copyFitBbox}
-            title="复制当前地图范围经纬度"
+            title={aoiKmlPolygons.length > 0 ? "复制完整 AOI KML" : "复制 AOI 外包矩形 KML"}
           >
-            {bboxCopied ? "已复制" : bboxLabel}
+            {bboxCopied ? "已复制 KML" : copyLabel}
           </button>
           {footprintCount > 0 && (
             <>
@@ -1096,6 +1305,54 @@ export function WorkbenchMap({
                 </button>
               );
             })}
+          </div>
+          <div className="mt-3 border-t border-border/60 pt-2">
+            <div className="flex items-center gap-2 px-1.5 pb-1.5 text-xs font-semibold">
+              <Tags className="h-3.5 w-3.5 text-primary" />
+              天地图注记
+            </div>
+            <div className="space-y-1">
+              {(Object.keys(ANNOTATION_OVERLAYS) as AnnotationOverlayKey[]).map((key) => {
+                const item = ANNOTATION_OVERLAYS[key];
+                const active = annotationOverlays[key];
+                const locked = false;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    disabled={locked}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onPointerUp={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (locked) return;
+                      setAnnotationOverlays((current) => ({ ...current, [key]: !current[key] }));
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors disabled:cursor-default",
+                      active ? "bg-primary/12 text-primary" : "hover:bg-accent",
+                      locked && "opacity-50",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                        active ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/50",
+                      )}
+                    >
+                      {active && <Check className="h-3 w-3" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{item.label}</span>
+                      <span className="block truncate text-[11px] text-muted-foreground">
+                        {token ? item.desc : "使用默认注记源；设置 Token 后使用自有配额"}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

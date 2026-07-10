@@ -23,6 +23,10 @@ from shapely import wkt as shapely_wkt
 from shapely.errors import ShapelyError
 from shapely.geometry import shape
 from shapely.ops import polygonize, unary_union
+try:  # Shapely 2.x
+    from shapely.validation import make_valid as shapely_make_valid
+except Exception:  # noqa: BLE001 - Shapely 1.x fallback
+    shapely_make_valid = None
 
 from insar_prep.core.enums import AoiRole, AoiSource
 from insar_prep.core.error_codes import ErrorCode
@@ -106,6 +110,7 @@ def geometry_to_processing_aoi(
     name: str | None = None,
 ) -> Aoi:
     """Validate a shapely geometry and wrap its bounds as a Processing AOI."""
+    geometry = _coerce_to_areal_geometry(geometry)
     _validate_geometry(geometry)
     bbox = _bbox_from_geometry(geometry)
     logger.debug(
@@ -130,8 +135,8 @@ def _geometry_from_geojson(data: dict[str, Any]) -> BaseGeometry:
                 "invalid GeoJSON FeatureCollection: 'features' must be a non-empty array",
                 code=ErrorCode.AOI001,
             )
-        geometries = [_geometry_from_feature(feature) for feature in features]
-        return _coerce_to_areal_geometry(unary_union(geometries))
+        geometries = [_coerce_to_areal_geometry(_geometry_from_feature(feature)) for feature in features]
+        return _coerce_to_areal_geometry(_union_areal_geometries(geometries))
     if obj_type == "Feature":
         return _coerce_to_areal_geometry(_geometry_from_feature(data))
     if obj_type in IMPORTABLE_GEOMETRY_TYPES:
@@ -186,6 +191,7 @@ def _coerce_to_areal_geometry(geometry: BaseGeometry) -> BaseGeometry:
     """Return a Polygon/MultiPolygon, polygonizing closed line boundaries if needed."""
     if geometry is None or geometry.is_empty:
         return geometry
+    geometry = _repair_geometry(geometry)
     if geometry.geom_type in SUPPORTED_GEOMETRY_TYPES:
         return geometry
     if geometry.geom_type in {"LineString", "MultiLineString", "LinearRing"}:
@@ -203,12 +209,67 @@ def _coerce_to_areal_geometry(geometry: BaseGeometry) -> BaseGeometry:
         polygons = list(polygonize(line_parts)) if line_parts else []
         merged = [*areal_parts, *polygons]
         if merged:
-            return unary_union(merged)
+            return _repair_geometry(_union_areal_geometries(merged))
     raise InputValidationError(
         f"无法从 {geometry.geom_type!r} 生成 AOI 面；如果这是行政边界线，请确认线闭合，"
         "或提供 Polygon/MultiPolygon 文件",
         code=ErrorCode.AOI001,
     )
+
+
+def _repair_geometry(geometry: BaseGeometry) -> BaseGeometry:
+    """Repair invalid authoritative boundaries while preserving real geometry."""
+    if geometry is None or geometry.is_empty:
+        return geometry
+    try:
+        if geometry.is_valid:
+            return geometry
+    except Exception:  # noqa: BLE001
+        pass
+    repaired = None
+    if shapely_make_valid is not None:
+        try:
+            repaired = shapely_make_valid(geometry)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("shapely make_valid failed for AOI geometry: %s", exc)
+    if repaired is None or getattr(repaired, "is_empty", True):
+        try:
+            repaired = geometry.buffer(0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("buffer(0) failed for AOI geometry: %s", exc)
+            repaired = geometry
+    if getattr(repaired, "geom_type", "") == "GeometryCollection":
+        parts = [
+            part
+            for part in getattr(repaired, "geoms", [])
+            if getattr(part, "geom_type", "") in SUPPORTED_GEOMETRY_TYPES and not part.is_empty
+        ]
+        if parts:
+            try:
+                repaired = unary_union(parts)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("could not union repaired AOI parts: %s", exc)
+                repaired = parts[0] if len(parts) == 1 else repaired
+    return repaired
+
+
+def _union_areal_geometries(geometries: list[BaseGeometry]) -> BaseGeometry:
+    repaired = [_repair_geometry(item) for item in geometries if item is not None and not item.is_empty]
+    if not repaired:
+        return unary_union([])
+    try:
+        return unary_union(repaired)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("unary_union failed for AOI geometry; retrying after buffer(0): %s", exc)
+    buffered: list[BaseGeometry] = []
+    for item in repaired:
+        try:
+            next_item = item.buffer(0)
+        except Exception:  # noqa: BLE001
+            next_item = item
+        if next_item is not None and not next_item.is_empty:
+            buffered.append(next_item)
+    return unary_union(buffered)
 
 
 def _bbox_from_geometry(geometry: BaseGeometry) -> BBox:

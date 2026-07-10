@@ -9,12 +9,11 @@ every source ends up going through the same checks.
 
 Design constraints (kept identical to the GeoJSON/WKT importer):
 
-* **stdlib + shapely only** -- ``struct`` parses the shapefile geometry, the
-  standard-library ``xml.etree`` parses KML, and ``zipfile`` unpacks KMZ. No
-  ``geopandas``/``fiona``/``pyshp``/``lxml``/GDAL and no new dependencies.
-* **lon/lat only**; no coordinate transforms. A shapefile sidecar ``.prj`` is
-  checked and a projected CRS is rejected. WGS84 and geographic CGCS2000
-  (EPSG:4490) are accepted for Chinese administrative boundaries. KML/KMZ are
+* **small dependency surface** -- ``struct`` parses the shapefile geometry, the
+  standard-library ``xml.etree`` parses KML, and ``zipfile`` unpacks KMZ. When a
+  Shapefile has ``.prj``, ``pyproj`` is used to transform it to EPSG:4326.
+* **AOI output is always lon/lat**. Shapefiles without ``.prj`` are treated as
+  WGS84 only when their bounds already look like longitude/latitude. KML/KMZ are
   WGS84 lon/lat by specification.
 * Only areal geometries (``Polygon`` / ``MultiPolygon``) are accepted; the
   Processing AOI bbox is taken from the merged geometry bounds.
@@ -34,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shapely.geometry import Polygon
-from shapely.ops import unary_union
+from shapely.ops import transform as shapely_transform, unary_union
 
 from insar_prep.core.enums import AoiSource
 from insar_prep.core.error_codes import ErrorCode
@@ -92,8 +91,8 @@ def load_aoi_from_shapefile(path: str | Path, *, name: str | None = None) -> Aoi
 
     Reads polygon geometry directly from the ``.shp`` main file (the ``.shx``
     index is not required) and merges every polygon ring into one geometry. A
-    sidecar ``.prj`` file, when present, is checked: a projected or non-WGS84 CRS
-    is rejected (``AOI001``) because no coordinate transform is performed.
+    sidecar ``.prj`` file, when present, is used to transform projected or
+    non-WGS84 coordinates to EPSG:4326 before validation.
     """
     shp_path = Path(path)
     if shp_path.suffix.lower() != ".shp":
@@ -109,7 +108,6 @@ def load_aoi_from_shapefile(path: str | Path, *, name: str | None = None) -> Aoi
             f"cannot read shapefile {shp_path}: {exc}", code=ErrorCode.AOI001
         ) from exc
 
-    _check_shapefile_prj(shp_path)
     geometry = _geometry_from_shapefile_bytes(data, shp_path)
     return geometry_to_processing_aoi(geometry, source=AoiSource.VECTOR_FILE, name=name)
 
@@ -141,6 +139,7 @@ def _geometry_from_shapefile_bytes(data: bytes, shp_path: Path) -> BaseGeometry:
         raise InputValidationError(
             f"shapefile polygons merged to an empty geometry: {shp_path}", code=ErrorCode.AOI001
         )
+    geometry = _normalise_shapefile_geometry_crs(geometry, shp_path)
     logger.debug("read %d polygon ring(s) from shapefile %s", len(polygons), shp_path)
     return geometry
 
@@ -213,21 +212,69 @@ def _polygon_from_ring(ring: list[tuple[float, float]]) -> Polygon | None:
 
 
 def _check_shapefile_prj(shp_path: Path) -> None:
+    _shapefile_crs_from_prj(shp_path)
+
+
+def _normalise_shapefile_geometry_crs(geometry: BaseGeometry, shp_path: Path) -> BaseGeometry:
+    prj_path = shp_path.with_suffix(".prj")
+    crs = _shapefile_crs_from_prj(shp_path)
+    if crs is None:
+        _ensure_shapefile_lonlat_bounds(geometry, shp_path, has_prj=False)
+        return geometry
+    try:
+        from pyproj import CRS, Transformer
+    except Exception as exc:  # noqa: BLE001
+        raise InputValidationError(
+            "Shapefile 带有 .prj，但当前环境缺少 pyproj，无法自动转换坐标。",
+            code=ErrorCode.AOI001,
+        ) from exc
+    try:
+        transformer = Transformer.from_crs(crs, CRS.from_epsg(4326), always_xy=True)
+        geometry = shapely_transform(transformer.transform, geometry)
+    except Exception as exc:  # noqa: BLE001
+        raise InputValidationError(
+            f"Shapefile 坐标转换失败：{prj_path.name}，请确认 .prj 与 .shp 坐标一致。",
+            code=ErrorCode.AOI001,
+        ) from exc
+    _ensure_shapefile_lonlat_bounds(geometry, shp_path, has_prj=True)
+    return geometry
+
+
+def _shapefile_crs_from_prj(shp_path: Path):
+    prj_text = _read_shapefile_prj_text(shp_path)
+    if not prj_text:
+        return None
+    try:
+        from pyproj import CRS
+    except Exception as exc:  # noqa: BLE001
+        if _prj_text_looks_wgs84_like(prj_text):
+            return None
+        raise InputValidationError(
+            "Shapefile 坐标不是经纬度；当前环境缺少 pyproj，无法根据同名 .prj 自动转换。",
+            code=ErrorCode.AOI001,
+        ) from exc
+    try:
+        return CRS.from_wkt(prj_text)
+    except Exception as exc:  # noqa: BLE001
+        raise InputValidationError(
+            f"Shapefile .prj 坐标系无法识别：{shp_path.with_suffix('.prj').name}",
+            code=ErrorCode.AOI001,
+        ) from exc
+
+
+def _read_shapefile_prj_text(shp_path: Path) -> str:
     prj_path = shp_path.with_suffix(".prj")
     if not prj_path.is_file():
-        return  # No .prj: assume WGS84 lon/lat, like RFC 7946 GeoJSON.
+        return ""
     try:
-        prj_text = prj_path.read_text(encoding="utf-8", errors="replace")
+        return prj_path.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
-        return  # Unreadable sidecar is not fatal; treat as unspecified WGS84.
+        return ""
+
+
+def _prj_text_looks_wgs84_like(prj_text: str) -> bool:
     normalized = prj_text.upper()
-    if "PROJCS" in normalized:
-        raise InputValidationError(
-            f"shapefile uses a projected CRS (.prj has PROJCS); only EPSG:4326 "
-            f"(WGS84 lon/lat) is supported and no reprojection is performed: {prj_path}",
-            code=ErrorCode.AOI001,
-        )
-    if not any(
+    return "PROJCS" not in normalized and any(
         token in normalized
         for token in (
             "WGS_1984",
@@ -238,12 +285,26 @@ def _check_shapefile_prj(shp_path: Path) -> None:
             "CHINA_GEODETIC_COORDINATE_SYSTEM_2000",
             "4490",
         )
-    ):
+    )
+
+
+def _ensure_shapefile_lonlat_bounds(
+    geometry: BaseGeometry, shp_path: Path, *, has_prj: bool
+) -> None:
+    minx, miny, maxx, maxy = geometry.bounds
+    valid = -180 <= minx <= 180 and -180 <= maxx <= 180 and -90 <= miny <= 90 and -90 <= maxy <= 90
+    if valid:
+        return
+    if has_prj:
         raise InputValidationError(
-            f"shapefile CRS is not supported lon/lat (.prj={prj_text.strip()[:80]!r}); only "
-            "EPSG:4326/WGS84 or geographic CGCS2000 is supported and no reprojection is performed",
+            f"Shapefile 根据 .prj 转换后的坐标仍不在经纬度范围内：{shp_path.name}",
             code=ErrorCode.AOI001,
         )
+    raise InputValidationError(
+        f"该 Shapefile 坐标不是经纬度且缺少同名 .prj，无法自动转换：{shp_path.name}。"
+        "请保留同目录下同名 .prj 文件后重新导入。",
+        code=ErrorCode.AOI001,
+    )
 
 
 # --------------------------------------------------------------------------- #

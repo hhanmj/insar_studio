@@ -661,7 +661,7 @@ class RealAsfDownloader:
             scene_id=request.scene_id,
             outcome=DownloadOutcome.INTERRUPTED,
             bytes_written=bytes_written,
-            message="cancelled by user; partial .part kept for resume",
+            message="用户取消，已保留 .part",
             error_code=ErrorCode.DL001.value,
         )
 

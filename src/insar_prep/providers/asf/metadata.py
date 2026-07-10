@@ -29,6 +29,7 @@ _CMR_PAGE_SIZE = 200
 _DEFAULT_UNCOUNTED_SEARCH_RESULTS = 500
 _REQUEST_HEADERS = {"User-Agent": "InSAR-Assistant/0.1 ASF metadata search"}
 _MAX_REMOTE_SEARCH_RESULTS = 10000
+_ASF_DIRECT_AOI_SEARCH_LIMIT = 1
 _ASF_SPLIT_SEARCH_THRESHOLD = 2000
 _ASF_SPLIT_WINDOW_DAYS = 180
 _ASF_SPLIT_WINDOW_MAX_RESULTS = 2000
@@ -857,13 +858,15 @@ def _search_asf_geojson_by_date_windows(
     start: str | None,
     end: str | None,
     requested_limit: int,
+    feature_limit: int | None = None,
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
 ) -> list[Mapping[str, Any]]:
     queue = _asf_split_query_windows(start, end)
     features_by_key: dict[str, Mapping[str, Any]] = {}
+    target_raw_count = max(requested_limit, int(feature_limit or requested_limit))
     processed = 0
-    while queue and len(features_by_key) < requested_limit:
+    while queue and len(features_by_key) < target_raw_count:
         _raise_if_cancelled(cancelled)
         start_dt, end_dt = queue.pop(0)
         processed += 1
@@ -874,7 +877,7 @@ def _search_asf_geojson_by_date_windows(
                 max(1, total),
                 f"正在分段查询 ASF 元数据 {processed}/{max(1, total)}",
             )
-        window_limit = min(_ASF_SPLIT_WINDOW_MAX_RESULTS, requested_limit)
+        window_limit = min(_ASF_SPLIT_WINDOW_MAX_RESULTS, target_raw_count)
         query = dict(params)
         query["start"] = _format_asf_query_datetime(start_dt)
         query["end"] = _format_asf_query_datetime(end_dt)
@@ -901,12 +904,11 @@ def _search_asf_geojson_by_date_windows(
     return list(features_by_key.values())
 
 
-def _should_use_asf_split_search(requested_limit: int | None, total_count: int | None) -> bool:
-    if requested_limit is None:
-        return False
-    if requested_limit >= _ASF_SPLIT_SEARCH_THRESHOLD:
-        return True
-    return bool(total_count is not None and total_count >= _ASF_SPLIT_SEARCH_THRESHOLD)
+def _should_use_asf_split_search(requested_limit: int | None, query_limit: int) -> bool:
+    # Prefer one SearchAPI request first. ASF/Vertex-like clients page or
+    # over-fetch behind the scenes; date-window splitting is only a fallback
+    # when a large direct query is rejected or demonstrably truncated.
+    return False
 
 
 def _cmr_datetime_range(start: str | None, end: str | None) -> str | None:
@@ -987,6 +989,70 @@ def _is_float_text(value: str) -> bool:
         return False
 
 
+def _cmr_attribute_map(entry: Mapping[str, Any]) -> dict[str, Any]:
+    def clean_key(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+    attrs: dict[str, Any] = {}
+
+    def add(name: Any, value: Any) -> None:
+        key = clean_key(name)
+        if not key or key in attrs:
+            return
+        if isinstance(value, list):
+            value = next((item for item in value if item not in (None, "")), None)
+        if value not in (None, ""):
+            attrs[key] = value
+
+    for container_key in ("additional_attributes", "AdditionalAttributes"):
+        container = entry.get(container_key)
+        if isinstance(container, list):
+            for item in container:
+                if not isinstance(item, Mapping):
+                    continue
+                add(
+                    item.get("name") or item.get("Name"),
+                    item.get("values") or item.get("Values") or item.get("value") or item.get("Value"),
+                )
+        elif isinstance(container, Mapping):
+            for name, value in container.items():
+                add(name, value)
+    umm = entry.get("umm")
+    if isinstance(umm, Mapping):
+        for container_key in ("AdditionalAttributes", "additional_attributes"):
+            container = umm.get(container_key)
+            if not isinstance(container, list):
+                continue
+            for item in container:
+                if not isinstance(item, Mapping):
+                    continue
+                add(
+                    item.get("Name") or item.get("name"),
+                    item.get("Values") or item.get("values") or item.get("Value") or item.get("value"),
+                )
+    return attrs
+
+
+def _cmr_attr(entry: Mapping[str, Any], *names: str) -> Any:
+    attrs = _cmr_attribute_map(entry)
+    for name in names:
+        key = re.sub(r"[^a-z0-9]+", "", name.strip().lower())
+        if key in attrs:
+            return attrs[key]
+    return None
+
+
+def _sentinel1_relative_orbit(platform: str, absolute_orbit: int | None) -> int | None:
+    if absolute_orbit is None:
+        return None
+    platform_upper = str(platform or "").upper()
+    offsets = {"S1A": 73, "SENTINEL-1A": 73, "S1B": 27, "SENTINEL-1B": 27}
+    offset = next((value for key, value in offsets.items() if key in platform_upper), None)
+    if offset is None:
+        return None
+    return ((int(absolute_orbit) - offset) % 175) + 1
+
+
 def _cmr_entry_to_scene(entry: Mapping[str, Any]) -> Scene | None:
     source = str(
         entry.get("producer_granule_id")
@@ -1018,6 +1084,27 @@ def _cmr_entry_to_scene(entry: Mapping[str, Any]) -> Scene | None:
             orbit = _to_int(first.get("orbit_number"))
             if orbit is not None:
                 updates["absolute_orbit"] = orbit
+    path = _to_int(
+        _cmr_attr(
+            entry,
+            "PATH_NUMBER",
+            "PATH",
+            "RELATIVE_ORBIT",
+            "RELATIVE_ORBIT_NUMBER",
+            "RELATIVEORBITNUMBER",
+        )
+    )
+    if path is None:
+        path = _sentinel1_relative_orbit(str(scene.platform), updates.get("absolute_orbit") or scene.absolute_orbit)
+    if path is not None:
+        updates["path"] = path
+        updates["relative_orbit"] = path
+    frame = _to_int(_cmr_attr(entry, "FRAME_NUMBER", "FRAME", "FRAME_ID", "FRAMENUMBER"))
+    if frame is not None:
+        updates["frame"] = frame
+    direction = _to_direction(_cmr_attr(entry, "ASCENDING_DESCENDING", "FLIGHT_DIRECTION", "ORBIT_DIRECTION"))
+    if direction is not None:
+        updates["orbit_direction"] = direction
     geometry, bbox = _cmr_polygon_geometry(entry)
     if geometry is not None:
         updates["footprint_geojson"] = geometry
@@ -1124,9 +1211,13 @@ def _plain_error_message(exc: BaseException) -> str:
 def _search_query_limit(requested_limit: int, *, has_aoi: bool) -> int:
     if not has_aoi:
         return requested_limit
+    if requested_limit <= _ASF_DIRECT_AOI_SEARCH_LIMIT:
+        return requested_limit
     if requested_limit <= 200:
         return min(_MAX_REMOTE_SEARCH_RESULTS, max(requested_limit * 4, requested_limit + 50))
-    return requested_limit
+    if requested_limit <= 1000:
+        return min(_MAX_REMOTE_SEARCH_RESULTS, max(requested_limit * 3, requested_limit + 250))
+    return min(_MAX_REMOTE_SEARCH_RESULTS, max(requested_limit * 4, requested_limit + 1000))
 
 
 def search_scenes_from_asf(
@@ -1205,7 +1296,19 @@ def search_scenes_from_asf(
         params["frame"] = frame_param
 
     _raise_if_cancelled(cancelled)
-    total_count = _get_asf_count(params) if (progress is not None or stats is not None) else None
+    should_count_remote = requested_limit is None or (
+        requested_limit > 1 and (progress is not None or stats is not None)
+    )
+    if should_count_remote and progress is not None:
+        progress(0, 4, "正在统计 ASF 候选总量")
+    total_count = None
+    if should_count_remote:
+        try:
+            total_count = _get_asf_count(params)
+        except Exception as exc:  # noqa: BLE001 - count is informative; search can continue without it.
+            logger.info("ASF count request failed; continuing with direct search: %s", exc)
+            if progress is not None:
+                progress(0, 4, "ASF 候选总量暂不可用，将直接请求元数据")
     if requested_limit is None:
         requested_limit = (
             max(1, min(total_count, _MAX_REMOTE_SEARCH_RESULTS))
@@ -1214,26 +1317,34 @@ def search_scenes_from_asf(
         )
         query_limit = _search_query_limit(requested_limit, has_aoi=has_aoi)
         params["maxResults"] = str(query_limit)
+    elif total_count is not None and total_count > 0:
+        query_limit = min(query_limit, max(requested_limit, int(total_count)))
+        params["maxResults"] = str(query_limit)
     if stats is not None:
         stats.update(
             {
                 "requested_limit": requested_limit,
                 "query_limit": query_limit,
                 "total_count": total_count,
+                "candidate_count": total_count,
                 "returned_count": 0,
                 "source": "ASF",
             }
         )
     if progress is not None:
         total_label = (
-            f"匹配总量 {total_count} 景"
+            f"候选总量 {total_count} 景"
             if total_count is not None
-            else f"候选请求 {query_limit} 景"
+            else f"请求上限 {query_limit} 景"
         )
-        progress(0, 1, f"正在请求 ASF 检索接口（目标 {requested_limit} 景，{total_label}）")
+        progress(
+            1 if should_count_remote else 0,
+            4 if should_count_remote else 3,
+            f"正在请求 ASF 检索接口（目标 {requested_limit} 景，{total_label}）",
+        )
     features: list[Mapping[str, Any]] | None = None
     source = "ASF"
-    use_split_search = _should_use_asf_split_search(requested_limit, total_count)
+    use_split_search = _should_use_asf_split_search(requested_limit, query_limit)
     try:
         _raise_if_cancelled(cancelled)
         if use_split_search:
@@ -1242,6 +1353,7 @@ def search_scenes_from_asf(
                 start=start,
                 end=end,
                 requested_limit=requested_limit,
+                feature_limit=query_limit,
                 progress=progress,
                 cancelled=cancelled,
             )
@@ -1249,6 +1361,24 @@ def search_scenes_from_asf(
         else:
             data = _get_asf_geojson(params)
             features = _asf_geojson_features(data)
+            expected_direct = min(query_limit, int(total_count or query_limit))
+            if (
+                requested_limit >= _ASF_SPLIT_SEARCH_THRESHOLD
+                and len(features) < requested_limit
+                and len(features) < expected_direct
+            ):
+                if progress is not None:
+                    progress(1, 4 if should_count_remote else 3, "ASF 返回不足，正在分段补取")
+                features = _search_asf_geojson_by_date_windows(
+                    params,
+                    start=start,
+                    end=end,
+                    requested_limit=requested_limit,
+                    feature_limit=query_limit,
+                    progress=progress,
+                    cancelled=cancelled,
+                )
+                source = "ASF_BATCH"
         _raise_if_cancelled(cancelled)
     except InputValidationError as primary_error:
         _raise_if_cancelled(cancelled)
@@ -1261,6 +1391,7 @@ def search_scenes_from_asf(
                     start=start,
                     end=end,
                     requested_limit=requested_limit,
+                    feature_limit=query_limit,
                     progress=progress,
                     cancelled=cancelled,
                 )
@@ -1311,7 +1442,7 @@ def search_scenes_from_asf(
                         "skipping ASF metadata enrichment for %d CMR fallback scenes",
                         len(fallback_scenes),
                     )
-                fallback = [
+                fallback_candidates = [
                     scene
                     for scene in fallback_scenes
                     if _scene_matches_filters(
@@ -1321,16 +1452,19 @@ def search_scenes_from_asf(
                         orbit_direction="" if requested_limit > _CMR_ENRICH_LIMIT else orbit_direction,
                     )
                 ]
-                fallback = _filter_scenes_by_aoi_geometry(fallback, aoi_geojson)
-                fallback = _sort_scenes_by_aoi_coverage(
-                    fallback,
+                fallback_candidates = _filter_scenes_by_aoi_geometry(fallback_candidates, aoi_geojson)
+                fallback_candidates = _sort_scenes_by_aoi_coverage(
+                    fallback_candidates,
                     aoi_geojson=aoi_geojson,
                     bbox=bbox,
-                )[:requested_limit]
+                )
+                candidate_count = len(fallback_candidates)
+                fallback = fallback_candidates[:requested_limit]
                 if stats is not None:
                     stats.update(
                         {
                             "returned_count": len(fallback),
+                            "candidate_count": total_count if total_count is not None else candidate_count,
                             "source": "CMR",
                             "total_count": total_count,
                             "cmr_enriched": requested_limit <= _CMR_ENRICH_LIMIT,
@@ -1343,23 +1477,58 @@ def search_scenes_from_asf(
                     code=ErrorCode.ASF002,
                 ) from fallback_error
     if progress is not None:
-        progress(1, 1, f"ASF 返回 {len(features)} 条结果，正在解析元数据")
-    scenes = _asf_feature_scenes(
-        features,
-        beam_mode=beam_mode,
-        polarization=polarization,
-        orbit_direction=orbit_direction,
-        cancelled=cancelled,
-    )
-    unique, _ = deduplicate_scenes(scenes)
-    unique = _filter_scenes_by_aoi_geometry(unique, aoi_geojson)
-    unique = _sort_scenes_by_aoi_coverage(unique, aoi_geojson=aoi_geojson, bbox=bbox)
+        progress(
+            2 if should_count_remote else 1,
+            4 if should_count_remote else 3,
+            f"ASF 返回 {len(features)} 条结果，正在解析元数据",
+        )
+    def prepare_unique(feature_rows: list[Mapping[str, Any]]) -> list[Scene]:
+        parsed = _asf_feature_scenes(
+            feature_rows,
+            beam_mode=beam_mode,
+            polarization=polarization,
+            orbit_direction=orbit_direction,
+            cancelled=cancelled,
+        )
+        unique_scenes, _ = deduplicate_scenes(parsed)
+        unique_scenes = _filter_scenes_by_aoi_geometry(unique_scenes, aoi_geojson)
+        return _sort_scenes_by_aoi_coverage(unique_scenes, aoi_geojson=aoi_geojson, bbox=bbox)
+
+    unique = prepare_unique(features)
+    refill_attempts = 0
+    while (
+        source == "ASF"
+        and has_aoi
+        and requested_limit > 1
+        and len(unique) < requested_limit
+        and len(features) >= query_limit
+        and query_limit < _MAX_REMOTE_SEARCH_RESULTS
+        and refill_attempts < 3
+    ):
+        next_limit = min(_MAX_REMOTE_SEARCH_RESULTS, max(query_limit * 2, query_limit + 100))
+        if total_count is not None:
+            next_limit = min(next_limit, max(query_limit, int(total_count)))
+        if next_limit <= query_limit:
+            break
+        refill_attempts += 1
+        query_limit = next_limit
+        params["maxResults"] = str(query_limit)
+        if progress is not None:
+            progress(
+                3 if should_count_remote else 2,
+                4 if should_count_remote else 3,
+                f"AOI 覆盖筛选后不足目标，正在补取更多 ASF 候选（上限 {query_limit} 景）",
+            )
+        data = _get_asf_geojson(params)
+        features = _asf_geojson_features(data)
+        unique = prepare_unique(features)
+    candidate_count = len(unique)
     unique = unique[:requested_limit]
     if stats is not None:
         stats["returned_count"] = len(unique)
+        stats["candidate_count"] = total_count if total_count is not None else candidate_count
+        stats["query_limit"] = query_limit
         stats["source"] = source
-        if source == "ASF_BATCH":
-            stats["query_limit"] = requested_limit
     logger.info("ASF search returned %d scenes (%s)", len(unique), level)
     return unique
 

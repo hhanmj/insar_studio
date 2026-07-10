@@ -460,7 +460,7 @@ class RealDemDownloader:
             region_safe_name=request.region_safe_name,
             dataset=request.dataset,
             outcome=DemDownloadOutcome.INTERRUPTED,
-            message="cancelled by user; partial .part kept",
+            message="用户取消，已保留 .part",
             error_code=ErrorCode.DEM001.value,
         )
 

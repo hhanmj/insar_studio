@@ -753,6 +753,17 @@ type PyApi = {
   save_gacos_email: (email: string) => Promise<SimpleOk>;
   clear_gacos_email: () => Promise<SimpleOk>;
   generate_report: (outputDir?: string) => Promise<ReportResult>;
+  get_v3_providers?: () => Promise<V3ProvidersResult>;
+  v3_search_provider?: (providerId: string, query?: V3SearchRequest) => Promise<V3SearchResult>;
+  v3_plan_provider?: (
+    providerId: string,
+    query?: V3PlanRequest,
+    products?: V3ProviderProduct[],
+  ) => Promise<V3PlanResult>;
+  gacos_webform_dry_run?: (payload: V3GacosSubmission, email?: string) => Promise<GacosWebFormDryRunResult>;
+  gacos_webform_submit?: (payload: V3GacosSubmission, email: string) => Promise<GacosWebFormSubmitResult>;
+  preview_aoi_file_bundle?: (files: { name: string; base64: string }[]) => Promise<AoiPreviewResult>;
+
 };
 
 declare global {
@@ -1097,7 +1108,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Studio", version: "2.1.7", offline: true };
+  return { name: "InSAR Studio", version: "2.1.8", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -1109,10 +1120,10 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "2.1.7",
-    latest_version: "2.1.7",
+    current_version: "2.1.8",
+    latest_version: "2.1.8",
     html_url: "https://github.com/hhanmj/insar_studio/releases/latest",
-    release_name: "InSAR Studio 2.1.7",
+    release_name: "InSAR Studio 2.1.8",
     changelog: "Update checks run only in the packaged desktop app.",
     published_at: "",
     message: "Update checks run only in the packaged desktop app.",
@@ -1147,7 +1158,7 @@ export async function getComponentStatus(refresh = false): Promise<ComponentStat
       {
         id: "dem-gdal",
         name: "DEM/GDAL 高程基准组件",
-        version: "2.1.7",
+        version: "2.1.8",
         size_mb: 205,
         description: "GDAL/rasterio/numpy/PROJ 与 EGM96、EGM2008 高程基准数据。",
         installed: false,
@@ -3277,4 +3288,445 @@ export async function generateReport(outputDir = ""): Promise<ReportResult> {
       warnings: `${dir}\\${safe}_warnings.csv`,
     },
   };
+}
+
+// --------------------------------------------------------------------- V3
+export type ProviderInfo = {
+  provider_id: string;
+  display_name: string;
+  source_kind: string;
+  version: string;
+  capabilities: string[];
+};
+
+export type V3ProvidersResult = {
+  ok: boolean;
+  providers?: ProviderInfo[];
+  error?: string;
+  code?: string;
+};
+
+export type V3SearchRequest = {
+  bbox?: Bbox;
+  filters?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type V3SearchResult = {
+  ok: boolean;
+  products?: V3ProviderProduct[];
+  error?: string;
+  code?: string;
+};
+
+export type V3PlanRequest = {
+  bbox?: Bbox;
+  output_root?: string;
+  filters?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type V3ProviderProduct = {
+  provider_id: string;
+  product_id: string;
+  display_name: string;
+  source_kind: string;
+  product_kind: string;
+  acquisition_datetime: string;
+  footprint_bbox: Bbox | null;
+  assets: any[];
+  properties: Record<string, unknown>;
+};
+
+export type V3PlanItem = {
+  product_id: string;
+  target_path: string;
+  role: string;
+  expected_size_bytes?: number;
+  status?: string;
+  [key: string]: unknown;
+};
+
+export type V3GacosFormFields = {
+  N: string;
+  S: string;
+  W: string;
+  E: string;
+  H: string;
+  M: string;
+  date: string;
+  type: string;
+  seq: string;
+  [key: string]: unknown;
+};
+
+export type V3GacosSubmissionBatch = {
+  batch_id: string;
+  batch_index: number;
+  batch_count: number;
+  date_count: number;
+  dates: string[];
+  date_text: string;
+  bbox: Bbox | null;
+  method: string;
+  endpoint: string;
+  content_type: string;
+  form_fields: V3GacosFormFields;
+  required_sensitive_fields: string[];
+  [key: string]: unknown;
+};
+
+export type V3ExecutionMode = "direct_download" | "manual_web_form" | "browser_assisted_web_form" | "local_import";
+
+export type V3GacosSubmission = {
+  kind: string;
+  provider: string;
+  execution_mode: V3ExecutionMode;
+  portal_url: string;
+  submit_endpoint: string;
+  method: string;
+  content_type: string;
+  output_format: string;
+  requires_user_confirmation: boolean;
+  requires_email_delivery: boolean;
+  email_field: string;
+  result_delivery: string;
+  download_link_handling: string;
+  batches: V3GacosSubmissionBatch[];
+  [key: string]: unknown;
+};
+
+export type V3Plan = {
+  provider_id: string;
+  source_kind: string;
+  output_root: string;
+  items: V3PlanItem[];
+  submission?: V3GacosSubmission;
+  [key: string]: unknown;
+};
+
+export type V3PlanResult = {
+  ok: boolean;
+  plan?: V3Plan;
+  error?: string;
+  code?: string;
+};
+
+export type GacosWebFormDryRunBatch = {
+  batch_id?: string;
+  batch_index?: number;
+  form_fields_masked: Record<string, unknown>;
+  form_fields_real: Record<string, unknown> | null;
+  curl_preview_masked: string;
+  curl_preview_real: string;
+};
+
+export type GacosWebFormDryRunResult = {
+  ok: boolean;
+  provider?: string;
+  portal_url?: string;
+  submit_endpoint?: string;
+  batches?: GacosWebFormDryRunBatch[];
+  error?: string;
+  code?: string;
+};
+
+export type GacosWebFormSubmitResult = {
+  ok: boolean;
+  error?: string;
+  code?: string;
+};
+
+export async function getV3Providers(): Promise<V3ProvidersResult> {
+  if (hasBridge()) {
+    const getter = api().get_v3_providers;
+    if (typeof getter === "function") return getter();
+    return { ok: false, error: "当前桌面 API 未暴露 get_v3_providers", code: "GUI003" };
+  }
+  return { ok: true, providers: mockV3Providers() };
+}
+
+export async function searchV3Provider(
+  providerId: string,
+  query: V3SearchRequest = {},
+): Promise<V3SearchResult> {
+  if (hasBridge()) {
+    const searcher = api().v3_search_provider;
+    if (typeof searcher === "function") return searcher(providerId, query);
+    return { ok: false, error: "当前桌面 API 未暴露 v3_search_provider", code: "GUI003" };
+  }
+  if (!mockV3Providers().some((provider) => provider.provider_id === providerId)) {
+    return { ok: false, error: `unknown provider '${providerId}'`, code: "GUI003" };
+  }
+  return { ok: true, products: mockV3Product(providerId, query) };
+}
+
+export async function planV3Provider(
+  providerId: string,
+  query: V3PlanRequest = {},
+  products?: V3ProviderProduct[],
+): Promise<V3PlanResult> {
+  if (hasBridge()) {
+    const planner = api().v3_plan_provider;
+    if (typeof planner === "function") return planner(providerId, query, products);
+    return { ok: false, error: "当前桌面 API 未暴露 v3_plan_provider", code: "GUI003" };
+  }
+  if (!mockV3Providers().some((provider) => provider.provider_id === providerId)) {
+    return { ok: false, error: `unknown provider '${providerId}'`, code: "GUI003" };
+  }
+  const bbox = v3QueryBbox(query);
+  const outputRoot = v3OutputRoot(query);
+  
+  let productList = products?.length ? products : mockV3Product(providerId, query);
+  const manualDates = query.filters?.dates;
+  const hasManualDates = Array.isArray(manualDates) && manualDates.length > 0;
+  if (providerId === "gacos.atmosphere" && !productList.length && hasManualDates) {
+    productList = manualDates.map((d: string) => ({
+      provider_id: providerId,
+      product_id: `GACOS:${d}`,
+      display_name: `GACOS:${d}`,
+      source_kind: "gacos",
+      product_kind: "ztd",
+      acquisition_datetime: `${d.substring(0, 4)}-${d.substring(4, 6)}-${d.substring(6, 8)}T00:00:00Z`,
+      footprint_bbox: bbox,
+      assets: [],
+      properties: {},
+    }));
+  }
+
+  if ((providerId === "opentopography.dem" || providerId === "gacos.atmosphere") && !bbox) {
+    return { ok: false, error: "provider planning requires processing_aoi or bbox", code: "AOI001" };
+  }
+  if (providerId === "gacos.atmosphere" && !productList.length && !mockActiveSceneCount() && !hasManualDates) {
+    return { ok: false, error: "GACOS planning requires at least one scene", code: "GAC001" };
+  }
+  if (providerId === "opentopography.dem") {
+    const dataset = String(query.filters?.dataset || productList[0]?.properties?.dataset || "COP30");
+    return {
+      ok: true,
+      plan: {
+        provider_id: providerId,
+        source_kind: "dem",
+        output_root: outputRoot,
+        items: [
+          { product_id: `DEM:${dataset}:raw`, target_path: `${outputRoot}\\DEM\\${dataset}.tif`, role: "primary", status: "planned" },
+          { product_id: `DEM:${dataset}:ellipsoid`, target_path: `${outputRoot}\\DEM\\${dataset}_ellipsoid.tif`, role: "derived", status: "planned" },
+          { product_id: `DEM:${dataset}:sarscape`, target_path: `${outputRoot}\\DEM\\${dataset}_dem`, role: "derived", status: "planned" },
+        ],
+        requires_credentials: true,
+        manual_action_required: false,
+      },
+    };
+  }
+  const items = productList.map((product: any) => ({
+    product_id: product.product_id || product.display_name || "product",
+    target_path:
+      providerId === "gacos.atmosphere"
+        ? `${outputRoot}\\GACOS\\requests\\${String(product.product_id || "GACOS:mock").replace(/^GACOS:/, "")}.ztd`
+        : `${outputRoot}\\SAR_Data\\SLC\\${product.product_id || "scene"}.zip`,
+    role: "primary",
+    status: "planned",
+  }));
+  const isGacos = providerId === "gacos.atmosphere";
+  const gacosDates = productList
+    .map((product: any) => String(product.product_id || "").replace(/^GACOS:/, "").trim())
+    .filter(Boolean);
+  const gacosDateText = gacosDates.join("\n");
+  return {
+    ok: true,
+    plan: {
+      provider_id: providerId,
+      source_kind: isGacos ? "gacos" : "sentinel1",
+      output_root: outputRoot,
+      items,
+      requires_credentials: true,
+      manual_action_required: isGacos,
+      execution_mode: isGacos ? "browser_assisted_web_form" : "direct_download",
+      ...(isGacos
+        ? {
+            submission: {
+              kind: "web_form_submission",
+              provider: "gacos",
+              execution_mode: "browser_assisted_web_form",
+              portal_url: "http://www.gacos.net/",
+              submit_endpoint: "http://www.gacos.net/M/action_page.php",
+              method: "POST",
+              content_type: "application/x-www-form-urlencoded",
+              output_format: "geotiff",
+              requires_user_confirmation: true,
+              requires_email_delivery: true,
+              email_field: "email",
+              result_delivery: "email_link",
+              download_link_handling: "paste_email_link_then_import",
+              batches: [
+                {
+                  batch_id: "mock-gacos-batch-1",
+                  batch_index: 1,
+                  batch_count: 1,
+                  date_count: gacosDates.length,
+                  dates: gacosDates,
+                  date_text: gacosDateText,
+                  bbox,
+                  method: "POST",
+                  endpoint: "http://www.gacos.net/M/action_page.php",
+                  content_type: "application/x-www-form-urlencoded",
+                  form_fields: {
+                    N: String(bbox?.north ?? ""),
+                    S: String(bbox?.south ?? ""),
+                    W: String(bbox?.west ?? ""),
+                    E: String(bbox?.east ?? ""),
+                    H: "0",
+                    M: "0",
+                    date: gacosDateText,
+                    type: "2",
+                    seq: "OSM Map",
+                  },
+                  required_sensitive_fields: ["email"],
+                },
+              ],
+            },
+          }
+        : {}),
+    },
+  };
+}
+
+export async function gacosWebFormDryRun(
+  payload: V3GacosSubmission,
+  email = "",
+): Promise<GacosWebFormDryRunResult> {
+  if (hasBridge()) {
+    const runner = api().gacos_webform_dry_run;
+    if (typeof runner === "function") return runner(payload, email);
+    return { ok: false, error: "当前桌面 API 未暴露 gacos_webform_dry_run", code: "GUI003" };
+  }
+  // Mock browser implementation
+  const emailRegex = /^[^@]+@[^@]+\.[^@]+$/;
+  const isEmailValid = email && typeof email === "string" ? email.trim() && emailRegex.test(email.trim()) : false;
+  const batches = payload.batches || [];
+  const dryBatches = batches.map((batch: any) => {
+    const maskedFields = { ...batch.form_fields };
+    if (batch.required_sensitive_fields?.includes("email")) {
+      maskedFields.email = "<EMAIL>";
+    }
+    const masked_form_data = Object.entries(maskedFields)
+      .map(([k, v]) => `-d "${k}=${encodeURIComponent(String(v))}"`)
+      .join(" \\\n  ");
+    const masked_curl = `curl -X POST "${batch.endpoint || "http://www.gacos.net/M/action_page.php"}" \\\n  -H "Content-Type: application/x-www-form-urlencoded" \\\n  ${masked_form_data}`;
+
+    let realFields = null;
+    let real_curl = "";
+    if (isEmailValid || !batch.required_sensitive_fields?.includes("email")) {
+      realFields = { ...batch.form_fields };
+      if (batch.required_sensitive_fields?.includes("email")) {
+        realFields.email = email.trim();
+      }
+      const real_form_data = Object.entries(realFields)
+        .map(([k, v]) => `-d "${k}=${encodeURIComponent(String(v))}"`)
+        .join(" \\\n  ");
+      real_curl = `curl -X POST "${batch.endpoint || "http://www.gacos.net/M/action_page.php"}" \\\n  -H "Content-Type: application/x-www-form-urlencoded" \\\n  ${real_form_data}`;
+    }
+
+    return {
+      batch_id: batch.batch_id,
+      batch_index: batch.batch_index,
+      form_fields_masked: maskedFields,
+      form_fields_real: realFields,
+      curl_preview_masked: masked_curl,
+      curl_preview_real: real_curl,
+    };
+  });
+  return {
+    ok: true,
+    provider: "gacos",
+    batches: dryBatches,
+  };
+}
+
+export async function gacosWebFormSubmit(
+  payload: V3GacosSubmission | undefined,
+  email: string,
+): Promise<GacosWebFormSubmitResult> {
+  if (!payload) return { ok: false, error: "缺少 GACOS 提交参数", code: "GAC001" };
+  if (hasBridge()) {
+    const submitter = api().gacos_webform_submit;
+    if (typeof submitter === "function") return submitter(payload, email);
+    return { ok: false, error: "当前桌面 API 未暴露 gacos_webform_submit", code: "GUI003" };
+  }
+  return { ok: false, error: "真实提交：第一阶段未启用", code: "GUI003" };
+}
+
+export async function previewAoiFileBundle(
+  files: { name: string; base64: string }[],
+): Promise<AoiPreviewResult> {
+  if (hasBridge()) {
+    const previewer = api().preview_aoi_file_bundle;
+    if (typeof previewer === "function") return previewer(files);
+    return { ok: false, error: "当前桌面 API 未暴露 preview_aoi_file_bundle", code: "GUI003" };
+  }
+  return { ok: false, error: "Mock preview_aoi_file_bundle not implemented", code: "GUI003" };
+}
+
+function mockV3Providers() {
+  return [
+    { provider_id: "asf.sentinel1", display_name: "ASF Sentinel-1", source_kind: "sentinel1", version: "0.1.0", capabilities: ["search", "plan", "download", "credentials"] },
+    { provider_id: "opentopography.dem", display_name: "OpenTopography DEM", source_kind: "dem", version: "0.1.0", capabilities: ["search", "plan", "download", "credentials"] },
+    { provider_id: "gacos.atmosphere", display_name: "GACOS Atmospheric Delay", source_kind: "gacos", version: "0.1.0", capabilities: ["search", "plan", "credentials", "atmospheric_correction"] },
+  ];
+}
+
+function mockV3Product(providerId: string, query: any) {
+  const bbox = v3QueryBbox(query) || { west: 110, east: 111, south: 30, north: 31, crs: "EPSG:4326" };
+  if (providerId === "asf.sentinel1") {
+    const sources = query.filters?.scene_sources || ["S1A_IW_SLC__1SDV_20240101T000000_20240101T000027_052000_064ABC_1234"];
+    return sources.map((id: string) => ({
+      provider_id: providerId,
+      product_id: id,
+      display_name: id,
+      source_kind: "sentinel1",
+      product_kind: "sar_slc",
+      acquisition_datetime: "2024-01-01T00:00:00Z",
+      footprint_bbox: bbox,
+      assets: [{ role: "primary", file_name: `${id}.zip`, media_type: "application/zip", url: "https://example.invalid" }],
+      properties: { platform: "S1A", product_type: "SLC", beam_mode: "IW", polarization: "VV" },
+    }));
+  }
+  if (providerId === "opentopography.dem") {
+    const dataset = query.filters?.dataset || "COP30";
+    return [{
+      provider_id: providerId,
+      product_id: `DEM:${dataset}`,
+      display_name: `${dataset} DEM`,
+      source_kind: "dem",
+      product_kind: "dem_raster",
+      footprint_bbox: bbox,
+      assets: [{ role: "primary", file_name: `${dataset}.tif`, media_type: "image/tiff" }],
+      properties: { dataset, provider: "OPENTOPOGRAPHY" },
+    }];
+  }
+  if (providerId === "gacos.atmosphere") {
+    const dates = ["20240101", "20240113"];
+    return dates.map((day) => ({
+      provider_id: providerId,
+      product_id: `GACOS:${day}`,
+      display_name: `GACOS ZTD ${day}`,
+      source_kind: "gacos",
+      product_kind: "atmosphere_delay",
+      acquisition_datetime: `${day.slice(0,4)}-${day.slice(4,6)}-${day.slice(6,8)}T00:00:00Z`,
+      footprint_bbox: bbox,
+      assets: [{ role: "primary", file_name: `${day}.ztd`, media_type: "application/octet-stream" }],
+      properties: { date: `${day.slice(0,4)}-${day.slice(4,6)}-${day.slice(6,8)}` },
+    }));
+  }
+  return [];
+}
+
+function v3QueryBbox(query: any) {
+  if (query?.bbox) return query.bbox;
+  return mock.region?.bbox || null;
+}
+
+function v3OutputRoot(query: any) {
+  if (query?.output_root) return query.output_root;
+  return mock.region?.root || mock.project?.root || mock.workspace?.root || "C:\\InSAR";
 }

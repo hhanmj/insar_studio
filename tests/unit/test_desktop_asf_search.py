@@ -19,6 +19,20 @@ def _asf_test_scenes(count: int):
     return scenes
 
 
+def _asf_test_scenes_for_days(days: list[str]):
+    from insar_prep.providers.asf.metadata import parse_scene_name
+
+    scenes = []
+    for idx, day in enumerate(days):
+        orbit = 52000 + idx
+        scenes.append(
+            parse_scene_name(
+                f"S1A_IW_SLC__1SDV_{day}T100000_{day}T100027_{orbit:06d}_064ABC_{idx:04d}"
+            )
+        )
+    return scenes
+
+
 def test_desktop_asf_search_empty_limit_requests_all_available(tmp_path, monkeypatch) -> None:
     import insar_prep.providers.asf.metadata as metadata
 
@@ -129,6 +143,51 @@ def test_desktop_asf_search_reuses_cached_superset(tmp_path, monkeypatch) -> Non
     assert second["cache"]["hit"] is True
     assert len(second["scenes"]) == 3
     assert calls == [5]
+
+
+def test_desktop_asf_search_incrementally_fills_when_limit_increases(tmp_path, monkeypatch) -> None:
+    import insar_prep.providers.asf.metadata as metadata
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    initial_scenes = _asf_test_scenes_for_days(["20240301", "20240218", "20240206", "20240125", "20240113"])
+    extra_scenes = _asf_test_scenes_for_days(["20240101", "20231220", "20231208"])
+    calls: list[dict[str, object]] = []
+
+    def fake_search_scenes_from_asf(**kwargs):
+        calls.append(
+            {
+                "max_results": kwargs.get("max_results"),
+                "start": kwargs.get("start"),
+                "end": kwargs.get("end"),
+            }
+        )
+        limit = int(kwargs.get("max_results") or 0)
+        stats = kwargs.get("stats")
+        if isinstance(stats, dict):
+            stats.update(
+                {
+                    "requested_limit": kwargs.get("max_results"),
+                    "query_limit": kwargs.get("max_results"),
+                    "total_count": 12,
+                    "returned_count": limit,
+                    "source": "ASF",
+                }
+            )
+        return (initial_scenes if len(calls) == 1 else extra_scenes)[:limit]
+
+    monkeypatch.setattr(metadata, "search_scenes_from_asf", fake_search_scenes_from_asf)
+
+    api = Api()
+    first = api.search_asf_scenes({"max_results": "5", "product_type": "SLC", "beam_mode": "IW"})
+    second = api.search_asf_scenes({"max_results": "8", "product_type": "SLC", "beam_mode": "IW"})
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second["cache"]["hit"] is True
+    assert second["search"]["source"] == "ASF_INCREMENTAL"
+    assert len(second["scenes"]) == 8
+    assert [call["max_results"] for call in calls] == [5, 3]
+    assert calls[1]["end"] == "2024-01-13T00:00:00Z"
 
 
 def test_desktop_asf_search_reuses_broad_cache_for_narrow_frame(tmp_path, monkeypatch) -> None:

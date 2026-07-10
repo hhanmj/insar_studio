@@ -531,6 +531,6 @@ class RealGacosClient:
     def _interrupted(self) -> GacosFetchResult:
         return GacosFetchResult(
             outcome=GacosFetchOutcome.INTERRUPTED,
-            message="cancelled by user; partial .part kept",
+            message="用户取消，已保留 .part",
             error_code=ErrorCode.GAC004.value,
         )

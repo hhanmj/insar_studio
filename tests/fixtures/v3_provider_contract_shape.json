@@ -1,0 +1,151 @@
+{
+  "metadata": {
+    "required_keys": ["provider_id", "display_name", "source_kind", "version", "capabilities"],
+    "forbidden_keys": ["id"],
+    "sample": {
+      "provider_id": "mock.sentinel1",
+      "display_name": "Mock Sentinel-1",
+      "source_kind": "sentinel1",
+      "version": "0.1.0",
+      "capabilities": ["search", "plan", "download", "credentials"]
+    }
+  },
+  "product": {
+    "required_keys": [
+      "provider_id",
+      "product_id",
+      "display_name",
+      "source_kind",
+      "product_kind",
+      "acquisition_datetime",
+      "footprint_bbox",
+      "assets",
+      "properties"
+    ],
+    "forbidden_keys": ["acquisition_time", "footprint"],
+    "sample": {
+      "provider_id": "mock.sentinel1",
+      "product_id": "S1A_IW_SLC__MOCK_20240101T000000",
+      "display_name": "Mock Sentinel-1 SLC",
+      "source_kind": "sentinel1",
+      "product_kind": "sar_slc",
+      "acquisition_datetime": "2024-01-01T00:00:00Z",
+      "footprint_bbox": {
+        "west": 110.0,
+        "east": 111.0,
+        "south": 30.0,
+        "north": 31.0,
+        "crs": "EPSG:4326"
+      },
+      "assets": [
+        {
+          "role": "primary",
+          "url": "https://example.invalid/mock-sentinel-1.zip",
+          "file_name": "S1A_IW_SLC__MOCK_20240101T000000.zip",
+          "media_type": "application/zip",
+          "size_bytes": 1024
+        }
+      ],
+      "properties": {
+        "platform": "S1A",
+        "beam_mode": "IW",
+        "polarization": "VV"
+      }
+    }
+  },
+  "plan_item": {
+    "required_keys": ["product_id", "target_path", "role", "expected_size_bytes"],
+    "forbidden_keys": ["asset_role"],
+    "sample": {
+      "product_id": "S1A_IW_SLC__MOCK_20240101T000000",
+      "target_path": "E:/InSAR/work/SAR_Data/SLC/S1A_IW_SLC__MOCK_20240101T000000.zip",
+      "role": "primary",
+      "expected_size_bytes": 1024
+    }
+  },
+  "execution_modes": [
+    "direct_download",
+    "manual_web_form",
+    "browser_assisted_web_form",
+    "local_import"
+  ],
+  "gacos_submission": {
+    "required_keys": [
+      "kind",
+      "provider",
+      "execution_mode",
+      "portal_url",
+      "submit_endpoint",
+      "method",
+      "content_type",
+      "output_format",
+      "requires_user_confirmation",
+      "requires_email_delivery",
+      "email_field",
+      "result_delivery",
+      "download_link_handling",
+      "batches"
+    ],
+    "forbidden_keys": ["email", "password", "token"],
+    "sample": {
+      "kind": "web_form_submission",
+      "provider": "gacos",
+      "execution_mode": "browser_assisted_web_form",
+      "portal_url": "http://www.gacos.net/",
+      "submit_endpoint": "http://www.gacos.net/M/action_page.php",
+      "method": "POST",
+      "content_type": "application/x-www-form-urlencoded",
+      "output_format": "geotiff",
+      "requires_user_confirmation": true,
+      "requires_email_delivery": true,
+      "email_field": "email",
+      "result_delivery": "email_link",
+      "download_link_handling": "paste_email_link_then_import"
+    },
+    "batch_id_prefix": "gacos_batch_",
+    "batch_required_keys": [
+      "batch_id",
+      "batch_index",
+      "batch_count",
+      "date_count",
+      "dates",
+      "date_text",
+      "bbox",
+      "method",
+      "endpoint",
+      "content_type",
+      "form_fields",
+      "required_sensitive_fields"
+    ],
+    "batch_sample": {
+      "batch_index": 1,
+      "batch_count": 1,
+      "date_count": 2,
+      "dates": ["2024-01-01", "2024-01-13"],
+      "date_text": "20240101\n20240113",
+      "bbox": {
+        "west": 109.45,
+        "east": 117.55,
+        "south": 19.95,
+        "north": 25.55,
+        "crs": "EPSG:4326"
+      },
+      "method": "POST",
+      "endpoint": "http://www.gacos.net/M/action_page.php",
+      "content_type": "application/x-www-form-urlencoded",
+      "form_fields": {
+        "N": "25.55",
+        "S": "19.95",
+        "W": "109.45",
+        "E": "117.55",
+        "H": "18",
+        "M": "30",
+        "date": "20240101\n20240113",
+        "type": "2",
+        "seq": "OSM Map"
+      },
+      "required_sensitive_fields": ["email"]
+    },
+    "form_field_keys": ["N", "S", "W", "E", "H", "M", "date", "type", "seq"]
+  }
+}
