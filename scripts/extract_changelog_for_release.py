@@ -36,22 +36,28 @@ def extract_entry(text: str, version: str) -> tuple[str, str, str]:
     return version, match.group("date"), body
 
 
+def release_body_for_dialog(body: str) -> str:
+    summary = re.search(
+        r"^### 更新摘要\s*(?P<body>.*?)(?=^###\s+|\Z)",
+        body,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not summary:
+        return body
+    return "### 更新摘要\n\n" + summary.group("body").strip()
+
+
 def build_release_notes(version: str, date: str, body: str) -> str:
+    release_body = release_body_for_dialog(body)
     return (
         f"# InSAR Studio {version}\n\n"
-        "本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。"
-        "它的定位是“处理前的数据准备助手”，帮助新手把下载、检查、目录组织和辅助数据准备流程做得更清楚。\n\n"
         "## 更新日志\n\n"
         f"[{version}] - {date}\n\n"
-        f"{body}\n\n"
+        f"{release_body}\n\n"
+        "完整变更清单保留在仓库 CHANGELOG.md 中。\n\n"
         "## 下载说明\n\n"
         "- `InSAR-Studio-*.exe`：全量单文件版，直接双击运行，本次不发布 setup 安装包。\n"
-        "- DEM/GDAL 高程基准能力随发行版主程序内置；拆分组件模式仅用于内部测试。\n"
-        "\n"
-        "## 注意事项\n\n"
         "- 发行包不包含账号、Token、下载历史、缓存、本机测试目录或私有数据。\n"
-        "- 首次使用下载功能前，请在软件设置中校验必要凭据。\n"
-        "- 当前在线更新以发现新版本和下载更新包为主；真正静默覆盖更新仍属于后续安装版更新器计划。\n"
     )
 
 

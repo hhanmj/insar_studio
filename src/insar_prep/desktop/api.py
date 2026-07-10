@@ -1516,6 +1516,7 @@ class Api:
                 "download_url": "",
                 "asset_name": "",
                 "asset_size": 0,
+                "download_mirrors": [],
                 "release_name": "",
                 "changelog": "",
                 "published_at": "",
@@ -1534,6 +1535,7 @@ class Api:
                 "download_url": "",
                 "asset_name": "",
                 "asset_size": 0,
+                "download_mirrors": [],
                 "release_name": "",
                 "changelog": "",
                 "published_at": "",
@@ -1560,6 +1562,7 @@ class Api:
             "download_url": asset.download_url if asset else "",
             "asset_name": asset.name if asset else "",
             "asset_size": asset.size if asset else 0,
+            "download_mirrors": list(asset.mirrors) if asset else [],
             "release_name": info.release_name,
             "changelog": info.changelog,
             "published_at": info.published_at,
@@ -1572,53 +1575,139 @@ class Api:
             ),
         }
 
-    def download_app_update(self, download_url: str = "", asset_name: str = "") -> dict:
+    def download_app_update(
+        self,
+        download_url: str = "",
+        asset_name: str = "",
+        mirror_urls: list[str] | None = None,
+        expected_size: int = 0,
+    ) -> dict:
         """Download the selected release asset into the user's cache directory."""
         url = str(download_url or "").strip()
         name = str(asset_name or "").strip()
-        if not url:
+        mirrors = [
+            str(item or "").strip()
+            for item in (mirror_urls or [])
+            if str(item or "").strip()
+        ]
+        try:
+            size_hint = max(0, int(expected_size or 0))
+        except (TypeError, ValueError):
+            size_hint = 0
+        if not url or not name or not mirrors or not size_hint:
             info = self.check_for_update(True)
             if not info.get("ok"):
                 return info
-            url = str(info.get("download_url") or "").strip()
-            name = str(info.get("asset_name") or "").strip()
+            url = url or str(info.get("download_url") or "").strip()
+            name = name or str(info.get("asset_name") or "").strip()
+            try:
+                size_hint = max(size_hint, int(info.get("asset_size") or 0))
+            except (TypeError, ValueError):
+                pass
+            for mirror in info.get("download_mirrors") or []:
+                mirror_url = str(mirror or "").strip()
+                if mirror_url and mirror_url not in mirrors:
+                    mirrors.append(mirror_url)
         if not url:
             return _error_msg("当前 Release 没有可直接下载的更新包。", "GUI003")
         try:
             import urllib.parse  # noqa: PLC0415
             import urllib.request  # noqa: PLC0415
 
-            parsed = urllib.parse.urlparse(url)
-            if parsed.scheme.lower() != "https":
-                return _error_msg("更新包下载地址必须是 HTTPS。", "GUI003")
             if not name:
+                parsed = urllib.parse.urlparse(url)
                 name = Path(parsed.path).name or "InSAR-Studio-update.exe"
             safe_name = Path(name).name
             updates_dir = self._default_cache_dir() / "updates"
             updates_dir.mkdir(parents=True, exist_ok=True)
             dest = updates_dir / safe_name
             part = dest.with_suffix(dest.suffix + ".part")
-            request = urllib.request.Request(  # noqa: S310 - HTTPS release asset URL.
-                url,
-                headers={"User-Agent": f"insar-prep/{__version__}"},
-            )
-            total = 0
-            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-                with part.open("wb") as file:
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        file.write(chunk)
-                        total += len(chunk)
-            part.replace(dest)
+
+            candidates: list[str] = []
+            seen: set[str] = set()
+            for candidate in [*mirrors, url]:
+                candidate = str(candidate or "").strip()
+                parsed = urllib.parse.urlparse(candidate)
+                if parsed.scheme.lower() != "https" or not parsed.netloc:
+                    continue
+                if candidate not in seen:
+                    candidates.append(candidate)
+                    seen.add(candidate)
+            if not candidates:
+                return _error_msg("更新包下载地址必须是 HTTPS。", "GUI003")
+
+            if size_hint and dest.exists() and dest.stat().st_size >= size_hint:
+                total = dest.stat().st_size
+            else:
+                total = 0
+                errors: list[str] = []
+
+                def _host_label(candidate_url: str) -> str:
+                    return urllib.parse.urlparse(candidate_url).netloc or candidate_url
+
+                def _friendly_download_error(exc: BaseException) -> str:
+                    detail = str(exc) or type(exc).__name__
+                    if isinstance(exc, TimeoutError) or "timed out" in detail.lower():
+                        return "网络读取超时"
+                    if "IncompleteRead" in detail:
+                        return "网络连接中断"
+                    return detail
+
+                def _download_from(candidate_url: str) -> int:
+                    last_error: BaseException | None = None
+                    for attempt in range(1, 4):
+                        resume_from = part.stat().st_size if part.exists() else 0
+                        headers = {"User-Agent": f"insar-prep/{__version__}"}
+                        if resume_from > 0:
+                            headers["Range"] = f"bytes={resume_from}-"
+                        request = urllib.request.Request(candidate_url, headers=headers)  # noqa: S310
+                        try:
+                            with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
+                                status = int(getattr(response, "status", 200) or 200)
+                                append = resume_from > 0 and status == 206
+                                mode = "ab" if append else "wb"
+                                with part.open(mode) as file:
+                                    while True:
+                                        chunk = response.read(512 * 1024)
+                                        if not chunk:
+                                            break
+                                        file.write(chunk)
+                            actual = part.stat().st_size
+                            if size_hint and actual < size_hint:
+                                raise OSError(f"下载不完整：{actual}/{size_hint} 字节")
+                            part.replace(dest)
+                            return dest.stat().st_size
+                        except Exception as exc:  # noqa: BLE001
+                            last_error = exc
+                            if attempt < 3:
+                                time.sleep(min(2 * attempt, 6))
+                    assert last_error is not None
+                    raise last_error
+
+                for candidate in candidates:
+                    try:
+                        total = _download_from(candidate)
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{_host_label(candidate)}：{_friendly_download_error(exc)}")
+                else:
+                    detail = "；".join(errors[-3:]) if errors else "未知网络错误"
+                    return _error_msg(
+                        f"下载更新包失败：{detail}。"
+                        "可稍后重试，或打开 Release 页面使用浏览器/国内镜像下载。",
+                        "NET001",
+                    )
+
             is_installer = _is_update_installer(dest)
             launched = False
             message = "更新包已下载。请关闭软件后运行安装包或替换便携版 exe。"
             if is_installer:
                 _launch_update_installer(dest)
                 launched = True
-                message = "安装器已下载并启动。若当前窗口没有自动关闭，请手动关闭后等待覆盖安装完成。"
+                message = (
+                    "安装器已下载并启动。若当前窗口没有自动关闭，"
+                    "请手动关闭后等待覆盖安装完成。"
+                )
             self._act(f"更新包已下载：{dest}", kind="settings")
             return {
                 "ok": True,

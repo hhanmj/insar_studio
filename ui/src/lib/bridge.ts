@@ -25,6 +25,7 @@ export type UpdateInfo = {
   latest_version: string;
   html_url: string;
   download_url?: string;
+  download_mirrors?: string[];
   asset_name?: string;
   asset_size?: number;
   release_name?: string;
@@ -534,7 +535,12 @@ export type ReportResult = ReportOk | ApiError;
 type PyApi = {
   get_app_info: () => Promise<AppInfo>;
   check_for_update?: (force?: boolean) => Promise<UpdateInfo | ApiError>;
-  download_app_update?: (downloadUrl?: string, assetName?: string) => Promise<AppUpdateDownloadOk | ApiError>;
+  download_app_update?: (
+    downloadUrl?: string,
+    assetName?: string,
+    mirrorUrls?: string[],
+    expectedSize?: number,
+  ) => Promise<AppUpdateDownloadOk | ApiError>;
   get_component_status?: (refresh?: boolean) => Promise<ComponentStatusOk | ApiError>;
   install_component?: (componentId: string) => Promise<ComponentStatusOk | ApiError>;
   remove_component?: (componentId: string) => Promise<ComponentStatusOk | ApiError>;
@@ -1133,10 +1139,12 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
 export async function downloadAppUpdate(
   downloadUrl = "",
   assetName = "",
+  mirrorUrls: string[] = [],
+  expectedSize = 0,
 ): Promise<AppUpdateDownloadOk | ApiError> {
   if (hasBridge()) {
     const downloader = api().download_app_update;
-    if (typeof downloader === "function") return downloader(downloadUrl, assetName);
+    if (typeof downloader === "function") return downloader(downloadUrl, assetName, mirrorUrls, expectedSize);
   }
   return {
     ok: false,

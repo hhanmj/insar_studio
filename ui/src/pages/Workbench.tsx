@@ -4006,7 +4006,12 @@ export function Workbench({
     setUpdateNote(null);
     setDownloadedUpdate(null);
     try {
-      const res = await downloadAppUpdate(updateInfo.download_url, updateInfo.asset_name ?? "");
+      const res = await downloadAppUpdate(
+        updateInfo.download_url,
+        updateInfo.asset_name ?? "",
+        updateInfo.download_mirrors ?? [],
+        updateInfo.asset_size ?? 0,
+      );
       if (res.ok) {
         setDownloadedUpdate({ path: res.path, folder: res.folder });
         setUpdateNote(res.message ?? "更新包已下载。");

@@ -25,6 +25,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,7 @@ GITHUB_REPO = "hhanmj/insar_studio"
 # Opt out of the *automatic* check (the explicit ``update-check`` command still
 # works). Any of 1/true/yes/on (case-insensitive) disables it.
 UPDATE_CHECK_OPT_OUT_ENV = "INSAR_NO_UPDATE_CHECK"
+UPDATE_MIRROR_BASE_ENV = "INSAR_UPDATE_MIRROR_BASE_URL"
 
 DEFAULT_TIMEOUT_SECONDS = 3.0
 DEFAULT_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
@@ -60,6 +62,7 @@ class ReleaseAsset:
     download_url: str
     size: int = 0
     content_type: str = ""
+    mirrors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -138,11 +141,66 @@ def _http_get_json(url: str, timeout: float) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+_MIRROR_LINE_RE = re.compile(
+    r"^\s*(?:<!--\s*)?insar-update-mirror\s*[:=]\s*(?P<url>https://\S+?)(?:\s*-->)?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _format_mirror_base_url(base: str, *, tag: str, asset_name: str) -> str:
+    value = base.strip()
+    if not value:
+        return ""
+    version = tag.removeprefix("v")
+    if "{asset}" in value or "{tag}" in value or "{version}" in value:
+        return value.format(
+            asset=urllib.parse.quote(asset_name),
+            tag=urllib.parse.quote(tag),
+            version=urllib.parse.quote(version),
+        )
+    return f"{value.rstrip('/')}/{urllib.parse.quote(asset_name)}"
+
+
+def _release_mirror_urls(
+    body: str,
+    *,
+    tag: str,
+    asset_name: str,
+    env: dict[str, str] | None = None,
+) -> tuple[str, ...]:
+    urls: list[str] = []
+    environ = os.environ if env is None else env
+    base_url = _format_mirror_base_url(
+        str(environ.get(UPDATE_MIRROR_BASE_ENV) or ""),
+        tag=tag,
+        asset_name=asset_name,
+    )
+    if base_url:
+        urls.append(base_url)
+    urls.extend(match.group("url").strip() for match in _MIRROR_LINE_RE.finditer(body or ""))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme.lower() != "https" or not parsed.netloc:
+            continue
+        filename = Path(urllib.parse.unquote(parsed.path)).name
+        if filename and filename != asset_name:
+            continue
+        if url not in seen:
+            result.append(url)
+            seen.add(url)
+    return tuple(result)
+
+
 def _parse_release_assets(payload: dict[str, Any]) -> tuple[ReleaseAsset, ...]:
     """Extract downloadable assets from a GitHub Release payload."""
     raw_assets = payload.get("assets")
     if not isinstance(raw_assets, list):
         return ()
+    tag = str(payload.get("tag_name") or payload.get("name") or "")
+    body = str(payload.get("body") or "")
     assets: list[ReleaseAsset] = []
     for item in raw_assets:
         if not isinstance(item, dict):
@@ -161,6 +219,7 @@ def _parse_release_assets(payload: dict[str, Any]) -> tuple[ReleaseAsset, ...]:
                 download_url=url,
                 size=max(0, size),
                 content_type=str(item.get("content_type") or ""),
+                mirrors=_release_mirror_urls(body, tag=tag, asset_name=name),
             )
         )
     return tuple(assets)
@@ -277,6 +336,9 @@ def _cached_update(cache: dict, current_version: str, repo: str) -> UpdateInfo |
                     download_url=str(item.get("download_url") or ""),
                     size=int(item.get("size") or 0),
                     content_type=str(item.get("content_type") or ""),
+                    mirrors=tuple(
+                        str(url) for url in (item.get("mirrors") or []) if str(url).strip()
+                    ),
                 )
                 if asset.name and asset.download_url:
                     assets.append(asset)
@@ -337,6 +399,7 @@ def maybe_check_for_update(
                 "download_url": asset.download_url,
                 "size": asset.size,
                 "content_type": asset.content_type,
+                "mirrors": list(asset.mirrors),
             }
             for asset in info.assets
         ]

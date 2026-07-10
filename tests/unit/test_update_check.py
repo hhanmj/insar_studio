@@ -75,6 +75,34 @@ def test_check_for_update_detects_newer() -> None:
     assert info.published_at == "2026-07-08T00:00:00Z"
 
 
+def test_check_for_update_extracts_release_asset_mirrors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        uc.UPDATE_MIRROR_BASE_ENV,
+        "https://download.example.com/insar/{tag}/{asset}",
+    )
+    payload = {
+        "tag_name": "v0.13.0",
+        "body": (
+            "<!-- insar-update-mirror: "
+            "https://mirror.example.com/InSAR-Studio-0.13.0.exe -->"
+        ),
+        "assets": [
+            {
+                "name": "InSAR-Studio-0.13.0.exe",
+                "browser_download_url": "https://github.com/example/InSAR-Studio-0.13.0.exe",
+                "size": 123,
+            }
+        ],
+    }
+    info = uc.check_for_update("0.12.0", fetch=lambda url, timeout: payload)
+    assert info is not None
+    assert info.assets
+    assert info.assets[0].mirrors == (
+        "https://download.example.com/insar/v0.13.0/InSAR-Studio-0.13.0.exe",
+        "https://mirror.example.com/InSAR-Studio-0.13.0.exe",
+    )
+
+
 def test_check_for_update_up_to_date() -> None:
     info = uc.check_for_update("0.12.0", fetch=lambda url, timeout: {"tag_name": "v0.12.0"})
     assert info is not None
@@ -200,7 +228,13 @@ def test_maybe_check_network_failure_uses_cached_latest(tmp_path: Path) -> None:
                 "last_check_ts": 0.0,
                 "latest_version": "v0.13.0",
                 "html_url": "https://example/r",
-                "assets": [{"name": "insar-prep-desktop.exe", "download_url": "https://example/a.exe"}],
+                "assets": [
+                    {
+                        "name": "insar-prep-desktop.exe",
+                        "download_url": "https://example/a.exe",
+                        "mirrors": ["https://mirror.example/a.exe"],
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -217,6 +251,7 @@ def test_maybe_check_network_failure_uses_cached_latest(tmp_path: Path) -> None:
     assert info is not None
     assert info.latest_version == "v0.13.0"
     assert info.assets and info.assets[0].download_url == "https://example/a.exe"
+    assert info.assets[0].mirrors == ("https://mirror.example/a.exe",)
 
 
 def test_cache_dir_is_under_insar_prep() -> None:
