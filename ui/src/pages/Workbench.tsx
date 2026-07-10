@@ -996,8 +996,7 @@ function changelogLines(value: string | undefined) {
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => line.replace(/^#+\s*/, "").replace(/^[-*]\s+/, "").trim())
-    .filter(Boolean)
-    .slice(0, 12);
+    .filter(Boolean);
 }
 
 function unionBboxes(boxes: Array<Bbox | null | undefined>): Bbox | null {
@@ -8260,11 +8259,11 @@ function renderOutputParameters(
 
       {updateDialogOpen && updateInfo?.update_available && (
         <div
-          className="absolute inset-0 z-[2200] flex items-center justify-center bg-slate-950/34 px-4 backdrop-blur-sm"
+          className="absolute inset-0 z-[2200] flex items-center justify-center bg-slate-950/34 px-4 py-4 backdrop-blur-sm"
           onMouseDown={stopWindowDrag}
         >
-          <div className="w-full max-w-[560px] rounded-lg border border-white/65 bg-background/95 p-4 shadow-2xl backdrop-blur-2xl dark:border-white/12">
-            <div className="flex items-start gap-3">
+          <div className="flex max-h-[min(86vh,720px)] w-full max-w-[560px] flex-col overflow-hidden rounded-lg border border-white/65 bg-background/95 p-4 shadow-2xl backdrop-blur-2xl dark:border-white/12">
+            <div className="flex shrink-0 items-start gap-3">
               <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-primary/12 text-primary">
                 <CloudDownload className="h-5 w-5" />
               </div>
@@ -8285,11 +8284,11 @@ function renderOutputParameters(
               </Button>
             </div>
 
-            <div className="mt-4 max-h-[240px] overflow-auto rounded-md border bg-muted/20 p-3 text-sm">
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-md border bg-muted/20 p-3 text-sm">
               {updateDialogChangelog.length ? (
                 <ul className="space-y-1.5">
                   {updateDialogChangelog.map((line, index) => (
-                    <li key={`${line}-${index}`} className="leading-5 text-foreground/90">
+                    <li key={`${line}-${index}`} className="break-words leading-5 text-foreground/90" title={line}>
                       {line}
                     </li>
                   ))}
@@ -8308,7 +8307,7 @@ function renderOutputParameters(
             )}
             {updateNote && <div className="mt-3 text-xs text-muted-foreground">{updateNote}</div>}
             {downloadedUpdate && (
-              <div className="mt-3 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              <div className="mt-3 max-h-24 overflow-y-auto rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
                 更新包已保存：<span className="break-all font-mono">{downloadedUpdate.path}</span>
               </div>
             )}
