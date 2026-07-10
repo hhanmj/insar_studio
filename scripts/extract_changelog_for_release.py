@@ -36,25 +36,12 @@ def extract_entry(text: str, version: str) -> tuple[str, str, str]:
     return version, match.group("date"), body
 
 
-def release_body_for_dialog(body: str) -> str:
-    summary = re.search(
-        r"^### 更新摘要\s*(?P<body>.*?)(?=^###\s+|\Z)",
-        body,
-        re.MULTILINE | re.DOTALL,
-    )
-    if not summary:
-        return body
-    return "### 更新摘要\n\n" + summary.group("body").strip()
-
-
 def build_release_notes(version: str, date: str, body: str) -> str:
-    release_body = release_body_for_dialog(body)
     return (
         f"# InSAR Studio {version}\n\n"
         "## 更新日志\n\n"
         f"[{version}] - {date}\n\n"
-        f"{release_body}\n\n"
-        "完整变更清单保留在仓库 CHANGELOG.md 中。\n\n"
+        f"{body}\n\n"
         "## 下载说明\n\n"
         "- `InSAR-Studio-*.exe`：全量单文件版，直接双击运行，本次不发布 setup 安装包。\n"
         "- 发行包不包含账号、Token、下载历史、缓存、本机测试目录或私有数据。\n"

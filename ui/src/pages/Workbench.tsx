@@ -992,11 +992,21 @@ function releaseDateLabel(value: string | undefined) {
 }
 
 function changelogLines(value: string | undefined) {
-  return String(value || "")
-    .replace(/\r\n/g, "\n")
+  const text = String(value || "").replace(/\r\n/g, "\n");
+  const summaryHeading = /^###\s*更新摘要\s*$/m.exec(text);
+  let displayText = text;
+  if (summaryHeading) {
+    const rest = text.slice(summaryHeading.index + summaryHeading[0].length);
+    const nextHeading = /^###\s+/m.exec(rest);
+    const summary = rest.slice(0, nextHeading ? nextHeading.index : undefined).trim();
+    if (summary) displayText = `${summary}\n完整更新日志请打开 Release 页面查看。`;
+  }
+  const lines = displayText
     .split("\n")
     .map((line) => line.replace(/^#+\s*/, "").replace(/^[-*]\s+/, "").trim())
     .filter(Boolean);
+  if (!summaryHeading && lines.length > 12) return [...lines.slice(0, 12), "更多更新内容请打开 Release 页面查看。"];
+  return lines;
 }
 
 function unionBboxes(boxes: Array<Bbox | null | undefined>): Bbox | null {
