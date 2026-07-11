@@ -119,7 +119,7 @@ def poeorb_directory(output_root: Path | str) -> Path:
     return Path(output_root) / ORBIT_ROOT_DIR / POEORB_SUBDIR
 
 
-def _recent_scene_hint(scene: "Scene") -> str:
+def _recent_scene_hint(scene: Scene) -> str:
     acquired = getattr(scene, "acquisition_datetime", None)
     if acquired is None:
         return "ASF 未返回 POEORB 精密轨道。"
@@ -127,10 +127,7 @@ def _recent_scene_hint(scene: "Scene") -> str:
         acquired = acquired.replace(tzinfo=UTC)
     age_days = (datetime.now(tz=UTC) - acquired).days
     if age_days < POEORB_RECENT_HINT_DAYS:
-        return (
-            "场景采集时间较近，ASF 可能尚未发布 POEORB 精密轨道；"
-            "可稍后重试，或临时使用 RESORB。"
-        )
+        return "场景采集时间较近，ASF 可能尚未发布 POEORB 精密轨道；可稍后重试，或临时使用 RESORB。"
     return "ASF 未返回该场景对应的 POEORB 精密轨道。"
 
 
@@ -145,7 +142,7 @@ def _response_filename(response: object) -> str:
     return unquote(Path(urlparse(url).path).name)
 
 
-def _download_one(scene: "Scene", orbit_dir: Path) -> OrbitDownloadResult:
+def _download_one(scene: Scene, orbit_dir: Path) -> OrbitDownloadResult:
     try:
         import requests  # noqa: PLC0415 - optional download extra
     except ImportError as exc:
@@ -232,13 +229,13 @@ def _download_one(scene: "Scene", orbit_dir: Path) -> OrbitDownloadResult:
     )
 
 
-def download_orbit_for_scene(scene: "Scene", orbit_dir: Path | str) -> OrbitDownloadResult:
+def download_orbit_for_scene(scene: Scene, orbit_dir: Path | str) -> OrbitDownloadResult:
     """Download one scene's POEORB companion file into an existing orbit directory."""
     return _download_one(scene, Path(orbit_dir))
 
 
 def download_orbits_for_scenes(
-    scenes: "Iterable[Scene]",
+    scenes: Iterable[Scene],
     output_root: Path | str,
     *,
     use_orbit_subdir: bool | None = None,
@@ -247,7 +244,7 @@ def download_orbits_for_scenes(
     if use_orbit_subdir is None:
         orbit_dir = poeorb_directory(output_root)
     else:
-        orbit_dir = Path(output_root) / ORBIT_ROOT_DIR if use_orbit_subdir else Path(output_root)
+        orbit_dir = poeorb_directory(output_root) if use_orbit_subdir else Path(output_root)
     results: list[OrbitDownloadResult] = []
     seen_scene_ids: set[str] = set()
     seen_orbit_files: set[str] = set()

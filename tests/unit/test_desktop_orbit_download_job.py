@@ -40,7 +40,9 @@ def test_orbit_download_job_uses_default_ten_workers_and_reports_rate(
         )
 
     monkeypatch.setattr("insar_prep.providers.orbit.download_orbit_for_scene", fake_download)
-    monkeypatch.setattr("insar_prep.providers.orbit.scan_orbit_directory", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "insar_prep.providers.orbit.scan_orbit_directory", lambda *_args, **_kwargs: []
+    )
     monkeypatch.setattr(
         "insar_prep.providers.orbit.match_orbits_for_scenes",
         lambda scenes, _files: type(
@@ -101,7 +103,9 @@ def test_orbit_download_job_updates_live_counts_and_active_scenes(
         )
 
     monkeypatch.setattr("insar_prep.providers.orbit.download_orbit_for_scene", fake_download)
-    monkeypatch.setattr("insar_prep.providers.orbit.scan_orbit_directory", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "insar_prep.providers.orbit.scan_orbit_directory", lambda *_args, **_kwargs: []
+    )
     monkeypatch.setattr(
         "insar_prep.providers.orbit.match_orbits_for_scenes",
         lambda scenes, _files: type(
@@ -117,7 +121,9 @@ def test_orbit_download_job_updates_live_counts_and_active_scenes(
     )
 
     job = OrbitDownloadJob()
-    started = job.start([Scene(scene_id=f"S1A_{idx}") for idx in range(4)], tmp_path, max_concurrent=4)
+    started = job.start(
+        [Scene(scene_id=f"S1A_{idx}") for idx in range(4)], tmp_path, max_concurrent=4
+    )
     assert started["ok"] is True
     assert started["task_id"]
 
@@ -168,7 +174,9 @@ def test_orbit_download_job_keeps_full_log_and_reports_unmatched(
         )
 
     monkeypatch.setattr("insar_prep.providers.orbit.download_orbit_for_scene", fake_download)
-    monkeypatch.setattr("insar_prep.providers.orbit.scan_orbit_directory", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "insar_prep.providers.orbit.scan_orbit_directory", lambda *_args, **_kwargs: []
+    )
     monkeypatch.setattr(
         "insar_prep.providers.orbit.match_orbits_for_scenes",
         lambda scenes, _files: type(
@@ -179,8 +187,18 @@ def test_orbit_download_job_keeps_full_log_and_reports_unmatched(
                     "matched_scenes": 128,
                     "total_scenes": len(list(scenes)),
                     "results": [
-                        {"scene_id": "S1A_128", "is_matched": False, "issues": [{"message": "no orbit validity period covers the scene time"}]},
-                        {"scene_id": "S1A_129", "is_matched": False, "issues": [{"message": "no orbit files"}]},
+                        {
+                            "scene_id": "S1A_128",
+                            "is_matched": False,
+                            "issues": [
+                                {"message": "no orbit validity period covers the scene time"}
+                            ],
+                        },
+                        {
+                            "scene_id": "S1A_129",
+                            "is_matched": False,
+                            "issues": [{"message": "no orbit files"}],
+                        },
                     ],
                 }
             },
@@ -237,7 +255,9 @@ def test_api_orbit_download_snapshot_uses_frozen_scenes_not_current_candidates(
                 "current_scene": "",
                 "orbit_dir": str(tmp_path / "out"),
                 "use_orbit_subdir": captured.get("use_orbit_subdir", False),
-                "download_layout": "orbit_subdir" if captured.get("use_orbit_subdir", False) else "flat",
+                "download_layout": "orbit_subdir"
+                if captured.get("use_orbit_subdir", False)
+                else "flat",
                 "cancelled": False,
                 "error": None,
                 "summary_line": "",

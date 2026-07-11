@@ -279,8 +279,7 @@ def write_asf_download_plan(plan: AsfDownloadPlan, output_dir: Path | str) -> tu
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(mask_text(plan.to_json(indent=2)), encoding="utf-8")
         rows = [
-            {key: mask_text(value) for key, value in item.to_row().items()}
-            for item in plan.items
+            {key: mask_text(value) for key, value in item.to_row().items()} for item in plan.items
         ]
         write_table_txt(txt_path, ASF_PLAN_COLUMNS, rows)
     except OSError as exc:

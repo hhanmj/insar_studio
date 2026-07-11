@@ -257,15 +257,14 @@ class GacosWebFormService:
             # Sort fields to maintain stable output ordering in preview Curl
             sorted_masked_items = sorted(masked_fields.items())
             masked_data_parts = [
-                f'-d "{k}={urllib.parse.quote_plus(str(v))}"'
-                for k, v in sorted_masked_items
+                f'-d "{k}={urllib.parse.quote_plus(str(v))}"' for k, v in sorted_masked_items
             ]
             masked_data_str = " \\\n  ".join(masked_data_parts)
             endpoint = batch.get("endpoint") or cloned_payload["submit_endpoint"]
             masked_curl = (
                 f'curl -X POST "{endpoint}" \\\n'
                 f'  -H "Content-Type: application/x-www-form-urlencoded" \\\n'
-                f'  {masked_data_str}'
+                f"  {masked_data_str}"
             )
 
             # Real version (Only if email is valid)
@@ -278,24 +277,25 @@ class GacosWebFormService:
 
                 sorted_real_items = sorted(real_fields.items())
                 real_data_parts = [
-                    f'-d "{k}={urllib.parse.quote_plus(str(v))}"'
-                    for k, v in sorted_real_items
+                    f'-d "{k}={urllib.parse.quote_plus(str(v))}"' for k, v in sorted_real_items
                 ]
                 real_data_str = " \\\n  ".join(real_data_parts)
                 real_curl = (
                     f'curl -X POST "{endpoint}" \\\n'
                     f'  -H "Content-Type: application/x-www-form-urlencoded" \\\n'
-                    f'  {real_data_str}'
+                    f"  {real_data_str}"
                 )
 
-            batches_preview.append({
-                "batch_id": batch.get("batch_id") or f"batch_{index + 1}",
-                "batch_index": batch.get("batch_index") or (index + 1),
-                "form_fields_masked": masked_fields,
-                "form_fields_real": real_fields,
-                "curl_preview_masked": masked_curl,
-                "curl_preview_real": real_curl,
-            })
+            batches_preview.append(
+                {
+                    "batch_id": batch.get("batch_id") or f"batch_{index + 1}",
+                    "batch_index": batch.get("batch_index") or (index + 1),
+                    "form_fields_masked": masked_fields,
+                    "form_fields_real": real_fields,
+                    "curl_preview_masked": masked_curl,
+                    "curl_preview_real": real_curl,
+                }
+            )
 
         return {
             "ok": True,

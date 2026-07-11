@@ -295,3 +295,14 @@ select {
 .leaflet-popup-content-wrapper {
   border-radius: 18px;
 }
+
+.leaflet-control-attribution {
+  font-size: 9px;
+  line-height: 13px;
+  padding: 0 3px;
+}
+
+.leaflet-control-attribution svg {
+  width: 8px !important;
+  height: auto !important;
+}

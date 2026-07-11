@@ -43,7 +43,7 @@ EARTHDATA_TOKEN_ENV = "EARTHDATA_TOKEN"
 EDL_HOST = "urs.earthdata.nasa.gov"
 
 # Where the user generates a personal EDL bearer token (opened by the GUI button).
-EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/profile"
+EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/users/hhanmj/user_tokens"
 EARTHDATA_REGISTER_URL = "https://urs.earthdata.nasa.gov/users/new"
 
 # OS keyring storage layout (service + fixed entry names). No secret is part of

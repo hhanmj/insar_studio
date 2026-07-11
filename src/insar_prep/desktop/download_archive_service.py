@@ -55,11 +55,7 @@ class DownloadArchiveService:
         if next_keys & self._get_deleted_keys():
             return
         previous = next(
-            (
-                old
-                for old in self._get_items()
-                if self._identity_candidates(old) & next_keys
-            ),
+            (old for old in self._get_items() if self._identity_candidates(old) & next_keys),
             None,
         )
         if previous is not None:
@@ -164,7 +160,13 @@ class DownloadArchiveService:
         )
         logs = self._status_logs(status)
         snapshot = self._clean_scene_rows(status.get("snapshot_scenes"))
-        scene_ids = [str(row.get("scene_id") or "") for row in snapshot if row.get("scene_id")]
+        raw_selected = status.get("selected_scene_ids")
+        scene_ids = (
+            [str(item).strip() for item in raw_selected if str(item).strip()]
+            if isinstance(raw_selected, list)
+            else [str(row.get("scene_id") or "") for row in snapshot if row.get("scene_id")]
+        )
+        task_id = str(status.get("task_id") or "").strip()
         archive_key = status.get("results_path") or status.get("output_dir") or "active"
         try:
             elapsed_seconds = float(status.get("elapsed_seconds") or 0)
@@ -172,7 +174,8 @@ class DownloadArchiveService:
             elapsed_seconds = 0.0
         self.upsert(
             {
-                "id": f"asf:{archive_key}:{int(status.get('total') or 0)}",
+                "id": f"asf-task:{task_id}" if task_id else f"asf:{archive_key}:{int(status.get('total') or 0)}",
+                "task_id": task_id,
                 "name": "Sentinel-1 下载任务",
                 "status": state,
                 "detail": detail,
@@ -301,11 +304,7 @@ class DownloadArchiveService:
         deleted.update(keys)
         self._set_deleted_keys(deleted)
         self._set_items(
-            [
-                row
-                for row in self._get_items()
-                if not (self._identity_candidates(row) & keys)
-            ]
+            [row for row in self._get_items() if not (self._identity_candidates(row) & keys)]
         )
         self._save_state()
         return self.get_archive()

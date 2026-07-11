@@ -22,7 +22,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
 _DLL_DIR_HANDLES: list[object] = []
 
 

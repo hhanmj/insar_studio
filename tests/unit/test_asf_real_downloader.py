@@ -291,7 +291,9 @@ def test_build_earthdata_session_applies_proxy_and_tls_mode() -> None:
     assert session.trust_env is False
 
 
-def test_build_earthdata_session_prefers_official_asf_session(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_earthdata_session_prefers_official_asf_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from insar_prep.providers.asf.credentials import ResolvedCredential
     from insar_prep.providers.asf.downloader import build_earthdata_session
 
@@ -304,7 +306,7 @@ def test_build_earthdata_session_prefers_official_asf_session(monkeypatch: pytes
             self.verify = True
             self.trust_env = True
 
-        def auth_with_creds(self, username: str, password: str) -> "FakeASFSession":
+        def auth_with_creds(self, username: str, password: str) -> FakeASFSession:
             calls.append((username, password))
             self.headers["Authorization"] = "Bearer official-token"
             return self

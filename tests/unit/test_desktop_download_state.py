@@ -102,7 +102,39 @@ def test_archive_identity_keeps_flat_and_subdir_downloads_separate() -> None:
         ]
     )
 
-    assert desktop_api._download_archive_identity(flat) != desktop_api._download_archive_identity(subdir)
+    assert desktop_api._download_archive_identity(flat) != desktop_api._download_archive_identity(
+        subdir
+    )
+
+
+def test_archive_identity_keeps_same_directory_task_ids_separate() -> None:
+    first, second = desktop_api._clean_download_archive(
+        [
+            {
+                "id": "asf-task:asf-first",
+                "task_id": "asf-first",
+                "name": "Sentinel-1 download",
+                "status": "paused",
+                "detail": "first",
+                "kind": "asf",
+                "output_dir": r"D:\shared",
+            },
+            {
+                "id": "asf-task:asf-second",
+                "task_id": "asf-second",
+                "name": "Sentinel-1 download",
+                "status": "paused",
+                "detail": "second",
+                "kind": "asf",
+                "output_dir": r"D:\shared",
+            },
+        ]
+    )
+
+    assert desktop_api._download_archive_identity(first) != desktop_api._download_archive_identity(second)
+    first_keys = desktop_api._download_archive_identity_candidates(first, include_legacy=True)
+    second_keys = desktop_api._download_archive_identity_candidates(second, include_legacy=True)
+    assert first_keys.isdisjoint(second_keys)
 
 
 def _scene(scene_id: str, product: str = "SLC") -> SimpleNamespace:
@@ -136,8 +168,12 @@ def test_asf_download_requests_use_optional_product_subdirectories() -> None:
     assert requests[1].destination == Path(r"D:\downloads") / "GRD" / "S1A_GRD.zip"
 
 
-def test_orbit_download_summary_uses_requested_directory_layout(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_download_one(scene: SimpleNamespace, orbit_dir: Path) -> orbit_downloader.OrbitDownloadResult:
+def test_orbit_download_summary_uses_requested_directory_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_download_one(
+        scene: SimpleNamespace, orbit_dir: Path
+    ) -> orbit_downloader.OrbitDownloadResult:
         return orbit_downloader.OrbitDownloadResult(
             scene_id=scene.scene_id,
             outcome=orbit_downloader.OrbitDownloadOutcome.SKIPPED,
@@ -160,7 +196,7 @@ def test_orbit_download_summary_uses_requested_directory_layout(monkeypatch: pyt
     )
 
     assert flat.orbit_dir == Path(r"D:\orbits")
-    assert subdir.orbit_dir == Path(r"D:\orbits") / "Sentinel_Orbit"
+    assert subdir.orbit_dir == Path(r"D:\orbits") / "Sentinel_Orbit" / "AUX_POEORB"
 
 
 def test_asf_search_accepts_path_and_frame_ranges(monkeypatch: pytest.MonkeyPatch) -> None:

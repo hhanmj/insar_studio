@@ -16,8 +16,10 @@ this module never imports ``requests`` itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.exceptions import InsarPrepError
@@ -63,7 +65,8 @@ def write_dem_download_results_csv(
     """Write a credential-masked per-region DEM results TXT; return its path."""
     plan_dir = Path(output_dir) if len(results) <= 1 else Path(output_dir) / DEM_DOWNLOAD_SUBDIR
     plan_dir.mkdir(parents=True, exist_ok=True)
-    results_path = plan_dir / "dem_download_results.txt"
+    task_stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    results_path = plan_dir / f"dem_download_results_{task_stamp}_{uuid4().hex[:8]}.txt"
     rows = [
         {
             "region_safe_name": result.region_safe_name,
@@ -129,6 +132,7 @@ def run_dem_download(
     progress: ProgressCallback | None = None,
     transfer_progress: TransferProgressCallback | None = None,
     cancel_event: Event | None = None,
+    pause_event: Event | None = None,
 ) -> DemDownloadRunSummary:
     """Download the DEM for each plan in ``plans`` to its planned ``raw_dem_path``.
 
@@ -158,6 +162,7 @@ def run_dem_download(
             key_source=key_source,
             max_retries=max_retries,
             cancel_event=cancel_event,
+            pause_event=pause_event,
             progress=transfer_progress,
         )
 

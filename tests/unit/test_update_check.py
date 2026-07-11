@@ -83,8 +83,7 @@ def test_check_for_update_extracts_release_asset_mirrors(monkeypatch: pytest.Mon
     payload = {
         "tag_name": "v0.13.0",
         "body": (
-            "<!-- insar-update-mirror: "
-            "https://mirror.example.com/InSAR-Studio-0.13.0.exe -->"
+            "<!-- insar-update-mirror: https://mirror.example.com/InSAR-Studio-0.13.0.exe -->"
         ),
         "assets": [
             {
@@ -178,7 +177,9 @@ def test_maybe_check_caches_changelog_for_startup_prompt(tmp_path: Path) -> None
     def _no_fetch(url: str, timeout: float) -> dict:
         pytest.fail("must reuse cached update metadata inside the throttle interval")
 
-    cached = uc.maybe_check_for_update("0.12.0", env={}, now=1100.0, fetch=_no_fetch, cache_path=cache)
+    cached = uc.maybe_check_for_update(
+        "0.12.0", env={}, now=1100.0, fetch=_no_fetch, cache_path=cache
+    )
     assert cached is not None
     assert cached.release_name == "InSAR Studio 0.13.0"
     assert cached.changelog == "更新日志正文"

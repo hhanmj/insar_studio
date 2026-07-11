@@ -15,6 +15,9 @@ type AdminBoundaryIndex = {
 };
 
 const ADMIN_INDEX = ADMIN_BOUNDARY_INDEX as unknown as AdminBoundaryIndex;
+const ADMIN_NATIONAL_VALUE = "全国";
+const ADMIN_ALL_VALUE = "全部";
+const ADMIN_EMPTY_VALUES = new Set(["", ADMIN_ALL_VALUE, ADMIN_NATIONAL_VALUE, "不限", "中国"]);
 
 export type AppInfo = { name: string; version: string; offline: boolean };
 export type UpdateInfo = {
@@ -186,6 +189,11 @@ export type DownloadArchiveItem = {
   use_orbit_subdir?: boolean;
   download_layout?: string;
   logs?: string[];
+  task_id?: string;
+  snapshot?: SceneRow[];
+  scene_ids?: string[];
+  aoi_name?: string;
+  elapsed_seconds?: number;
 };
 export type DownloadArchiveResult = { ok: true; items: DownloadArchiveItem[] };
 export type DownloadStatus = {
@@ -224,6 +232,11 @@ export type DownloadStatus = {
   interrupted?: number;
   has_failures?: boolean;
   paused_scene_ids?: string[];
+  selected_scene_ids?: string[];
+  queued_scene_ids?: string[];
+  snapshot_scenes?: SceneRow[];
+  aoi_name?: string;
+  task_paused?: boolean;
   resume_supported?: boolean;
   resume_hint?: string;
   retry_supported?: boolean;
@@ -286,6 +299,8 @@ export type AoiPreviewOk = {
   source_kind?: "path" | "content" | string;
   geojson?: Json | null;
   total_features: number;
+  feature_preview_limit?: number;
+  features_truncated?: boolean;
   fields: string[];
   display_field?: string;
   features: AoiFeaturePreview[];
@@ -422,6 +437,7 @@ export type DemDownloadStatus = {
   results_path?: string;
   conversion_results_path?: string;
   done_bytes?: number;
+  total_bytes?: number;
   bytes_per_second?: number;
   elapsed_seconds?: number;
   cancelled: boolean;
@@ -451,6 +467,12 @@ export type ReportOk = {
 export type CredentialStatus = {
   ok: true;
   earthdata: string;
+  earthdata_input?: {
+    mode: "none" | "token" | "login" | "netrc";
+    token: string;
+    username: string;
+    password: string;
+  };
   opentopography: string;
   gacos: string;
 };
@@ -604,6 +626,7 @@ type PyApi = {
     limit?: number,
   ) => Promise<AdminBoundaryResult>;
   get_admin_options: (province?: string, city?: string) => Promise<AdminOptionsResult>;
+  clear_region_aoi?: () => Promise<SimpleOk>;
   import_scenes_text: (text: string) => Promise<ScenesResult>;
   import_scenes_file: (path: string) => Promise<ScenesResult>;
   import_scenes_directory: (path: string) => Promise<ScenesResult>;
@@ -631,6 +654,7 @@ type PyApi = {
     sceneIds?: string[],
     maxConcurrent?: number,
     useOrbitSubdir?: boolean,
+    aoiName?: string,
   ) => Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }>;
   pause_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   resume_orbit_download: () => Promise<{ ok: boolean; error?: string; code?: string }>;
@@ -651,6 +675,8 @@ type PyApi = {
     credentialSource?: string,
     maxConcurrent?: number,
     useProductSubdirs?: boolean,
+    aoiName?: string,
+    taskId?: string,
   ) => Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }>;
   append_asf_download: (
     outputDir?: string,
@@ -729,6 +755,8 @@ type PyApi = {
     convert?: boolean,
   ) => Promise<{ ok: boolean; error?: string; code?: string }>;
   stop_dem_download?: () => Promise<{ ok: boolean; error?: string; code?: string }>;
+  pause_dem_download?: () => Promise<{ ok: boolean; error?: string; code?: string }>;
+  resume_dem_download?: () => Promise<{ ok: boolean; error?: string; code?: string }>;
   get_dem_download_status?: () => Promise<DemDownloadStatus>;
   run_dem_conversion: (outputDir?: string) => Promise<RunSummaryResult>;
   run_local_dem_conversion: (
@@ -950,6 +978,7 @@ let mockDataset = "COP30";
 let mockCredentials: CredentialStatus = {
   ok: true,
   earthdata: "none",
+  earthdata_input: { mode: "none", token: "", username: "", password: "" },
   opentopography: "none",
   gacos: "none",
 };
@@ -1039,6 +1068,10 @@ function liteToBbox(item: AdminBoundaryLite): Bbox {
   };
 }
 
+function isEmptyAdminValue(value: string) {
+  return ADMIN_EMPTY_VALUES.has(value.trim());
+}
+
 function allPreviewDistricts(province: string): AdminBoundaryLite[] {
   const cityRows = ADMIN_INDEX.citiesByProvince[province] ?? [];
   return cityRows.flatMap((city) => ADMIN_INDEX.districtsByCity[`${province}|${city[0]}`] ?? []);
@@ -1046,9 +1079,9 @@ function allPreviewDistricts(province: string): AdminBoundaryLite[] {
 
 function previewBoundaryCandidates(province = "", city = "", district = "", query = ""): AdminBoundary[] {
   const clean = (value: string) => value.trim();
-  const provinceName = clean(province);
-  const cityName = clean(city);
-  const districtName = clean(district);
+  const provinceName = isEmptyAdminValue(province) ? "" : clean(province);
+  const cityName = isEmptyAdminValue(city) ? "" : clean(city);
+  const districtName = isEmptyAdminValue(district) ? "" : clean(district);
   const queryName = clean(query);
   const provinceRows = [...ADMIN_INDEX.provinces];
   const allCityRows = Object.values(ADMIN_INDEX.citiesByProvince).flatMap((items) => [...items]);
@@ -1066,6 +1099,22 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
       osm_id: item[1],
     };
   };
+  const nationalBoundary = (): AdminBoundary => {
+    const bbox: Bbox = { west: 73.5, east: 135.1, south: 18.0, north: 53.6, crs: "EPSG:4326" };
+    return {
+      label: ADMIN_NATIONAL_VALUE,
+      bbox,
+      geojson: polygonFromBbox(bbox),
+      source: "Browser preview national boundary",
+      class: "boundary",
+      type: "administrative",
+      osm_id: "CN",
+    };
+  };
+
+  if (!provinceName && !cityName && !districtName && (!queryName || queryName === "全国" || queryName === "中国")) {
+    return [nationalBoundary()];
+  }
 
   if (queryName) {
     const all = [...provinceRows, ...allCityRows, ...allDistrictRows];
@@ -1087,12 +1136,12 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
       : allPreviewDistricts(selectedProvince[0])
     : allDistrictRows;
 
-  if (districtName && districtName !== "全部" && districtName !== "不限") {
+  if (districtName) {
     return districtRows
       .filter((item) => item[0] === districtName || item[0].includes(districtName) || districtName.includes(item[0]))
       .map((item) => toBoundary(item, [selectedProvince?.[0] ?? provinceName, selectedCity?.[0] ?? cityName]));
   }
-  if (cityName && cityName !== "全部" && cityName !== "不限") {
+  if (cityName) {
     const rows: AdminBoundary[] = [];
     if (selectedCity) rows.push(toBoundary(selectedCity, [selectedProvince?.[0] ?? provinceName]));
     rows.push(
@@ -1102,7 +1151,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
     );
     return rows;
   }
-  if (provinceName && provinceName !== "全部" && provinceName !== "不限") {
+  if (provinceName) {
     const rows: AdminBoundary[] = [];
     if (selectedProvince) rows.push(toBoundary(selectedProvince, []));
     rows.push(...cityRows.slice(0, 30).map((item) => toBoundary(item, [selectedProvince?.[0] ?? provinceName])));
@@ -1114,7 +1163,7 @@ function previewBoundaryCandidates(province = "", city = "", district = "", quer
 // ------------------------------------------------------------------- app/ctx
 export async function getAppInfo(): Promise<AppInfo> {
   if (hasBridge()) return api().get_app_info();
-  return { name: "InSAR Studio", version: "2.1.8", offline: true };
+  return { name: "InSAR Studio", version: "2.1.9", offline: true };
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiError> {
@@ -1126,10 +1175,10 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | ApiErr
     ok: true,
     checked: false,
     update_available: false,
-    current_version: "2.1.8",
-    latest_version: "2.1.8",
+    current_version: "2.1.9",
+    latest_version: "2.1.9",
     html_url: "https://github.com/hhanmj/insar_studio/releases/latest",
-    release_name: "InSAR Studio 2.1.8",
+    release_name: "InSAR Studio 2.1.9",
     changelog: "Update checks run only in the packaged desktop app.",
     published_at: "",
     message: "Update checks run only in the packaged desktop app.",
@@ -1166,7 +1215,7 @@ export async function getComponentStatus(refresh = false): Promise<ComponentStat
       {
         id: "dem-gdal",
         name: "DEM/GDAL 高程基准组件",
-        version: "2.1.8",
+        version: "2.1.9",
         size_mb: 205,
         description: "GDAL/rasterio/numpy/PROJ 与 EGM96、EGM2008 高程基准数据。",
         installed: false,
@@ -1825,7 +1874,7 @@ export async function searchAdminBoundaries(
   }
   const parts = [district, city, province, query]
     .map((item) => item.trim())
-    .filter((item) => item && item !== "全部" && item !== "不限");
+    .filter((item) => !isEmptyAdminValue(item));
   const label = parts.length ? parts.join(" / ") : "预览行政区";
   const results = previewBoundaryCandidates(province, city, district, query).slice(0, Math.max(1, limit));
   if (results.length) {
@@ -1859,8 +1908,8 @@ export async function searchAdminBoundaries(
 export async function getAdminOptions(province = "", city = ""): Promise<AdminOptionsResult> {
   if (hasBridge()) return api().get_admin_options(province, city);
   const clean = (value: string) => value.trim();
-  const provinceName = clean(province);
-  const cityName = clean(city);
+  const provinceName = isEmptyAdminValue(province) ? "" : clean(province);
+  const cityName = isEmptyAdminValue(city) ? "" : clean(city);
   const provinces = ADMIN_INDEX.provinces.map((item) => item[0]);
   const provinceKey =
     provinces.find((item) => item === provinceName) ??
@@ -1887,6 +1936,11 @@ export async function getAdminOptions(province = "", city = ""): Promise<AdminOp
     cities: cityNames,
     districts,
   };
+}
+
+export async function clearRegionAoi(): Promise<SimpleOk> {
+  if (hasBridge() && api().clear_region_aoi) return api().clear_region_aoi!();
+  return { ok: true };
 }
 
 // ------------------------------------------------------------------ SCENES
@@ -2181,7 +2235,7 @@ export async function downloadOrbits(
   const n = selectedIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入 ASF 场景或本地 SLC 目录", code: "ASF001" };
   const root = outputDir || mock.workspace?.root || "C:\\InSAR";
-  const orbitDir = useOrbitSubdir ? `${root}\\Sentinel_Orbit` : root;
+  const orbitDir = useOrbitSubdir ? `${root}\\Sentinel_Orbit\\AUX_POEORB` : root;
   return {
     ok: true,
     orbit_dir: orbitDir,
@@ -2243,7 +2297,7 @@ export async function startOrbitDownload(
   const n = selectedIds.length || mockActiveSceneCount();
   if (!n) return { ok: false, error: "请先导入 ASF 场景或本地 SLC 目录", code: "ASF001" };
   const root = outputDir || mock.region?.root || mock.project?.root || mock.workspace?.root || "C:\\InSAR";
-  const orbitDir = useOrbitSubdir ? `${root}\\Sentinel_Orbit` : root;
+  const orbitDir = useOrbitSubdir ? `${root}\\Sentinel_Orbit\\AUX_POEORB` : root;
   const results = Array.from({ length: n }, (_, i) => ({
     scene_id: selectedIds[i] ?? mockScene(i).scene_id,
     outcome: "success",
@@ -2292,10 +2346,11 @@ export async function startOrbitDownloadSnapshot(
   sceneIds: string[] = [],
   maxConcurrent = 10,
   useOrbitSubdir = false,
+  aoiName = "",
 ): Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }> {
   if (hasBridge()) {
     const startSnapshot = api().start_orbit_download_snapshot;
-    if (startSnapshot) return startSnapshot(outputDir, scenesSnapshot, sceneIds, maxConcurrent, useOrbitSubdir);
+    if (startSnapshot) return startSnapshot(outputDir, scenesSnapshot, sceneIds, maxConcurrent, useOrbitSubdir, aoiName);
   }
   return startOrbitDownload(outputDir, sceneIds, maxConcurrent, useOrbitSubdir);
 }
@@ -2488,11 +2543,13 @@ export async function startAsfDownloadSnapshot(
   credentialSource = "auto",
   maxConcurrent = 1,
   useProductSubdirs = false,
+  aoiName = "",
+  taskId = "",
 ): Promise<{ ok: boolean; error?: string; code?: string; task_id?: string }> {
   if (hasBridge()) {
     const starter = api().start_asf_download_snapshot;
     if (typeof starter === "function") {
-      return starter(outputDir, scenesSnapshot, sceneIds, credentialSource, maxConcurrent, useProductSubdirs);
+      return starter(outputDir, scenesSnapshot, sceneIds, credentialSource, maxConcurrent, useProductSubdirs, aoiName, taskId);
     }
     return api().start_asf_download(outputDir, credentialSource, maxConcurrent, sceneIds, useProductSubdirs);
   }
@@ -2779,6 +2836,18 @@ export async function stopDemDownload(): Promise<{ ok: boolean; error?: string; 
     summary_line: "DEM 下载已中断",
     log: [...mockDemDownloadStatus.log, { scene_id: mockDemDownloadStatus.dataset, outcome: "cancelled", detail: "DEM 下载已中断", ts: Date.now() }],
   };
+  return { ok: true };
+}
+
+export async function pauseDemDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge() && typeof api().pause_dem_download === "function") return api().pause_dem_download!();
+  mockDemDownloadStatus = { ...mockDemDownloadStatus, state: "paused" };
+  return { ok: true };
+}
+
+export async function resumeDemDownload(): Promise<{ ok: boolean; error?: string; code?: string }> {
+  if (hasBridge() && typeof api().resume_dem_download === "function") return api().resume_dem_download!();
+  mockDemDownloadStatus = { ...mockDemDownloadStatus, state: "running" };
   return { ok: true };
 }
 
@@ -3191,7 +3260,16 @@ export async function saveEarthdataToken(token: string): Promise<SimpleOk> {
     return res;
   }
   if (!token.trim()) return { ok: false, error: "Token 不能为空", code: "DL004" };
-  mockCredentials = { ...mockCredentials, earthdata: "token" };
+  mockCredentials = {
+    ...mockCredentials,
+    earthdata: "token",
+    earthdata_input: {
+      mode: "token",
+      token: token.trim(),
+      username: "",
+      password: "",
+    },
+  };
   notifyContextChanged();
   return { ok: true, status: mockCredentials };
 }
@@ -3205,7 +3283,16 @@ export async function saveEarthdataLogin(username: string, password: string): Pr
   if (!username.trim() || !password) {
     return { ok: false, error: "用户名和密码都不能为空", code: "DL004" };
   }
-  mockCredentials = { ...mockCredentials, earthdata: `login:${username.trim()[0] ?? "*"}***` };
+  mockCredentials = {
+    ...mockCredentials,
+    earthdata: `login:${username.trim()[0] ?? "*"}***`,
+    earthdata_input: {
+      mode: "login",
+      token: "",
+      username: username.trim(),
+      password,
+    },
+  };
   notifyContextChanged();
   return { ok: true, status: mockCredentials };
 }
@@ -3216,7 +3303,11 @@ export async function clearEarthdataCredentials(): Promise<SimpleOk> {
     if (res.ok) notifyContextChanged();
     return res;
   }
-  mockCredentials = { ...mockCredentials, earthdata: "none" };
+  mockCredentials = {
+    ...mockCredentials,
+    earthdata: "none",
+    earthdata_input: { mode: "none", token: "", username: "", password: "" },
+  };
   notifyContextChanged();
   return { ok: true, removed: true, status: mockCredentials };
 }
@@ -3352,6 +3443,7 @@ export type V3PlanItem = {
   role: string;
   expected_size_bytes?: number;
   status?: string;
+  properties?: Record<string, unknown>;
   [key: string]: unknown;
 };
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from queue import Queue
+from types import SimpleNamespace
 
 import pytest
 
 from insar_prep.core.models import Scene
-from insar_prep.desktop.api import Api
 from insar_prep.desktop import download_job
+from insar_prep.desktop.api import Api
 from insar_prep.desktop.download_job import AsfDownloadJob, AsfDownloadManager
 from insar_prep.providers.asf.downloader import DownloadOutcome, DownloadResult
 
@@ -37,13 +39,15 @@ def test_asf_download_job_can_retry_only_failed_scenes(
             init_kwargs.append(kwargs)
 
         def download(self, request: object) -> DownloadResult:
-            scene_id = str(getattr(request, "scene_id"))
+            scene_id = str(request.scene_id)
             calls.append(scene_id)
             outcome = outcomes[scene_id].pop(0)
             return DownloadResult(
                 scene_id=scene_id,
                 outcome=outcome,
-                path=getattr(request, "destination", None) if outcome is DownloadOutcome.SUCCESS else None,
+                path=getattr(request, "destination", None)
+                if outcome is DownloadOutcome.SUCCESS
+                else None,
                 bytes_written=5 if outcome is DownloadOutcome.SUCCESS else 0,
                 message="ok" if outcome is DownloadOutcome.SUCCESS else "network failed",
                 error_code=None if outcome is DownloadOutcome.SUCCESS else "DL005",
@@ -55,7 +59,12 @@ def test_asf_download_job_can_retry_only_failed_scenes(
     job = AsfDownloadJob()
     started = job.start(
         [
-            Scene(scene_id="S1A_ok", url="https://datapool.asf.alaska.edu/SLC/ok.zip", path=12, frame=34),
+            Scene(
+                scene_id="S1A_ok",
+                url="https://datapool.asf.alaska.edu/SLC/ok.zip",
+                path=12,
+                frame=34,
+            ),
             Scene(scene_id="S1A_bad", url="https://datapool.asf.alaska.edu/SLC/bad.zip"),
         ],
         tmp_path,
@@ -90,7 +99,7 @@ def test_asf_download_job_can_retry_only_failed_scenes(
     assert init_kwargs[-1]["trust_env"] is True
 
 
-def test_asf_download_job_pauses_only_active_scene_ids() -> None:
+def test_asf_download_job_reports_pause_request_immediately_without_pausing_queue() -> None:
     job = AsfDownloadJob()
     with job._lock:
         job._status.state = "running"
@@ -108,9 +117,89 @@ def test_asf_download_job_pauses_only_active_scene_ids() -> None:
 
     assert result["ok"] is True
     assert result["paused"] == 1
-    assert set(result["not_found"]) == {"S1A_waiting"}
+    assert result["not_found"] == ["S1A_waiting"]
     assert status["paused_scene_ids"] == ["S1A_active"]
-    assert status["active_scene_ids"] == ["S1A_active"]
+    assert status["active_scene_ids"] == []
+    assert status["queued_scene_ids"] == ["S1A_waiting"]
+
+
+def test_scene_resumed_during_cancel_transition_is_requeued() -> None:
+    job = AsfDownloadJob()
+    request = SimpleNamespace(scene_id="S1A_transition")
+    result = DownloadResult(
+        scene_id="S1A_transition",
+        outcome=DownloadOutcome.INTERRUPTED,
+        path=None,
+        bytes_written=10,
+        message="paused",
+    )
+    with job._lock:
+        job._status.state = "running"
+        job._pending = Queue()
+        job._known_scene_ids = {"S1A_transition"}
+        job._paused_scene_ids = set()
+
+    job._mark_scene_paused(request, result)
+
+    assert job._pending.qsize() == 1
+    assert job.get_status()["paused_scene_ids"] == []
+
+
+def test_pause_status_counts_are_mutually_exclusive() -> None:
+    job = AsfDownloadJob()
+    with job._lock:
+        job._status.state = "running"
+        job._known_scene_ids = {"S1A_one", "S1A_two", "S1A_waiting"}
+        job._status.active_downloads = {
+            "S1A_one": {"scene_id": "S1A_one", "bytes": 10, "expected_size": 100},
+            "S1A_two": {"scene_id": "S1A_two", "bytes": 20, "expected_size": 100},
+        }
+
+    paused = job.pause_scenes(["S1A_one", "S1A_two"])
+    status = job.get_status()
+
+    assert paused["paused"] == 2
+    assert status["active_scene_ids"] == []
+    assert status["paused_scene_ids"] == ["S1A_one", "S1A_two"]
+    assert status["queued_scene_ids"] == ["S1A_waiting"]
+
+
+def test_resume_scene_does_not_increase_configured_concurrency() -> None:
+    job = AsfDownloadJob()
+    request = SimpleNamespace(scene_id="S1A_paused")
+    with job._lock:
+        job._status.state = "paused"
+        job._status.paused = True
+        job._status.concurrency = 2
+        job._pending = Queue()
+        job._paused_scene_ids = {"S1A_paused"}
+        job._paused_requests = {"S1A_paused": request}
+        job._worker_threads = []
+
+    started: list[int] = []
+    job._start_workers = lambda count: started.append(count)  # type: ignore[method-assign]
+
+    result = job.resume_scenes(["S1A_paused"])
+
+    assert result == {"ok": True, "resumed": 1}
+    assert started == [2]
+    assert job.get_status()["concurrency"] == 2
+
+
+def test_resume_scene_rejects_whole_task_pause() -> None:
+    job = AsfDownloadJob()
+    with job._lock:
+        job._status.state = "paused"
+        job._status.paused = True
+        job._pending = Queue()
+        job._paused_scene_ids = {"S1A_paused"}
+    job._pause.set()
+
+    result = job.resume_scenes(["S1A_paused"])
+
+    assert result["ok"] is False
+    assert result["code"] == "GUI004"
+    assert "整个任务" in result["error"]
 
 
 def test_asf_download_manager_allows_second_task_while_first_paused(
@@ -124,7 +213,7 @@ def test_asf_download_manager_allows_second_task_while_first_paused(
         def download(self, request: object) -> DownloadResult:
             time.sleep(0.2)
             return DownloadResult(
-                scene_id=str(getattr(request, "scene_id")),
+                scene_id=str(request.scene_id),
                 outcome=DownloadOutcome.SUCCESS,
                 path=getattr(request, "destination", None),
                 bytes_written=1,
@@ -155,6 +244,37 @@ def test_asf_download_manager_allows_second_task_while_first_paused(
     manager.shutdown(timeout=1.0)
 
 
+def test_asf_download_manager_reuses_restored_task_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDownloader:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def download(self, request: object) -> DownloadResult:
+            return DownloadResult(
+                scene_id=str(request.scene_id),
+                outcome=DownloadOutcome.SUCCESS,
+                path=getattr(request, "destination", None),
+                bytes_written=1,
+                message="ok",
+            )
+
+    monkeypatch.setattr(download_job, "resolve_credentials", lambda source: object())
+    monkeypatch.setattr(download_job, "RealAsfDownloader", FakeDownloader)
+    manager = AsfDownloadManager()
+
+    started = manager.start(
+        [Scene(scene_id="S1A_restored", url="https://example.test/restored.zip")],
+        tmp_path,
+        task_id="asf-restored",
+    )
+
+    assert started["task_id"] == "asf-restored"
+    manager.shutdown(timeout=1.0)
+
+
 def test_asf_download_manager_status_preserves_task_aoi_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -165,7 +285,7 @@ def test_asf_download_manager_status_preserves_task_aoi_name(
 
         def download(self, request: object) -> DownloadResult:
             return DownloadResult(
-                scene_id=str(getattr(request, "scene_id")),
+                scene_id=str(request.scene_id),
                 outcome=DownloadOutcome.SUCCESS,
                 path=getattr(request, "destination", None),
                 bytes_written=1,
@@ -277,7 +397,49 @@ def test_api_persists_all_paused_asf_manager_tasks_across_restart(
     paused_dirs = {Path(item["output_dir"]).name for item in archive if item["kind"] == "asf"}
 
     assert {"first", "second"}.issubset(paused_dirs)
-    assert all(item["status"] == "paused" for item in archive if Path(item["output_dir"]).name in {"first", "second"})
+    assert all(
+        item["status"] == "paused"
+        for item in archive
+        if Path(item["output_dir"]).name in {"first", "second"}
+    )
+
+
+def test_api_keeps_two_asf_tasks_in_same_directory_separate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    api = Api()
+    output_dir = str(tmp_path / "shared")
+    for task_id, scene_id, aoi_name in (
+        ("asf-first", "S1A_FIRST", "全国"),
+        ("asf-second", "S1A_SECOND", "上海市 / 长宁区"),
+    ):
+        api._archive_asf_status(
+            {
+                "state": "paused",
+                "task_id": task_id,
+                "total": 1,
+                "done": 0,
+                "output_dir": output_dir,
+                "aoi_name": aoi_name,
+                "snapshot_scenes": [
+                    {
+                        "scene_id": scene_id,
+                        "download_url": f"https://example.test/{scene_id}.zip",
+                    }
+                ],
+            }
+        )
+
+    archive = Api().get_download_archive()["items"]
+    asf_items = [item for item in archive if item["kind"] == "asf"]
+
+    assert {item["task_id"] for item in asf_items} == {"asf-first", "asf-second"}
+    assert {item["snapshot"][0]["scene_id"] for item in asf_items} == {
+        "S1A_FIRST",
+        "S1A_SECOND",
+    }
 
 
 def test_api_marks_running_archive_interrupted_on_restart(

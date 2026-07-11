@@ -2,7 +2,7 @@ name: Release
 
 # Publish Windows desktop builds to a GitHub Release whenever a version tag
 # (for example v2.0.1) is pushed. The desktop app checks the latest GitHub
-# Release on startup and every hour, so the loop is:
+# Release once on every application startup, so the loop is:
 # tag -> build -> release -> users see the update notice.
 
 on:
@@ -16,6 +16,8 @@ permissions:
 jobs:
   build-windows-exe:
     runs-on: windows-latest
+    env:
+      GITEE_TOKEN_PRESENT: ${{ secrets.GITEE_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -60,8 +62,8 @@ jobs:
           }
           uv run python scripts/build_geoid_npz.py --model EGM2008 --output build/geoid/egm2008_5.npz $archive
 
-      - name: Build and smoke-test the full desktop exe
-        run: pwsh -File scripts/build_windows_desktop_exe.ps1 -SkipUi -Egm2008GeoidNpz build/geoid/egm2008_5.npz
+      - name: Build and smoke-test the full Python desktop exe
+        run: pwsh -File scripts/build_windows_desktop_exe.ps1 -SkipUi -SkipRustCore -Egm2008GeoidNpz build/geoid/egm2008_5.npz
 
       - name: Stage desktop release assets
         shell: pwsh
@@ -74,6 +76,44 @@ jobs:
 
       - name: Generate Chinese release notes from CHANGELOG
         run: uv run python scripts/extract_changelog_for_release.py --version "${{ github.ref_name }}" --output artifacts/RELEASE_NOTES.md
+
+      - name: Sync source tag to Gitee
+        if: ${{ env.GITEE_TOKEN_PRESENT == 'true' }}
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          $remote = "https://hhanmj:$($env:GITEE_TOKEN)@gitee.com/hhanmj/insar_studio.git"
+          git push $remote "refs/tags/${{ github.ref_name }}:refs/tags/${{ github.ref_name }}"
+
+      - name: Publish desktop asset to Gitee release mirror
+        id: gitee_release
+        if: ${{ env.GITEE_TOKEN_PRESENT == 'true' }}
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          uv run python scripts/publish_gitee_release.py `
+            --owner hhanmj `
+            --repo insar_studio `
+            --tag "${{ github.ref_name }}" `
+            --target "${{ github.sha }}" `
+            --name "InSAR Studio $version" `
+            --body-file artifacts/RELEASE_NOTES.md `
+            --asset "artifacts/InSAR-Studio-$version.exe" `
+            --marker-output artifacts/GITEE_UPDATE_MIRROR.md
+
+      - name: Add Gitee mirror marker to GitHub release notes
+        shell: pwsh
+        run: |
+          if (Test-Path artifacts/GITEE_UPDATE_MIRROR.md) {
+            Add-Content -Path artifacts/RELEASE_NOTES.md -Value ""
+            Get-Content artifacts/GITEE_UPDATE_MIRROR.md | Add-Content artifacts/RELEASE_NOTES.md
+            Write-Host "Gitee update mirror marker appended."
+          } else {
+            Write-Host "Gitee mirror marker not found; GitHub release will use GitHub download only."
+          }
 
       - name: Remove legacy checksum asset
         uses: actions/github-script@v7

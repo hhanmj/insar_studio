@@ -260,7 +260,9 @@ class RealDemConverter:
         """Convert one DEM, returning a :class:`DemConversionResult` (never raises)."""
         source = plan.source_vertical_datum
         target = plan.target_vertical_datum
-        dest = plan.sarscape_ready_dem_path if self.write_sarscape_ready else plan.ellipsoid_dem_path
+        dest = (
+            plan.sarscape_ready_dem_path if self.write_sarscape_ready else plan.ellipsoid_dem_path
+        )
 
         def failed(message: str, code: ErrorCode = ErrorCode.DEM003) -> DemConversionResult:
             return DemConversionResult(
@@ -304,7 +306,11 @@ class RealDemConverter:
                 if self.write_sarscape_ready:
                     self._write_sarscape_ready(plan.ellipsoid_dem_path, dest)
             except (OSError, DemProcessingError) as exc:
-                action = "export SARscape DEM" if self.write_sarscape_ready else "write ellipsoid GeoTIFF"
+                action = (
+                    "export SARscape DEM"
+                    if self.write_sarscape_ready
+                    else "write ellipsoid GeoTIFF"
+                )
                 return failed(f"could not {action}: {exc}")
             return DemConversionResult(
                 region_safe_name=plan.region_safe_name,
@@ -489,7 +495,9 @@ class RealDemConverter:
                 ET.SubElement(raster_info, tag(key)).text = value
 
             other = ET.SubElement(raster_info, tag("OtherInfo"))
-            matrix = ET.SubElement(other, tag("MatrixString"), NumberOfRows="2", NumberOfColumns="2")
+            matrix = ET.SubElement(
+                other, tag("MatrixString"), NumberOfRows="2", NumberOfColumns="2"
+            )
             self._add_sml_matrix_row(matrix, tag, 0, "SOFTWARE", "InSAR Studio")
             self._add_sml_matrix_row(matrix, tag, 1, "SML VERSION", _SARSCAPE_SML_VERSION)
 

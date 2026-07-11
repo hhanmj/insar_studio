@@ -642,7 +642,7 @@ export function Download() {
                 onChange={(event) => setOrbitUseSubdir(event.target.checked)}
                 className="h-4 w-4 shrink-0 accent-primary"
               />
-              <span className="min-w-0">建立 Sentinel_Orbit 子目录</span>
+              <span className="min-w-0">建立 Sentinel_Orbit/AUX_POEORB 子目录</span>
             </label>
             <Button
               variant="outline"
@@ -672,7 +672,7 @@ export function Download() {
               结束
             </Button>
             <div className="rounded-md border bg-muted/30 p-3 text-xs">
-              <KV k="保存目录" v={orbitUseSubdir ? "所选目录\\Sentinel_Orbit" : "所选目录"} />
+              <KV k="保存目录" v={orbitUseSubdir ? "所选目录\\Sentinel_Orbit\\AUX_POEORB" : "所选目录"} />
             </div>
             {orbitErr && <ErrorNote text={orbitErr} />}
             {orbitStatus && orbitStatus.state !== "idle" && (

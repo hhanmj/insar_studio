@@ -43,6 +43,7 @@ def _window():
 
     return MainWindow()
 
+
 def test_main_window_has_three_column_workbench(tmp_path: Path) -> None:
     window = _window()
     splitter = window.centralWidget()

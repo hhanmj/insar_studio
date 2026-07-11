@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import time
 import re
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlencode
 
 from insar_prep.core.enums import OrbitDirection
@@ -421,7 +421,9 @@ def _search_wkt_for_aoi(data: Any, bbox: BBox | None) -> str | None:
     if geom is not None and geom.geom_type in {"Polygon", "MultiPolygon"}:
         for tolerance in _AOI_SIMPLIFY_TOLERANCES:
             try:
-                candidate = geom if tolerance <= 0 else geom.simplify(tolerance, preserve_topology=True)
+                candidate = (
+                    geom if tolerance <= 0 else geom.simplify(tolerance, preserve_topology=True)
+                )
                 if candidate.is_empty or candidate.geom_type not in {"Polygon", "MultiPolygon"}:
                     continue
                 wkt = candidate.wkt
@@ -430,7 +432,9 @@ def _search_wkt_for_aoi(data: Any, bbox: BBox | None) -> str | None:
                 continue
             if len(wkt) <= _AOI_QUERY_WKT_MAX_CHARS:
                 return wkt
-        logger.info("ASF AOI WKT too complex; using bbox for remote query and exact local filtering")
+        logger.info(
+            "ASF AOI WKT too complex; using bbox for remote query and exact local filtering"
+        )
     if bbox is not None:
         return _bbox_to_wkt(bbox)
     return None
@@ -467,7 +471,9 @@ def _scene_intersects_geometry(scene: Scene, aoi_geometry: Any) -> bool:
         return True
 
 
-def _filter_scenes_by_aoi_geometry(scenes: list[Scene], aoi_geojson: Mapping[str, Any] | None) -> list[Scene]:
+def _filter_scenes_by_aoi_geometry(
+    scenes: list[Scene], aoi_geojson: Mapping[str, Any] | None
+) -> list[Scene]:
     if not isinstance(aoi_geojson, Mapping):
         return scenes
     aoi_geometry = _shape_from_geojson(aoi_geojson)
@@ -602,7 +608,9 @@ def _raise_if_cancelled(cancelled: CancelCallback | None) -> None:
         raise InputValidationError("ASF 检索已停止。", code=ErrorCode.DL001)
 
 
-def _request_asf_geojson(requests_module: Any, params: Mapping[str, str], *, method: str) -> dict[str, Any]:
+def _request_asf_geojson(
+    requests_module: Any, params: Mapping[str, str], *, method: str
+) -> dict[str, Any]:
     method = method.upper()
     if method == "POST":
         response = requests_module.post(
@@ -970,7 +978,9 @@ def _cmr_polygon_geometry(entry: Mapping[str, Any]) -> tuple[dict[str, Any] | No
     lngs = [item[0] for item in positions]
     lats = [item[1] for item in positions]
     try:
-        bbox = BBox(west=min(lngs), east=max(lngs), south=min(lats), north=max(lats), crs="EPSG:4326")
+        bbox = BBox(
+            west=min(lngs), east=max(lngs), south=min(lats), north=max(lats), crs="EPSG:4326"
+        )
     except Exception:
         bbox = None
     geometry: dict[str, Any]
@@ -1012,7 +1022,10 @@ def _cmr_attribute_map(entry: Mapping[str, Any]) -> dict[str, Any]:
                     continue
                 add(
                     item.get("name") or item.get("Name"),
-                    item.get("values") or item.get("Values") or item.get("value") or item.get("Value"),
+                    item.get("values")
+                    or item.get("Values")
+                    or item.get("value")
+                    or item.get("Value"),
                 )
         elif isinstance(container, Mapping):
             for name, value in container.items():
@@ -1028,7 +1041,10 @@ def _cmr_attribute_map(entry: Mapping[str, Any]) -> dict[str, Any]:
                     continue
                 add(
                     item.get("Name") or item.get("name"),
-                    item.get("Values") or item.get("values") or item.get("Value") or item.get("value"),
+                    item.get("Values")
+                    or item.get("values")
+                    or item.get("Value")
+                    or item.get("value"),
                 )
     return attrs
 
@@ -1055,10 +1071,7 @@ def _sentinel1_relative_orbit(platform: str, absolute_orbit: int | None) -> int 
 
 def _cmr_entry_to_scene(entry: Mapping[str, Any]) -> Scene | None:
     source = str(
-        entry.get("producer_granule_id")
-        or entry.get("title")
-        or entry.get("id")
-        or ""
+        entry.get("producer_granule_id") or entry.get("title") or entry.get("id") or ""
     ).strip()
     if source.endswith("-SLC"):
         source = source[:-4]
@@ -1095,14 +1108,18 @@ def _cmr_entry_to_scene(entry: Mapping[str, Any]) -> Scene | None:
         )
     )
     if path is None:
-        path = _sentinel1_relative_orbit(str(scene.platform), updates.get("absolute_orbit") or scene.absolute_orbit)
+        path = _sentinel1_relative_orbit(
+            str(scene.platform), updates.get("absolute_orbit") or scene.absolute_orbit
+        )
     if path is not None:
         updates["path"] = path
         updates["relative_orbit"] = path
     frame = _to_int(_cmr_attr(entry, "FRAME_NUMBER", "FRAME", "FRAME_ID", "FRAMENUMBER"))
     if frame is not None:
         updates["frame"] = frame
-    direction = _to_direction(_cmr_attr(entry, "ASCENDING_DESCENDING", "FLIGHT_DIRECTION", "ORBIT_DIRECTION"))
+    direction = _to_direction(
+        _cmr_attr(entry, "ASCENDING_DESCENDING", "FLIGHT_DIRECTION", "ORBIT_DIRECTION")
+    )
     if direction is not None:
         updates["orbit_direction"] = direction
     geometry, bbox = _cmr_polygon_geometry(entry)
@@ -1173,7 +1190,9 @@ def _search_scenes_from_cmr(
         except ValueError as exc:
             last_error = exc
             break
-        entries = (((data or {}).get("feed") or {}).get("entry") or []) if isinstance(data, dict) else []
+        entries = (
+            (((data or {}).get("feed") or {}).get("entry") or []) if isinstance(data, dict) else []
+        )
         if not isinstance(entries, list):
             break
         if not entries:
@@ -1245,7 +1264,9 @@ def search_scenes_from_asf(
     """
     level = (product_type or "SLC").strip().upper()
     if level not in {"SLC", "GRD", "RAW", "OCN"}:
-        raise InputValidationError(f"不支持的 Sentinel-1 产品类型：{product_type}", code=ErrorCode.ASF002)
+        raise InputValidationError(
+            f"不支持的 Sentinel-1 产品类型：{product_type}", code=ErrorCode.ASF002
+        )
 
     _raise_if_cancelled(cancelled)
     requested_limit = (
@@ -1270,7 +1291,9 @@ def search_scenes_from_asf(
     if beam_param:
         params["beamMode"] = beam_param
     polarization_values = _split_filter_values(polarization)
-    polarization_param = _asf_polarization_param(polarization_values[0]) if len(polarization_values) == 1 else None
+    polarization_param = (
+        _asf_polarization_param(polarization_values[0]) if len(polarization_values) == 1 else None
+    )
     if polarization_param:
         params["polarization"] = polarization_param
     start_value = _asf_datetime(start)
@@ -1283,7 +1306,9 @@ def search_scenes_from_asf(
     if aoi_wkt:
         params["intersectsWith"] = aoi_wkt
     direction_values = tuple(
-        value for value in _split_filter_values(orbit_direction) if value in {"ASCENDING", "DESCENDING"}
+        value
+        for value in _split_filter_values(orbit_direction)
+        if value in {"ASCENDING", "DESCENDING"}
     )
     direction_param = direction_values[0] if len(direction_values) == 1 else ""
     if direction_param:
@@ -1436,7 +1461,10 @@ def search_scenes_from_asf(
                         )
                     except Exception as enrich_error:  # noqa: BLE001 - CMR fallback should remain usable.
                         _raise_if_cancelled(cancelled)
-                        logger.info("could not enrich CMR fallback scenes from ASF SearchAPI: %s", enrich_error)
+                        logger.info(
+                            "could not enrich CMR fallback scenes from ASF SearchAPI: %s",
+                            enrich_error,
+                        )
                 else:
                     logger.info(
                         "skipping ASF metadata enrichment for %d CMR fallback scenes",
@@ -1449,10 +1477,14 @@ def search_scenes_from_asf(
                         scene,
                         beam_mode=beam_mode,
                         polarization=polarization,
-                        orbit_direction="" if requested_limit > _CMR_ENRICH_LIMIT else orbit_direction,
+                        orbit_direction=""
+                        if requested_limit > _CMR_ENRICH_LIMIT
+                        else orbit_direction,
                     )
                 ]
-                fallback_candidates = _filter_scenes_by_aoi_geometry(fallback_candidates, aoi_geojson)
+                fallback_candidates = _filter_scenes_by_aoi_geometry(
+                    fallback_candidates, aoi_geojson
+                )
                 fallback_candidates = _sort_scenes_by_aoi_coverage(
                     fallback_candidates,
                     aoi_geojson=aoi_geojson,
@@ -1464,7 +1496,9 @@ def search_scenes_from_asf(
                     stats.update(
                         {
                             "returned_count": len(fallback),
-                            "candidate_count": total_count if total_count is not None else candidate_count,
+                            "candidate_count": total_count
+                            if total_count is not None
+                            else candidate_count,
                             "source": "CMR",
                             "total_count": total_count,
                             "cmr_enriched": requested_limit <= _CMR_ENRICH_LIMIT,
@@ -1482,6 +1516,7 @@ def search_scenes_from_asf(
             4 if should_count_remote else 3,
             f"ASF 返回 {len(features)} 条结果，正在解析元数据",
         )
+
     def prepare_unique(feature_rows: list[Mapping[str, Any]]) -> list[Scene]:
         parsed = _asf_feature_scenes(
             feature_rows,

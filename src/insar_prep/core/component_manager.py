@@ -360,7 +360,11 @@ def find_component_file(component_id: str, candidates: tuple[str, ...]) -> Path 
             continue
         for path in base.rglob("*.npz"):
             relative = path.relative_to(base).as_posix().lower()
-            if path.name.lower() in lowered or relative in lowered or path.stem.lower().startswith("egm2008"):
+            if (
+                path.name.lower() in lowered
+                or relative in lowered
+                or path.stem.lower().startswith("egm2008")
+            ):
                 return path
     return None
 
@@ -438,7 +442,9 @@ def get_component_status(*, refresh: bool = False) -> dict[str, Any]:
             installed_path = str(installed.get("path") or "")
             entry_path = _component_entry_path(root, installed)
         is_installed = entry_path is not None
-        runtime_available = runtime and egm2008_grid if spec.id == DEM_GDAL_COMPONENT_ID else is_installed
+        runtime_available = (
+            runtime and egm2008_grid if spec.id == DEM_GDAL_COMPONENT_ID else is_installed
+        )
         if spec.id == DEM_GDAL_COMPONENT_ID and runtime and not egm2008_grid:
             state_label = "partial"
         elif spec.id == DEM_GDAL_COMPONENT_ID and is_installed and not runtime:
@@ -458,8 +464,12 @@ def get_component_status(*, refresh: bool = False) -> dict[str, Any]:
                 "installed_version": installed_version,
                 "installed_path": installed_path,
                 "runtime_available": runtime_available,
-                "partial_runtime_available": bool(spec.id == DEM_GDAL_COMPONENT_ID and runtime and not egm2008_grid),
-                "egm2008_grid_available": bool(egm2008_grid) if spec.id == DEM_GDAL_COMPONENT_ID else None,
+                "partial_runtime_available": bool(
+                    spec.id == DEM_GDAL_COMPONENT_ID and runtime and not egm2008_grid
+                ),
+                "egm2008_grid_available": bool(egm2008_grid)
+                if spec.id == DEM_GDAL_COMPONENT_ID
+                else None,
                 "state": state_label,
                 "can_install": bool(spec.url),
             }

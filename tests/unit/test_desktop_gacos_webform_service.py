@@ -41,7 +41,7 @@ def valid_submission_payload() -> dict:
                     "east": 117.55,
                     "south": 19.95,
                     "north": 25.55,
-                    "crs": "EPSG:4326"
+                    "crs": "EPSG:4326",
                 },
                 "method": "POST",
                 "endpoint": "http://www.gacos.net/M/action_page.php",
@@ -55,11 +55,11 @@ def valid_submission_payload() -> dict:
                     "M": "26",
                     "date": "20240312\n20240324",
                     "type": "2",
-                    "seq": "OSM Map"
+                    "seq": "OSM Map",
                 },
-                "required_sensitive_fields": ["email"]
+                "required_sensitive_fields": ["email"],
             }
-        ]
+        ],
     }
 
 
@@ -75,13 +75,13 @@ def test_gacos_service_dry_run_success(valid_submission_payload) -> None:
 
     # Verify masked fields
     assert batch["form_fields_masked"]["email"] == "<EMAIL>"
-    assert "-d \"email=%3CEMAIL%3E\"" in batch["curl_preview_masked"]
+    assert '-d "email=%3CEMAIL%3E"' in batch["curl_preview_masked"]
     assert batch["form_fields_masked"]["N"] == "25.55"
     assert batch["form_fields_masked"]["H"] == "10"
 
     # Verify real fields
     assert batch["form_fields_real"]["email"] == email
-    assert f"-d \"email={urllib.parse.quote_plus(email)}\"" in batch["curl_preview_real"]
+    assert f'-d "email={urllib.parse.quote_plus(email)}"' in batch["curl_preview_real"]
     assert batch["form_fields_real"]["N"] == "25.55"
     assert batch["form_fields_real"]["M"] == "26"
 
@@ -273,6 +273,7 @@ def test_gacos_service_forbidden_persist(valid_submission_payload, monkeypatch) 
         raise AssertionError("Security Alert: write/IO operations on disk!")
 
     import builtins  # noqa: PLC0415
+
     monkeypatch.setattr(builtins, "open", forbidden_io)
 
     service.validate_submission(valid_submission_payload, email)

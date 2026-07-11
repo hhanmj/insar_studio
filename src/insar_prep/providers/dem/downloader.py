@@ -279,6 +279,7 @@ class RealDemDownloader:
         chunk_size: int = _DEFAULT_CHUNK_SIZE,
         timeout: float = _DEFAULT_TIMEOUT,
         cancel_event: Event | None = None,
+        pause_event: Event | None = None,
         progress: TransferProgressCallback | None = None,
     ) -> None:
         self.key_source = key_source
@@ -288,6 +289,7 @@ class RealDemDownloader:
         self.chunk_size = max(1, chunk_size)
         self.timeout = timeout
         self.cancel_event = cancel_event
+        self.pause_event = pause_event
         self.progress = progress
         self._resolved = resolved
         self._session = session
@@ -301,6 +303,12 @@ class RealDemDownloader:
 
     def _cancelled(self) -> bool:
         return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def _wait_if_paused(self) -> None:
+        while self.pause_event is not None and self.pause_event.is_set():
+            if self._cancelled():
+                raise _Cancelled()
+            time.sleep(0.1)
 
     def _params(self, demtype: str, bbox: BBox, api_key: str) -> dict[str, str]:
         return {
@@ -426,6 +434,7 @@ class RealDemDownloader:
                 raise _FatalRequest(f"OpenTopography returned a non-raster response ({ctype})")
             with part.open("wb") as handle:
                 for chunk in response.iter_content(chunk_size=self.chunk_size):
+                    self._wait_if_paused()
                     if self._cancelled():
                         raise _Cancelled()
                     if not chunk:

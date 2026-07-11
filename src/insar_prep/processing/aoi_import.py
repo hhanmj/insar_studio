@@ -23,6 +23,7 @@ from shapely import wkt as shapely_wkt
 from shapely.errors import ShapelyError
 from shapely.geometry import shape
 from shapely.ops import polygonize, unary_union
+
 try:  # Shapely 2.x
     from shapely.validation import make_valid as shapely_make_valid
 except Exception:  # noqa: BLE001 - Shapely 1.x fallback
@@ -135,7 +136,9 @@ def _geometry_from_geojson(data: dict[str, Any]) -> BaseGeometry:
                 "invalid GeoJSON FeatureCollection: 'features' must be a non-empty array",
                 code=ErrorCode.AOI001,
             )
-        geometries = [_coerce_to_areal_geometry(_geometry_from_feature(feature)) for feature in features]
+        geometries = [
+            _coerce_to_areal_geometry(_geometry_from_feature(feature)) for feature in features
+        ]
         return _coerce_to_areal_geometry(_union_areal_geometries(geometries))
     if obj_type == "Feature":
         return _coerce_to_areal_geometry(_geometry_from_feature(data))
@@ -254,7 +257,9 @@ def _repair_geometry(geometry: BaseGeometry) -> BaseGeometry:
 
 
 def _union_areal_geometries(geometries: list[BaseGeometry]) -> BaseGeometry:
-    repaired = [_repair_geometry(item) for item in geometries if item is not None and not item.is_empty]
+    repaired = [
+        _repair_geometry(item) for item in geometries if item is not None and not item.is_empty
+    ]
     if not repaired:
         return unary_union([])
     try:

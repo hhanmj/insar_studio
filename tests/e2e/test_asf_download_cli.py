@@ -17,8 +17,8 @@ import pytest
 import insar_prep.cli.commands as commands
 from insar_prep.cli.main import main
 from insar_prep.providers.asf.credentials import CredentialSource, ResolvedCredential
-from insar_prep.providers.asf.downloader import DownloadOutcome, DownloadResult
 from insar_prep.providers.asf.download_plan import SLC_SUBDIR
+from insar_prep.providers.asf.downloader import DownloadOutcome, DownloadResult
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "asf"
 URLS_CART = FIXTURES / "urls.txt"

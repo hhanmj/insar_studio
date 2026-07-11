@@ -66,9 +66,7 @@ def test_polarization_code_to_channels() -> None:
 
 
 def test_grd_scene_is_supported() -> None:
-    scene = parse_scene_name(
-        "S1A_IW_GRDH_1SDV_20240101T100000_20240101T100027_052000_064ABC_1234"
-    )
+    scene = parse_scene_name("S1A_IW_GRDH_1SDV_20240101T100000_20240101T100027_052000_064ABC_1234")
     assert scene.product_type is ProductType.GRD
     assert scene.beam_mode is BeamMode.IW
     assert scene.polarization is Polarization.DV

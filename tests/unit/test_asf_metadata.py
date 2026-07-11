@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 import requests
 
-from insar_prep.core.exceptions import InputValidationError
-from insar_prep.core.error_codes import ErrorCode
 from insar_prep.core.enums import OrbitDirection
+from insar_prep.core.error_codes import ErrorCode
+from insar_prep.core.exceptions import InputValidationError
 from insar_prep.core.models import BBox
 from insar_prep.providers.asf import metadata
 
@@ -30,7 +30,9 @@ def test_asf_ssl_error_is_translated_without_raw_transport(monkeypatch: pytest.M
     assert "SSLEOFError" not in message
 
 
-def test_asf_transient_http_uses_get_and_post_before_failing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_asf_transient_http_uses_get_and_post_before_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[str] = []
 
     class Response504:
@@ -195,7 +197,9 @@ def test_grd_enrichment_query_ids_do_not_force_slc_suffix() -> None:
     assert f"{scene.scene_id}-SLC" not in query_ids
 
 
-def test_asf_search_overfetches_for_aoi_and_filters_footprints(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_asf_search_overfetches_for_aoi_and_filters_footprints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, str] = {}
     aoi = {
         "type": "Polygon",
@@ -284,12 +288,7 @@ def test_asf_search_refills_when_aoi_filter_underfills_requested_limit(
         limit = int(params["maxResults"])
         calls.append(limit)
         inside_count = 27 if limit == 120 else 30
-        return {
-            "features": [
-                feature(index, inside=index < inside_count)
-                for index in range(limit)
-            ]
-        }
+        return {"features": [feature(index, inside=index < inside_count) for index in range(limit)]}
 
     monkeypatch.setattr(metadata, "_get_asf_count", lambda _params: 500)
     monkeypatch.setattr(metadata, "_get_asf_geojson", fake_get_asf_geojson)
@@ -341,7 +340,9 @@ def test_asf_search_accepts_requested_limit_above_500(monkeypatch: pytest.Monkey
     assert captured["maxResults"] == "600"
 
 
-def test_asf_search_large_aoi_tries_direct_query_before_split_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_asf_search_large_aoi_tries_direct_query_before_split_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured_limits: list[int] = []
     aoi = {
         "type": "Polygon",
@@ -376,7 +377,9 @@ def test_asf_search_large_aoi_tries_direct_query_before_split_fallback(monkeypat
 
 def test_asf_search_rejects_invalid_date_text() -> None:
     with pytest.raises(InputValidationError) as excinfo:
-        metadata.search_scenes_from_asf(product_type="SLC", beam_mode="IW", end="1900", max_results=1)
+        metadata.search_scenes_from_asf(
+            product_type="SLC", beam_mode="IW", end="1900", max_results=1
+        )
 
     assert "日期格式" in str(excinfo.value)
 
@@ -474,7 +477,9 @@ def test_cmr_fallback_enriches_before_direction_filter(monkeypatch: pytest.Monke
     assert scenes[0].frame == 456
 
 
-def test_asf_search_can_be_cancelled_before_network_request(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_asf_search_can_be_cancelled_before_network_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     called = False
 
     def fake_get_asf_geojson(_params):

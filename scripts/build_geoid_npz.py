@@ -101,9 +101,13 @@ def parse_geographiclib_pgm(data: bytes) -> tuple[np.ndarray, float, float]:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Build a compressed geoid .npz from a GeographicLib PGM/tar.bz2.")
+    parser = argparse.ArgumentParser(
+        description="Build a compressed geoid .npz from a GeographicLib PGM/tar.bz2."
+    )
     parser.add_argument("source", help="Path to a GeographicLib .pgm or .tar.bz2 containing one.")
-    parser.add_argument("--model", default="EGM96", help="Model label stored in the .npz, e.g. EGM96 or EGM2008.")
+    parser.add_argument(
+        "--model", default="EGM96", help="Model label stored in the .npz, e.g. EGM96 or EGM2008."
+    )
     parser.add_argument("--output", default=str(_OUT), help="Output .npz path.")
     args = parser.parse_args(argv[1:])
     src = Path(args.source)

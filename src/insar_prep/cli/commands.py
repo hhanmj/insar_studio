@@ -1351,9 +1351,7 @@ def add_gacos_import_subparser(subparsers) -> argparse.ArgumentParser:
         "--output-root",
         dest="output_root",
         required=True,
-        help=(
-            "Output root: products land under <output-root>/<region>/GACOS/requests/."
-        ),
+        help=("Output root: products land under <output-root>/<region>/GACOS/requests/."),
     )
     parser.add_argument(
         "--source",
@@ -1735,9 +1733,7 @@ def add_gacos_download_subparser(subparsers) -> argparse.ArgumentParser:
         "--output-root",
         dest="output_root",
         required=True,
-        help=(
-            "Output root: products land under <output-root>/<region>/GACOS/requests/."
-        ),
+        help=("Output root: products land under <output-root>/<region>/GACOS/requests/."),
     )
     parser.add_argument(
         "--url",

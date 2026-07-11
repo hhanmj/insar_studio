@@ -7,6 +7,7 @@ contact SARscape. Created download tasks are planning artifacts only.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from insar_prep.core.enums import (
@@ -60,6 +61,19 @@ def dem_source_stem(dataset: DemDataset | str) -> str:
     """Return the short output filename stem for a DEM source."""
     value = dataset.value if isinstance(dataset, DemDataset) else str(dataset)
     return _DEM_SOURCE_STEMS.get(value.upper(), sarscape_safe_name(value).upper())
+
+
+def dem_request_fingerprint(dataset: DemDataset | str, bbox: object) -> str:
+    """Return a stable ASCII fingerprint for one DEM source and request bbox."""
+    value = dataset.value if isinstance(dataset, DemDataset) else str(dataset)
+    canonical = "|".join(
+        [
+            value.upper(),
+            *(f"{float(getattr(bbox, field)):.8f}" for field in ("west", "south", "east", "north")),
+        ]
+    )
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()[:10]
+
 
 _PROVIDER_TO_TASK_PROVIDER = {
     DemProvider.OPENTOPOGRAPHY.value: Provider.OPENTOPOGRAPHY,
@@ -115,7 +129,7 @@ def create_dem_request_plan(
     request_bbox = processing_bbox.buffer(buffer_degrees)
 
     dem_root = Path(output_root)
-    source_stem = dem_source_stem(dataset_value)
+    source_stem = f"{dem_source_stem(dataset_value)}_{dem_request_fingerprint(dataset_value, request_bbox)}"
     raw_dem_path = dem_root / f"{source_stem}.tif"
     ellipsoid_dem_path = dem_root / f"{source_stem}_ellipsoid.tif"
     sarscape_ready_dem_path = dem_root / f"{source_stem}_dem"

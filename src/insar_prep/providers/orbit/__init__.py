@@ -5,11 +5,6 @@ No network access, no orbit downloads, no credentials.
 
 from __future__ import annotations
 
-from insar_prep.providers.orbit.orbit_matcher import (
-    match_orbit_for_scene,
-    match_orbits_for_scenes,
-)
-from insar_prep.providers.orbit.orbit_parser import parse_orbit_filename, scan_orbit_directory
 from insar_prep.providers.orbit.downloader import (
     OrbitDownloadOutcome,
     OrbitDownloadResult,
@@ -18,6 +13,11 @@ from insar_prep.providers.orbit.downloader import (
     download_orbits_for_scenes,
     poeorb_directory,
 )
+from insar_prep.providers.orbit.orbit_matcher import (
+    match_orbit_for_scene,
+    match_orbits_for_scenes,
+)
+from insar_prep.providers.orbit.orbit_parser import parse_orbit_filename, scan_orbit_directory
 from insar_prep.providers.orbit.types import (
     OrbitFile,
     OrbitMatchIssue,

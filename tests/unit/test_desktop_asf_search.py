@@ -149,7 +149,9 @@ def test_desktop_asf_search_incrementally_fills_when_limit_increases(tmp_path, m
     import insar_prep.providers.asf.metadata as metadata
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    initial_scenes = _asf_test_scenes_for_days(["20240301", "20240218", "20240206", "20240125", "20240113"])
+    initial_scenes = _asf_test_scenes_for_days(
+        ["20240301", "20240218", "20240206", "20240125", "20240113"]
+    )
     extra_scenes = _asf_test_scenes_for_days(["20240101", "20231220", "20231208"])
     calls: list[dict[str, object]] = []
 
@@ -221,7 +223,13 @@ def test_desktop_asf_search_reuses_broad_cache_for_narrow_frame(tmp_path, monkey
     api = Api()
     first = api.search_asf_scenes({"max_results": "", "product_type": "SLC", "beam_mode": "IW"})
     second = api.search_asf_scenes(
-        {"max_results": "1", "product_type": "SLC", "beam_mode": "IW", "frame_start": "462", "frame_end": "462"}
+        {
+            "max_results": "1",
+            "product_type": "SLC",
+            "beam_mode": "IW",
+            "frame_start": "462",
+            "frame_end": "462",
+        }
     )
 
     assert first["ok"] is True
@@ -232,7 +240,9 @@ def test_desktop_asf_search_reuses_broad_cache_for_narrow_frame(tmp_path, monkey
     assert calls == [None]
 
 
-def test_desktop_asf_search_reuses_bbox_cache_when_aoi_wrapper_changes(tmp_path, monkeypatch) -> None:
+def test_desktop_asf_search_reuses_bbox_cache_when_aoi_wrapper_changes(
+    tmp_path, monkeypatch
+) -> None:
     import insar_prep.providers.asf.metadata as metadata
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
@@ -241,13 +251,15 @@ def test_desktop_asf_search_reuses_bbox_cache_when_aoi_wrapper_changes(tmp_path,
     bbox = {"west": 100.0, "east": 101.0, "south": 30.0, "north": 31.0, "crs": "EPSG:4326"}
     geometry = {
         "type": "Polygon",
-        "coordinates": [[
-            [100.0, 30.0],
-            [101.0, 30.0],
-            [101.0, 31.0],
-            [100.0, 31.0],
-            [100.0, 30.0],
-        ]],
+        "coordinates": [
+            [
+                [100.0, 30.0],
+                [101.0, 30.0],
+                [101.0, 31.0],
+                [100.0, 31.0],
+                [100.0, 30.0],
+            ]
+        ],
     }
 
     def fake_search_scenes_from_asf(**kwargs):
@@ -271,7 +283,11 @@ def test_desktop_asf_search_reuses_bbox_cache_when_aoi_wrapper_changes(tmp_path,
     first = api.search_asf_scenes(
         {
             "bbox": bbox,
-            "aoi_geojson": {"type": "Feature", "properties": {"name": "四川"}, "geometry": geometry},
+            "aoi_geojson": {
+                "type": "Feature",
+                "properties": {"name": "四川"},
+                "geometry": geometry,
+            },
             "max_results": "3",
             "product_type": "SLC",
             "beam_mode": "IW",

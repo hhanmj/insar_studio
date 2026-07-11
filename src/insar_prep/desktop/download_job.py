@@ -131,6 +131,7 @@ class AsfDownloadJob:
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
         self._pause = threading.Event()
+        self._pause = threading.Event()
         self._activity: ActivityLog | None = None
         self._last_use_orbit_subdir: bool = False
         self._last_scenes: list[object] = []
@@ -143,6 +144,7 @@ class AsfDownloadJob:
         self._last_trust_env: bool = False
         self._last_use_product_subdirs: bool = False
         self._last_aoi_name: str = ""
+        self._snapshot_scenes: list[object] = []
         self._last_failed_scene_ids: set[str] = set()
         self._pending: Queue[object] | None = None
         self._worker_context: dict[str, Any] | None = None
@@ -203,6 +205,22 @@ class AsfDownloadJob:
     def get_status(self) -> dict:
         with self._lock:
             s = self._status
+            active_downloads = [
+                item
+                for scene_id, item in s.active_downloads.items()
+                if scene_id not in self._paused_scene_ids
+            ]
+            active_scene_ids = {
+                scene_id
+                for scene_id in s.active_downloads
+                if scene_id not in self._paused_scene_ids
+            }
+            queued_scene_ids = sorted(
+                self._known_scene_ids
+                - self._completed_scene_ids
+                - set(s.active_downloads)
+                - self._paused_scene_ids
+            )
             return {
                 "ok": True,
                 "state": s.state,
@@ -210,10 +228,12 @@ class AsfDownloadJob:
                 "done": s.done,
                 "concurrency": s.concurrency,
                 "current_scene": s.current_scene,
-                "active_downloads": list(s.active_downloads.values()),
-                "active_scene_ids": sorted(s.active_downloads.keys()),
+                "active_downloads": active_downloads,
+                "active_scene_ids": sorted(active_scene_ids),
+                "queued_scene_ids": queued_scene_ids,
                 "total_bytes": s.total_bytes,
                 "done_bytes": s.done_bytes,
+                "total_bytes": s.total_bytes,
                 "current_bytes": s.current_bytes,
                 "current_expected_size": s.current_expected_size,
                 "bytes_per_second": s.bytes_per_second,
@@ -226,7 +246,8 @@ class AsfDownloadJob:
                 "output_dir": str(self._last_output_dir) if self._last_output_dir else "",
                 "use_product_subdirs": self._last_use_product_subdirs,
                 "download_layout": "product_subdirs" if self._last_use_product_subdirs else "flat",
-                "snapshot_scenes": [_scene_snapshot_row(scene) for scene in self._last_scenes],
+                "snapshot_scenes": [_scene_snapshot_row(scene) for scene in self._snapshot_scenes],
+                "selected_scene_ids": sorted(self._known_scene_ids),
                 "aoi_name": self._last_aoi_name,
                 "succeeded": s.succeeded,
                 "skipped": s.skipped,
@@ -234,6 +255,7 @@ class AsfDownloadJob:
                 "interrupted": s.interrupted,
                 "has_failures": s.has_failures,
                 "paused_scene_ids": sorted(self._paused_scene_ids),
+                "task_paused": self._pause.is_set(),
                 "resume_supported": True,
                 "resume_hint": "暂停或强制结束会保留 .part；再次开始同一输出目录会断点续传。",
                 "retry_supported": bool(
@@ -258,6 +280,7 @@ class AsfDownloadJob:
         trust_env: bool = False,
         use_product_subdirs: bool = False,
         aoi_name: str = "",
+        snapshot_scenes: Iterable[object] | None = None,
         activity: ActivityLog | None = None,
     ) -> dict:
         scene_list = list(scenes)
@@ -280,6 +303,7 @@ class AsfDownloadJob:
             self._last_trust_env = bool(trust_env)
             self._last_use_product_subdirs = bool(use_product_subdirs)
             self._last_aoi_name = str(aoi_name or "").strip()
+            self._snapshot_scenes = list(snapshot_scenes or scene_list)
             self._last_failed_scene_ids = set()
             self._completed_scene_ids = set()
             self._paused_scene_ids = set()
@@ -379,7 +403,10 @@ class AsfDownloadJob:
                     "outcome": "cancel_requested",
                     "bytes_written": 0,
                     "message": "用户请求结束下载",
-                    "detail": "正在结束当前下载：已请求停止传输，未完成的 .part 文件会保留用于续传。",
+                    "detail": (
+                        "正在结束当前下载：已请求停止传输，"
+                        "未完成的 .part 文件会保留用于续传。"
+                    ),
                     "ts": int(time.time() * 1000),
                 }
             )
@@ -402,7 +429,10 @@ class AsfDownloadJob:
                         "outcome": "app_shutdown",
                         "bytes_written": 0,
                         "message": "软件正在退出",
-                        "detail": "软件正在退出：已保存当前下载状态，未完成的 .part 文件可用于下次续传。",
+                        "detail": (
+                            "软件正在退出：已保存当前下载状态，"
+                            "未完成的 .part 文件可用于下次续传。"
+                        ),
                         "ts": int(time.time() * 1000),
                     }
                 )
@@ -442,12 +472,24 @@ class AsfDownloadJob:
         """
         with self._lock:
             if self._status.state not in ("running", "paused"):
-                return {"ok": False, "error": "当前没有进行中的 ASF 下载任务，请直接开始下载", "code": "GUI004"}
+                return {
+                    "ok": False,
+                    "error": "当前没有进行中的 ASF 下载任务，请直接开始下载",
+                    "code": "GUI004",
+                }
             if self._pending is None or self._worker_context is None:
-                return {"ok": False, "error": "当前下载队列尚未准备好，请稍后再试", "code": "GUI004"}
+                return {
+                    "ok": False,
+                    "error": "当前下载队列尚未准备好，请稍后再试",
+                    "code": "GUI004",
+                }
             bound_output = self._last_output_dir
         if bound_output is None:
-            return {"ok": False, "error": "当前任务没有绑定输出目录，无法追加影像", "code": "GUI003"}
+            return {
+                "ok": False,
+                "error": "当前任务没有绑定输出目录，无法追加影像",
+                "code": "GUI003",
+            }
         requested_output = Path(output_dir) if output_dir else bound_output
         if requested_output != bound_output:
             return {
@@ -466,16 +508,28 @@ class AsfDownloadJob:
             product_subdir_base=bound_output if use_product_subdirs else None,
         )
         if not requests:
-            return {"ok": False, "error": "所选影像没有 ASF 下载 URL，请先重新检索或导入 ASF 官方文件。", "code": "ASF003"}
+            return {
+                "ok": False,
+                "error": "所选影像没有 ASF 下载 URL，请先重新检索或导入 ASF 官方文件。",
+                "code": "ASF003",
+            }
 
         new_requests: list[object] = []
         new_scene_ids: set[str] = set()
         with self._lock:
             if self._pending is None:
-                return {"ok": False, "error": "当前下载队列已结束，请重新开始下载", "code": "GUI004"}
+                return {
+                    "ok": False,
+                    "error": "当前下载队列已结束，请重新开始下载",
+                    "code": "GUI004",
+                }
             live_workers = sum(1 for thread in self._worker_threads if thread.is_alive())
             if live_workers == 0 and not self._status.active_downloads:
-                return {"ok": False, "error": "当前下载任务已进入收尾阶段，请重新开始下载所选影像", "code": "GUI004"}
+                return {
+                    "ok": False,
+                    "error": "当前下载任务已进入收尾阶段，请重新开始下载所选影像",
+                    "code": "GUI004",
+                }
             for request in requests:
                 scene_id = self._normalise_scene_id(getattr(request, "scene_id", ""))
                 if not scene_id or scene_id in self._known_scene_ids:
@@ -495,17 +549,32 @@ class AsfDownloadJob:
                     }
                 )
                 self._status.updated_at = time.monotonic()
-                return {"ok": True, "appended": 0, "skipped": len(requests), "concurrency": self._status.concurrency}
+                return {
+                    "ok": True,
+                    "appended": 0,
+                    "skipped": len(requests),
+                    "concurrency": self._status.concurrency,
+                }
             for request in new_requests:
                 self._pending.put(request)
-            self._last_scenes.extend(
+            appended_scenes = [
                 scene
                 for scene in unique_scenes
                 if self._normalise_scene_id(getattr(scene, "scene_id", "")) in new_scene_ids
+            ]
+            self._last_scenes.extend(appended_scenes)
+            snapshot_ids = {
+                self._normalise_scene_id(getattr(scene, "scene_id", ""))
+                for scene in self._snapshot_scenes
+            }
+            self._snapshot_scenes.extend(
+                scene
+                for scene in appended_scenes
+                if self._normalise_scene_id(getattr(scene, "scene_id", "")) not in snapshot_ids
             )
             self._status.total += len(new_requests)
             new_sizes = [
-                int(getattr(request, "expected_size"))
+                int(request.expected_size)
                 for request in new_requests
                 if getattr(request, "expected_size", None) is not None
             ]
@@ -523,18 +592,21 @@ class AsfDownloadJob:
             )
             self._status.updated_at = time.monotonic()
 
-        extra = min(len(new_requests), max(0, 8 - live_workers), max(0, int(max_extra_workers or 0)))
+        configured = max(1, min(int(self._status.concurrency or 1), 8))
+        extra = min(len(new_requests), max(0, configured - live_workers))
         if extra > 0:
             self._start_workers(extra)
         return {
             "ok": True,
             "appended": len(new_requests),
             "skipped": max(0, len(requests) - len(new_requests)),
-            "concurrency": self._live_worker_count(),
+            "concurrency": configured,
         }
 
     def pause_scenes(self, scene_ids: Iterable[str]) -> dict:
-        requested = {self._normalise_scene_id(item) for item in scene_ids if self._normalise_scene_id(item)}
+        requested = {
+            self._normalise_scene_id(item) for item in scene_ids if self._normalise_scene_id(item)
+        }
         if not requested:
             return {"ok": False, "error": "请先选择要暂停的影像", "code": "GUI003"}
         paused: list[str] = []
@@ -561,7 +633,10 @@ class AsfDownloadJob:
                         "outcome": "scene_pause_requested",
                         "bytes_written": 0,
                         "message": f"请求暂停 {len(paused)} 景",
-                        "detail": f"已请求暂停 {len(paused)} 景；正在传输的影像会保留 .part，用于继续下载。",
+                        "detail": (
+                            f"已请求暂停 {len(paused)} 景；"
+                            "正在传输的影像会保留 .part，用于继续下载。"
+                        ),
                         "ts": int(time.time() * 1000),
                     }
                 )
@@ -569,13 +644,27 @@ class AsfDownloadJob:
         return {"ok": True, "paused": len(paused), "not_found": not_found}
 
     def resume_scenes(self, scene_ids: Iterable[str] | None = None) -> dict:
-        requested = {self._normalise_scene_id(item) for item in (scene_ids or []) if self._normalise_scene_id(item)}
+        requested = {
+            self._normalise_scene_id(item)
+            for item in (scene_ids or [])
+            if self._normalise_scene_id(item)
+        }
         resumed = 0
         with self._lock:
             if self._status.state not in ("running", "paused"):
                 return {"ok": False, "error": "当前没有可继续的 ASF 下载任务", "code": "GUI004"}
+            if self._pause.is_set():
+                return {
+                    "ok": False,
+                    "error": "整个任务已暂停，请使用任务顶部或任务卡片的继续按钮",
+                    "code": "GUI004",
+                }
             if self._pending is None:
-                return {"ok": False, "error": "当前下载队列已结束，请重新开始下载", "code": "GUI004"}
+                return {
+                    "ok": False,
+                    "error": "当前下载队列已结束，请重新开始下载",
+                    "code": "GUI004",
+                }
             targets = requested or set(self._paused_scene_ids)
             for scene_id in list(targets):
                 request = self._paused_requests.pop(scene_id, None)
@@ -602,7 +691,11 @@ class AsfDownloadJob:
                 )
                 self._status.updated_at = time.monotonic()
         if resumed:
-            self._start_workers(max(1, min(resumed, 8)))
+            live_workers = self._live_worker_count()
+            configured = max(1, min(int(self._status.concurrency or 1), 8))
+            missing_workers = max(0, configured - live_workers)
+            if missing_workers:
+                self._start_workers(missing_workers)
         return {"ok": True, "resumed": resumed}
 
     @staticmethod
@@ -620,12 +713,20 @@ class AsfDownloadJob:
         """Restart only scenes that failed/interrupted in the previous ASF task."""
         with self._lock:
             if self._status.state in ("running", "paused"):
-                return {"ok": False, "error": "请先等待当前下载结束，或先结束当前任务", "code": "GUI004"}
+                return {
+                    "ok": False,
+                    "error": "请先等待当前下载结束，或先结束当前任务",
+                    "code": "GUI004",
+                }
             if not self._last_scenes or self._last_output_dir is None:
                 return {"ok": False, "error": "没有可重试的 ASF 下载任务", "code": "GUI004"}
             failed_ids = {self._normalise_scene_id(item) for item in self._last_failed_scene_ids}
             if not failed_ids:
-                return {"ok": False, "error": "当前没有失败或中断的 ASF 场景可重试", "code": "GUI004"}
+                return {
+                    "ok": False,
+                    "error": "当前没有失败或中断的 ASF 场景可重试",
+                    "code": "GUI004",
+                }
             scenes = list(self._last_scenes)
             output_dir = self._last_output_dir
             credential_source = self._last_credential_source
@@ -702,8 +803,7 @@ class AsfDownloadJob:
             s.current_scene = ", ".join(str(item["scene_id"]) for item in active)
             if s.total:
                 s.summary_line = (
-                    f"{s.succeeded} 已下载, {s.skipped} 跳过, "
-                    f"{s.failed} 失败, {s.interrupted} 中断"
+                    f"{s.succeeded} 已下载, {s.skipped} 跳过, {s.failed} 失败, {s.interrupted} 中断"
                 )
             if result.outcome in {DownloadOutcome.FAILED, DownloadOutcome.INTERRUPTED}:
                 self._last_failed_scene_ids.add(result_key)
@@ -724,10 +824,6 @@ class AsfDownloadJob:
                 thread = threading.Thread(target=self._worker_loop, daemon=True)
                 self._worker_threads.append(thread)
                 threads.append(thread)
-            self._status.concurrency = max(
-                self._status.concurrency,
-                sum(1 for thread in self._worker_threads if thread.is_alive()) + len(threads),
-            )
             if not self._pause.is_set() and self._status.state == "paused":
                 self._status.state = "running"
                 self._status.paused = False
@@ -841,7 +937,10 @@ class AsfDownloadJob:
                         "outcome": "credential_rejected",
                         "bytes_written": result.bytes_written,
                         "message": "凭据被拒绝",
-                        "detail": "Earthdata/ASF 凭据被拒绝，已停止后续下载；请检查 Token、用户名或密码。",
+                        "detail": (
+                            "Earthdata/ASF 凭据被拒绝，已停止后续下载；"
+                            "请检查 Token、用户名或密码。"
+                        ),
                         "ts": int(time.time() * 1000),
                     }
                 )
@@ -860,7 +959,9 @@ class AsfDownloadJob:
             DownloadOutcome.FAILED: "补齐失败",
             DownloadOutcome.INTERRUPTED: "补齐中断",
         }.get(result.outcome, result.outcome.value)
-        detail = f"{mask_text(result.scene_id)}：{outcome_label}（{result.bytes_written} bytes）{suffix}"
+        detail = (
+            f"{mask_text(result.scene_id)}：{outcome_label}（{result.bytes_written} bytes）{suffix}"
+        )
         if message:
             detail = f"{detail}：{message}"
         with self._lock:
@@ -885,7 +986,10 @@ class AsfDownloadJob:
         return dest.with_name(dest.name + ".part")
 
     def _request_is_complete(self, request: object, result: DownloadResult | None) -> bool:
-        if result is not None and result.outcome in {DownloadOutcome.SUCCESS, DownloadOutcome.SKIPPED}:
+        if result is not None and result.outcome in {
+            DownloadOutcome.SUCCESS,
+            DownloadOutcome.SKIPPED,
+        }:
             return True
         destination = getattr(request, "destination", None)
         if destination is None:
@@ -924,7 +1028,10 @@ class AsfDownloadJob:
                     "outcome": "verification_retry",
                     "bytes_written": 0,
                     "message": f"核对到 {len(missing)} 景缺失，正在补齐",
-                    "detail": f"下载核对：发现 {len(missing)} 景缺失，已丢弃对应 .part 并重新下载。",
+                    "detail": (
+                        f"下载核对：发现 {len(missing)} 景缺失，"
+                        "已丢弃对应 .part 并重新下载。"
+                    ),
                     "ts": int(time.time() * 1000),
                 }
             )
@@ -966,6 +1073,23 @@ class AsfDownloadJob:
         scene_id = str(getattr(request, "scene_id", result.scene_id))
         scene_key = self._normalise_scene_id(scene_id)
         with self._lock:
+            if scene_key not in self._paused_scene_ids:
+                self._status.active_downloads.pop(scene_key, None)
+                self._scene_cancel_events.pop(scene_key, None)
+                if self._pending is not None:
+                    self._pending.put(request)
+                self._status.log.append(
+                    {
+                        "scene_id": scene_id,
+                        "outcome": "scene_resume_requeued",
+                        "bytes_written": result.bytes_written,
+                        "message": "单景继续请求已生效",
+                        "detail": f"{scene_id} 在暂停切换期间已继续，现已重新进入等待队列。",
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+                self._status.updated_at = time.monotonic()
+                return
             self._paused_scene_ids.add(scene_key)
             self._paused_requests[scene_key] = request
             self._status.active_downloads.pop(scene_key, None)
@@ -1027,9 +1151,7 @@ class AsfDownloadJob:
                 self._status.total = len(requests)
                 self._status.concurrency = workers
                 known_sizes = [
-                    int(req.expected_size)
-                    for req in requests
-                    if req.expected_size is not None
+                    int(req.expected_size) for req in requests if req.expected_size is not None
                 ]
                 self._status.total_bytes = sum(known_sizes) if known_sizes else None
                 self._pending = pending
@@ -1062,7 +1184,9 @@ class AsfDownloadJob:
                     queue_empty = self._pending is None or self._pending.empty()
                     no_active = not self._status.active_downloads
                     no_scene_paused = not self._paused_requests and not self._paused_scene_ids
-                    if self._cancel.is_set() or (workers_idle and queue_empty and no_active and no_scene_paused):
+                    if self._cancel.is_set() or (
+                        workers_idle and queue_empty and no_active and no_scene_paused
+                    ):
                         break
                 time.sleep(0.2)
             cancelled = self._cancel.is_set()
@@ -1185,10 +1309,7 @@ class AsfDownloadManager:
         return status
 
     def _visible_statuses_locked(self) -> list[dict[str, Any]]:
-        statuses = [
-            self._status_with_identity(task_id, job)
-            for task_id, job in self._jobs.items()
-        ]
+        statuses = [self._status_with_identity(task_id, job) for task_id, job in self._jobs.items()]
         statuses = [status for status in statuses if self._is_visible(status)]
         return sorted(
             statuses,
@@ -1202,7 +1323,9 @@ class AsfDownloadManager:
         if not statuses:
             return AsfDownloadJob().get_status()
         if self._primary_task_id:
-            primary = next((item for item in statuses if item.get("task_id") == self._primary_task_id), None)
+            primary = next(
+                (item for item in statuses if item.get("task_id") == self._primary_task_id), None
+            )
             if primary is not None:
                 return primary
         return statuses[0]
@@ -1220,6 +1343,7 @@ class AsfDownloadManager:
         scenes: Iterable[object],
         output_dir: str | Path,
         *,
+        task_id: str = "",
         credential_source: CredentialSource = CredentialSource.AUTO,
         max_retries: int = 5,
         max_concurrent: int = 1,
@@ -1228,9 +1352,13 @@ class AsfDownloadManager:
         trust_env: bool = False,
         use_product_subdirs: bool = False,
         aoi_name: str = "",
+        snapshot_scenes: Iterable[object] | None = None,
         activity: ActivityLog | None = None,
     ) -> dict:
-        task_id = self._new_task_id()
+        requested_task_id = str(task_id or "").strip()
+        with self._lock:
+            task_id = requested_task_id if requested_task_id and requested_task_id not in self._jobs else ""
+        task_id = task_id or self._new_task_id()
         job = AsfDownloadJob()
         result = job.start(
             scenes,
@@ -1243,6 +1371,7 @@ class AsfDownloadManager:
             trust_env=trust_env,
             use_product_subdirs=use_product_subdirs,
             aoi_name=aoi_name,
+            snapshot_scenes=snapshot_scenes,
             activity=activity,
         )
         if not result.get("ok"):
@@ -1607,10 +1736,14 @@ class OrbitDownloadJob:
                 match_orbits_for_scenes,
                 scan_orbit_directory,
             )
-            from insar_prep.providers.orbit.downloader import ORBIT_ROOT_DIR
+            from insar_prep.providers.orbit.downloader import ORBIT_ROOT_DIR, POEORB_SUBDIR
 
             unique_scenes, _ = deduplicate_scenes(scenes)
-            orbit_dir = output_path / ORBIT_ROOT_DIR if use_orbit_subdir else output_path
+            orbit_dir = (
+                output_path / ORBIT_ROOT_DIR / POEORB_SUBDIR
+                if use_orbit_subdir
+                else output_path
+            )
             seen_scene_ids: set[str] = set()
             pending: Queue[object] = Queue()
             for scene in unique_scenes:
@@ -1658,7 +1791,9 @@ class OrbitDownloadJob:
                             self._status.failed += 1
                             self._status.has_failures = True
                             self._status.active_scenes.pop(masked_scene_id, None)
-                            self._status.current_scene = ", ".join(self._status.active_scenes.keys())
+                            self._status.current_scene = ", ".join(
+                                self._status.active_scenes.keys()
+                            )
                             self._status.results.append(
                                 {
                                     "scene_id": masked_scene_id,
@@ -1693,12 +1828,18 @@ class OrbitDownloadJob:
                 thread.join()
 
             results = list(self._status.results)
-            succeeded = sum(1 for r in results if r.get("outcome") == OrbitDownloadOutcome.SUCCESS.value)
-            skipped = sum(1 for r in results if r.get("outcome") == OrbitDownloadOutcome.SKIPPED.value)
+            succeeded = sum(
+                1 for r in results if r.get("outcome") == OrbitDownloadOutcome.SUCCESS.value
+            )
+            skipped = sum(
+                1 for r in results if r.get("outcome") == OrbitDownloadOutcome.SKIPPED.value
+            )
             unavailable = sum(
                 1 for r in results if r.get("outcome") == OrbitDownloadOutcome.UNAVAILABLE.value
             )
-            failed = sum(1 for r in results if r.get("outcome") == OrbitDownloadOutcome.FAILED.value)
+            failed = sum(
+                1 for r in results if r.get("outcome") == OrbitDownloadOutcome.FAILED.value
+            )
             report = None
             verification_line = "总体核对：未能扫描轨道目录。"
             missing_line = ""
@@ -1782,6 +1923,7 @@ class _DemJobState:
     results_path: str = ""
     conversion_results_path: str = ""
     done_bytes: int = 0
+    total_bytes: int = 0
     bytes_per_second: float = 0.0
     started_at: float | None = None
     updated_at: float | None = None
@@ -1805,6 +1947,7 @@ class DemDownloadJob:
         self._status = _DemJobState()
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
+        self._pause = threading.Event()
         self._activity: ActivityLog | None = None
 
     @staticmethod
@@ -1836,6 +1979,7 @@ class DemDownloadJob:
                 "results_path": s.results_path,
                 "conversion_results_path": s.conversion_results_path,
                 "done_bytes": s.done_bytes,
+                "total_bytes": s.total_bytes,
                 "bytes_per_second": rate,
                 "elapsed_seconds": elapsed,
                 "cancelled": s.cancelled,
@@ -1861,9 +2005,10 @@ class DemDownloadJob:
     ) -> dict:
         out = Path(output_dir)
         with self._lock:
-            if self._status.state == "running":
+            if self._status.state in {"running", "paused"}:
                 return {"ok": False, "error": "已有 DEM 下载任务在进行", "code": "GUI004"}
         self._cancel.clear()
+        self._pause.clear()
         self._activity = activity
         dataset = str(getattr(plan, "dataset", "") or "")
         raw = str(getattr(plan, "raw_dem_path", "") or "")
@@ -1902,7 +2047,7 @@ class DemDownloadJob:
 
     def stop(self) -> dict:
         with self._lock:
-            if self._status.state != "running":
+            if self._status.state not in {"running", "paused"}:
                 return {"ok": False, "error": "当前没有进行中的 DEM 下载", "code": "GUI004"}
             self._status.updated_at = time.monotonic()
             self._status.log.append(
@@ -1914,11 +2059,32 @@ class DemDownloadJob:
                 }
             )
         self._cancel.set()
+        self._pause.clear()
+        return {"ok": True}
+
+    def pause(self) -> dict:
+        with self._lock:
+            if self._status.state != "running":
+                return {"ok": False, "error": "当前没有可暂停的 DEM 下载", "code": "GUI004"}
+            self._status.state = "paused"
+            self._status.updated_at = time.monotonic()
+            self._status.log.append({"scene_id": self._status.dataset, "outcome": "paused", "detail": "DEM 下载已暂停。", "ts": int(time.time() * 1000)})
+        self._pause.set()
+        return {"ok": True}
+
+    def resume(self) -> dict:
+        with self._lock:
+            if self._status.state != "paused":
+                return {"ok": False, "error": "当前 DEM 下载未暂停", "code": "GUI004"}
+            self._status.state = "running"
+            self._status.updated_at = time.monotonic()
+            self._status.log.append({"scene_id": self._status.dataset, "outcome": "resumed", "detail": "DEM 下载已继续。", "ts": int(time.time() * 1000)})
+        self._pause.clear()
         return {"ok": True}
 
     def shutdown(self, timeout: float = 2.0) -> dict:
         with self._lock:
-            should_stop = self._status.state == "running"
+            should_stop = self._status.state in {"running", "paused"}
             if should_stop:
                 self._status.cancelled = True
                 self._status.updated_at = time.monotonic()
@@ -1934,6 +2100,7 @@ class DemDownloadJob:
         if not should_stop:
             return {"ok": True, "stopped": False}
         self._cancel.set()
+        self._pause.clear()
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(0.1, float(timeout or 0.1)))
         return {"ok": True, "stopped": True}
@@ -1973,12 +2140,15 @@ class DemDownloadJob:
             )
             self._status.updated_at = time.monotonic()
 
-    def _update_download_progress(self, request: object, bytes_written: int, expected_size: int | None) -> None:
+    def _update_download_progress(
+        self, request: object, bytes_written: int, expected_size: int | None
+    ) -> None:
         dataset = str(getattr(request, "dataset", "") or self._status.dataset or "DEM")
         written = max(0, int(bytes_written or 0))
         with self._lock:
             self._status.current_scene = dataset
             self._status.done_bytes = max(self._status.done_bytes, written)
+            self._status.total_bytes = max(0, int(expected_size or 0))
             elapsed = self._elapsed_seconds(self._status)
             if elapsed > 0:
                 self._status.bytes_per_second = self._status.done_bytes / elapsed
@@ -1990,9 +2160,9 @@ class DemDownloadJob:
 
     def _run(self, plan: object, output_dir: Path, key_source: str, convert: bool) -> None:
         try:
-            from insar_prep.providers.dem.credentials import DemKeySource
-            from insar_prep.providers.dem.convert_runner import run_dem_conversion
             from insar_prep.providers.dem.conversion_planner import create_dem_conversion_plan
+            from insar_prep.providers.dem.convert_runner import run_dem_conversion
+            from insar_prep.providers.dem.credentials import DemKeySource
             from insar_prep.providers.dem.download_runner import run_dem_download
 
             source = DemKeySource((key_source or "auto").strip().lower())
@@ -2003,6 +2173,7 @@ class DemDownloadJob:
                 progress=self._append_download_result,
                 transfer_progress=self._update_download_progress,
                 cancel_event=self._cancel,
+                pause_event=self._pause,
             )
             cancelled = bool(download.cancelled or self._cancel.is_set())
             summary_line = download.summary_line()
@@ -2021,7 +2192,9 @@ class DemDownloadJob:
                     )
                 conversion_plan = create_dem_conversion_plan(plan)
                 conversion = run_dem_conversion([conversion_plan], output_dir)
-                conversion_results_path = str(conversion.results_path) if conversion.results_path else ""
+                conversion_results_path = (
+                    str(conversion.results_path) if conversion.results_path else ""
+                )
                 summary_line = f"下载：{download.summary_line()}；转换：{conversion.summary_line()}"
             elif convert and (cancelled or download.has_failures):
                 with self._lock:
@@ -2042,7 +2215,9 @@ class DemDownloadJob:
                 failed += int(conversion.failed)
                 has_failures = has_failures or bool(conversion.has_failures)
             with self._lock:
-                self._status.state = "cancelled" if cancelled else ("failed" if has_failures else "finished")
+                self._status.state = (
+                    "cancelled" if cancelled else ("failed" if has_failures else "finished")
+                )
                 self._status.cancelled = cancelled
                 self._status.summary_line = summary_line
                 self._status.results_path = results_path

@@ -33,7 +33,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shapely.geometry import Polygon
-from shapely.ops import transform as shapely_transform, unary_union
+from shapely.ops import transform as shapely_transform
+from shapely.ops import unary_union
 
 from insar_prep.core.enums import AoiSource
 from insar_prep.core.error_codes import ErrorCode
@@ -256,6 +257,8 @@ def _shapefile_crs_from_prj(shp_path: Path):
     try:
         return CRS.from_wkt(prj_text)
     except Exception as exc:  # noqa: BLE001
+        if _prj_text_looks_wgs84_like(prj_text):
+            return None
         raise InputValidationError(
             f"Shapefile .prj 坐标系无法识别：{shp_path.with_suffix('.prj').name}",
             code=ErrorCode.AOI001,

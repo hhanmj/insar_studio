@@ -7,10 +7,10 @@ feature itself inject their own ``fetch`` / cache and do not rely on the network
 """
 
 from __future__ import annotations
+
 import importlib.util
 import os
 from pathlib import Path
-
 
 import pytest
 

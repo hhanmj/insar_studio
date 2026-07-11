@@ -35,6 +35,10 @@
     Skip launching the frozen exe with --selftest. Useful on local machines where
     Windows Application Control blocks freshly built test executables.
 
+.PARAMETER SkipRustCore
+    Build the Python full-version desktop executable without compiling or
+    bundling the in-progress Rust core CLI.
+
 .NOTES
     Run from anywhere; resolves the repo root from its own location. Requires the
     `desktop`, `download`, and `convert` extras installed in the active env
@@ -46,6 +50,7 @@ param(
     [switch]$SkipUi,
     [switch]$ExternalDemComponent,
     [switch]$SkipSelfTest,
+    [switch]$SkipRustCore,
     [string]$Egm2008GeoidNpz = ""
 )
 
@@ -177,6 +182,28 @@ if (-not $py -or -not (Test-Path -LiteralPath $py)) {
 }
 if (-not (Test-Path -LiteralPath $py)) { $py = "python" }
 $extraPyInstallerArgs = @()
+
+if (-not $SkipRustCore) {
+    # Compile and bundle the Rust core when building the hybrid/refactor edition.
+    $cargo = Get-Command "cargo" -ErrorAction SilentlyContinue
+    if ($cargo) {
+        Write-Host "Building Rust core binary for PyInstaller bundling..." -ForegroundColor Cyan
+        & cargo build --release -p insar-core --bin insar-core-cli
+    }
+
+    $rustCliPath = Join-Path $RepoRoot "target\release\insar-core-cli.exe"
+    if (-not (Test-Path $rustCliPath)) {
+        $rustCliPath = Join-Path $RepoRoot "target\debug\insar-core-cli.exe"
+    }
+    if (Test-Path $rustCliPath) {
+        Write-Host "Found Rust core binary: $rustCliPath, bundling it..." -ForegroundColor Green
+        $extraPyInstallerArgs += @("--add-binary", "$rustCliPath;.")
+    } else {
+        Write-Warning "insar-core-cli.exe not found! Package will fallback to Python."
+    }
+} else {
+    Write-Host "Skipping Rust core for the Python full-version build." -ForegroundColor Yellow
+}
 $bundledGdalData = ""
 $bundledProjData = ""
 

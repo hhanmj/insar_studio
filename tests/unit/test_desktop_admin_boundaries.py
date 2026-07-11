@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
-import os
 import base64
 import io
+import json
+import os
 import struct
 import zipfile
 from pathlib import Path
@@ -18,9 +18,9 @@ from insar_prep.core.models import Scene
 from insar_prep.desktop.api import Api
 from insar_prep.providers.asf.downloader import DownloadOutcome, DownloadResult
 
-
 _DRAG_KML_COORDS = "110.1,30.8,0 110.6,30.8,0 110.6,31.2,0 110.1,31.2,0 110.1,30.8,0"
 _DRAG_WEST, _DRAG_SOUTH, _DRAG_EAST, _DRAG_NORTH = 110.1, 30.8, 110.6, 31.2
+_WGS84_PRJ = 'GEOGCS["GCS_WGS_1984"]'
 _UTM49_PRJ = (
     'PROJCS["WGS_1984_UTM_Zone_49N",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",'
     'SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],'
@@ -48,7 +48,10 @@ def _rect(west: float, south: float, east: float, north: float) -> list[tuple[fl
 def _projected_drag_rect() -> list[tuple[float, float]]:
     pyproj = pytest.importorskip("pyproj")
     transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32649", always_xy=True)
-    return [transformer.transform(x, y) for x, y in _rect(_DRAG_WEST, _DRAG_SOUTH, _DRAG_EAST, _DRAG_NORTH)]
+    return [
+        transformer.transform(x, y)
+        for x, y in _rect(_DRAG_WEST, _DRAG_SOUTH, _DRAG_EAST, _DRAG_NORTH)
+    ]
 
 
 def _write_polygon_shp(path: Path, ring: list[tuple[float, float]], prj_text: str) -> Path:
@@ -106,13 +109,63 @@ def test_datav_leaf_district_has_no_children_instead_of_fallback(monkeypatch) ->
     def fake_fetch(kind: str, code: str) -> dict:
         assert kind == "children"
         assert code == "310112"
-        raise RuntimeError(
-            "DataV 行政区服务不可用，且本机没有缓存：404 Client Error: Not Found"
-        )
+        raise RuntimeError("DataV 行政区服务不可用，且本机没有缓存：404 Client Error: Not Found")
 
     monkeypatch.setattr(desktop_api, "_fetch_datav_json", fake_fetch)
 
     assert desktop_api._datav_children("310112") == []
+
+
+def test_local_admin_options_hide_same_name_leaf_region(monkeypatch) -> None:
+    def feature(name: str, gb: str) -> dict:
+        return {"type": "Feature", "properties": {"name": name, "gb": gb}, "geometry": None}
+
+    def fake_layer(level: str) -> list[dict]:
+        if level == "province":
+            return [feature("台湾省", "156710000")]
+        if level == "city":
+            return [feature("台湾省", "156710000")]
+        return []
+
+    monkeypatch.setattr(desktop_api, "_load_local_boundary_layer", fake_layer)
+
+    options = desktop_api._local_admin_options(province="台湾省")
+
+    assert options["provinces"] == ["全国", "台湾省"]
+    assert options["cities"] == ["全部"]
+    assert options["districts"] == ["全部"]
+
+
+def test_taiwan_divisions_are_city_options_not_district_options(monkeypatch) -> None:
+    monkeypatch.setattr(
+        desktop_api,
+        "_datav_admin_options",
+        lambda **_kwargs: {"provinces": ["全国", "台湾省"], "cities": ["全部"], "districts": ["全部"]},
+    )
+    api = Api()
+
+    options = api.get_admin_options("台湾省", "全部")
+
+    assert "台北市" in options["cities"]
+    assert "台东县" in options["cities"]
+    assert options["districts"] == ["全部"]
+
+
+def test_taiwan_selected_division_uses_real_nominatim_boundary(monkeypatch) -> None:
+    boundary = {
+        "label": "台湾省 / 台东县",
+        "bbox": {"west": 120.7, "south": 22.0, "east": 121.6, "north": 23.5},
+        "geojson": {"type": "Polygon", "coordinates": [[[120.7, 22.0], [121.6, 22.0], [121.6, 23.5], [120.7, 22.0]]]},
+        "source": "Nominatim / OpenStreetMap",
+    }
+    monkeypatch.setattr(desktop_api, "_search_nominatim_taiwan_boundary", lambda name, limit=8: ([boundary], None))
+    api = Api()
+
+    result = api.search_admin_boundaries("", "台湾省", "台东县", "全部", 8)
+
+    assert result["ok"] is True
+    assert result["provider"] == "nominatim"
+    assert result["results"][0]["geojson"]["type"] == "Polygon"
 
 
 def test_datav_municipality_district_search_ignores_stale_child_selection(monkeypatch) -> None:
@@ -289,15 +342,39 @@ def test_dragged_kmz_bytes_can_preview_aoi() -> None:
     assert preview["features"][0]["name"] == "KMZ AOI"
 
 
-def test_dragged_shp_bytes_reports_sidecar_hint_instead_of_guessing() -> None:
+def test_dragged_single_shp_bytes_can_preview_aoi(tmp_path: Path) -> None:
     api = Api()
-    payload = base64.b64encode(b"not enough shapefile sidecar data").decode("ascii")
+    shp = _write_polygon_shp(
+        tmp_path / "sichuan.shp",
+        _rect(_DRAG_WEST, _DRAG_SOUTH, _DRAG_EAST, _DRAG_NORTH),
+        _WGS84_PRJ,
+    )
+    payload = base64.b64encode(shp.read_bytes()).decode("ascii")
 
     preview = api.preview_aoi_file_bytes("sichuan.shp", payload)
 
-    assert preview["ok"] is False
-    assert "上传本地边界" in preview["error"]
-    assert ".dbf" in preview["error"]
+    assert preview["ok"] is True
+    assert preview["source_kind"] == "content"
+    assert preview["total_features"] == 1
+    assert preview["features"][0]["bbox"]["west"] == pytest.approx(_DRAG_WEST)
+    assert preview["features"][0]["bbox"]["east"] == pytest.approx(_DRAG_EAST)
+
+
+def test_dragged_single_shapefile_bundle_can_preview_aoi(tmp_path: Path) -> None:
+    api = Api()
+    shp = _write_polygon_shp(
+        tmp_path / "sichuan.shp",
+        _rect(_DRAG_WEST, _DRAG_SOUTH, _DRAG_EAST, _DRAG_NORTH),
+        _WGS84_PRJ,
+    )
+
+    preview = api.preview_aoi_file_bundle([_bundle_item(shp)])
+
+    assert preview["ok"] is True
+    assert preview["file_name"] == "sichuan.shp"
+    assert preview["total_features"] == 1
+    assert preview["features"][0]["bbox"]["south"] == pytest.approx(_DRAG_SOUTH)
+    assert preview["features"][0]["bbox"]["north"] == pytest.approx(_DRAG_NORTH)
 
 
 def test_dragged_projected_shapefile_bundle_previews_and_binds(tmp_path: Path) -> None:
@@ -306,7 +383,12 @@ def test_dragged_projected_shapefile_bundle_previews_and_binds(tmp_path: Path) -
     shp = _write_polygon_shp(tmp_path / "sichuan.shp", _projected_drag_rect(), _UTM49_PRJ)
 
     preview = api.preview_aoi_file_bundle(
-        [_bundle_item(shp), _bundle_item(shp.with_suffix(".dbf")), _bundle_item(shp.with_suffix(".shx")), _bundle_item(shp.with_suffix(".prj"))]
+        [
+            _bundle_item(shp),
+            _bundle_item(shp.with_suffix(".dbf")),
+            _bundle_item(shp.with_suffix(".shx")),
+            _bundle_item(shp.with_suffix(".prj")),
+        ]
     )
 
     assert preview["ok"] is True
@@ -325,6 +407,7 @@ def test_clear_region_aoi_keeps_scenes(tmp_path: Path) -> None:
     api = Api()
     api._state_path = tmp_path / "desktop_state.json"
     assert api.set_region_aoi_bbox(109.0, 110.0, 30.0, 31.0)["ok"] is True
+    api._state.current_region().region_root = tmp_path / "region"
     api._state.set_current_region_scenes([Scene(scene_id="S1A_KEEP")])
 
     result = api.clear_region_aoi()
@@ -348,7 +431,9 @@ def test_dem_download_plan_rejects_user_local_with_actionable_message(tmp_path: 
     assert "no downloadable" not in result["error"]
 
 
-def test_dem_download_only_reports_raw_dem_without_conversion_paths(tmp_path: Path, monkeypatch) -> None:
+def test_dem_download_only_reports_raw_dem_without_conversion_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
     api = Api()
 
     class Summary:
@@ -388,9 +473,7 @@ def test_dem_download_only_reports_raw_dem_without_conversion_paths(tmp_path: Pa
     assert "SARscape DEM" not in "\n".join(result["logs"])
 
 
-def test_start_asf_download_requires_credentials_before_queue(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_start_asf_download_requires_credentials_before_queue(tmp_path: Path, monkeypatch) -> None:
     api = Api()
     api._state_path = tmp_path / "desktop_state.json"
     imported = api.import_scenes_text(
@@ -413,9 +496,7 @@ def test_start_asf_download_requires_credentials_before_queue(
     assert api.get_download_status()["state"] == "idle"
 
 
-def test_start_asf_download_preflight_failure_blocks_queue(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_start_asf_download_preflight_failure_blocks_queue(tmp_path: Path, monkeypatch) -> None:
     api = Api()
     api._state_path = tmp_path / "desktop_state.json"
     imported = api.import_scenes_text(
@@ -451,9 +532,7 @@ def test_start_asf_download_preflight_failure_blocks_queue(
     assert api.get_download_status()["state"] == "idle"
 
 
-def test_start_asf_download_preflight_passes_network_settings(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_start_asf_download_preflight_passes_network_settings(tmp_path: Path, monkeypatch) -> None:
     api = Api()
     api._state_path = tmp_path / "desktop_state.json"
     imported = api.import_scenes_text(
@@ -507,14 +586,10 @@ def test_start_asf_download_preflight_passes_network_settings(
     assert init_kwargs[1]["job"]["trust_env"] is True
 
 
-def test_start_asf_download_falls_back_to_relaxed_asf_tls(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_start_asf_download_falls_back_to_relaxed_asf_tls(tmp_path: Path, monkeypatch) -> None:
     api = Api()
     api._state_path = tmp_path / "desktop_state.json"
-    api._network_settings.update(
-        {"proxy_enabled": False, "proxy_url": "", "asf_ssl_verify": True}
-    )
+    api._network_settings.update({"proxy_enabled": False, "proxy_url": "", "asf_ssl_verify": True})
     imported = api.import_scenes_text(
         "https://datapool.asf.alaska.edu/SLC/SA/"
         "S1A_IW_SLC__1SDV_20240312T223805_20240312T223832_052914_0667A5_8F5C.zip"
@@ -652,7 +727,11 @@ def test_legacy_blank_default_state_is_discarded(tmp_path: Path, monkeypatch) ->
 
     assert api.get_context()["workspace"] is None
     assert api.get_network_settings()["proxy_url"] == ""
-    assert api.get_network_settings()["cache_dir"].replace("/", "\\").endswith("\\InSAR Assistant\\cache")
+    assert (
+        api.get_network_settings()["cache_dir"]
+        .replace("/", "\\")
+        .endswith("\\InSAR Assistant\\cache")
+    )
     assert not state_path.exists()
 
 
@@ -693,9 +772,7 @@ def test_proxy_settings_are_explicitly_applied_or_cleared(tmp_path: Path, monkey
     assert "HTTPS_PROXY" not in os.environ
 
 
-def test_proxy_settings_auto_detect_system_proxy_when_blank(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_proxy_settings_auto_detect_system_proxy_when_blank(tmp_path: Path, monkeypatch) -> None:
     state_path = tmp_path / "desktop_state.json"
     monkeypatch.setattr(Api, "_desktop_state_path", staticmethod(lambda: state_path))
     monkeypatch.setattr(

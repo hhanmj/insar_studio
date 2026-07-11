@@ -15,6 +15,8 @@ import pytest
 
 import insar_prep.cli.commands as commands
 from insar_prep.cli.main import main
+from insar_prep.core.models import BBox
+from insar_prep.providers.dem.planner import dem_request_fingerprint
 
 _BBOX = ["--bbox", "10.0", "45.5", "10.5", "46.0"]
 
@@ -154,7 +156,9 @@ def test_real_conversion_roundtrip(tmp_path: Path, capsys: pytest.CaptureFixture
     from rasterio.crs import CRS
     from rasterio.transform import from_origin
 
-    raw = tmp_path / "SRTM30m.tif"
+    request_bbox = BBox(west=9.95, south=45.45, east=10.55, north=46.05)
+    stem = f"SRTM30m_{dem_request_fingerprint('SRTM_GL1', request_bbox)}"
+    raw = tmp_path / f"{stem}.tif"
     raw.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(
         raw,
@@ -183,7 +187,7 @@ def test_real_conversion_roundtrip(tmp_path: Path, capsys: pytest.CaptureFixture
         ]
     )
     assert code == 0, capsys.readouterr().err
-    ready = tmp_path / "SRTM30m_dem"
+    ready = tmp_path / f"{stem}_dem"
     assert ready.is_file()
     results_txt = tmp_path / "dem_convert_results.txt"
     assert results_txt.is_file()

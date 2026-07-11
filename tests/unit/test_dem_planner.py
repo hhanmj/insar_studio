@@ -45,9 +45,10 @@ def test_default_plan(tmp_path: Path) -> None:
     plan = build_plan(tmp_path)
     assert plan.dataset == "COP30"
     assert plan.provider == "OPENTOPOGRAPHY"
-    assert plan.raw_dem_path.name == "COP30m.tif"
-    assert plan.ellipsoid_dem_path.name == "COP30m_ellipsoid.tif"
-    assert plan.sarscape_ready_dem_path.name == "COP30m_dem"
+    stem = plan.raw_dem_path.stem
+    assert stem.startswith("COP30m_")
+    assert plan.ellipsoid_dem_path.name == f"{stem}_ellipsoid.tif"
+    assert plan.sarscape_ready_dem_path.name == f"{stem}_dem"
 
 
 def test_invalid_region_safe_name_raises(tmp_path: Path) -> None:
@@ -77,7 +78,8 @@ def test_bbox_is_clamped(tmp_path: Path) -> None:
 
 def test_sarscape_ready_dem_name(tmp_path: Path) -> None:
     plan = build_plan(tmp_path, region_safe_name="guangdong_2024")
-    assert plan.sarscape_ready_dem_path.name == "COP30m_dem"
+    assert plan.sarscape_ready_dem_path.name.startswith("COP30m_")
+    assert plan.sarscape_ready_dem_path.name.endswith("_dem")
 
 
 def test_three_paths_differ(tmp_path: Path) -> None:
@@ -86,7 +88,8 @@ def test_three_paths_differ(tmp_path: Path) -> None:
     assert plan.ellipsoid_dem_path != plan.sarscape_ready_dem_path
     assert plan.raw_dem_path.parent == tmp_path
     assert plan.ellipsoid_dem_path.parent == tmp_path
-    assert plan.raw_dem_path.name == "COP30m.tif"
+    assert plan.raw_dem_path.name.startswith("COP30m_")
+    assert plan.raw_dem_path.name.endswith(".tif")
     assert plan.ellipsoid_dem_path.name.endswith("_ellipsoid.tif")
 
 
@@ -111,7 +114,21 @@ def test_chinese_parent_output_directory_is_allowed(tmp_path: Path) -> None:
     out = tmp_path / "中文输出目录"
     plan = build_plan(out)
     assert "中文输出目录" in str(plan.sarscape_ready_dem_path)
-    assert plan.sarscape_ready_dem_path.name == "COP30m_dem"
+    assert plan.sarscape_ready_dem_path.name.startswith("COP30m_")
+    assert plan.sarscape_ready_dem_path.name.endswith("_dem")
+    assert plan.sarscape_ready_dem_path.name.isascii()
+
+
+def test_dem_paths_reuse_same_bbox_but_separate_different_bbox(tmp_path: Path) -> None:
+    first = build_plan(tmp_path)
+    same = build_plan(tmp_path)
+    shifted = build_plan(
+        tmp_path,
+        aoi=make_processing(west=111.1, south=30.8, east=111.6, north=31.2),
+    )
+
+    assert first.raw_dem_path == same.raw_dem_path
+    assert first.raw_dem_path != shifted.raw_dem_path
 
 
 def test_create_download_task_standalone(tmp_path: Path) -> None:

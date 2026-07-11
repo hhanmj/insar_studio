@@ -44,7 +44,7 @@ import {
 } from "@/lib/bridge";
 
 const LINKS = {
-  earthdataToken: "https://urs.earthdata.nasa.gov/profile",
+  earthdataToken: "https://urs.earthdata.nasa.gov/users/hhanmj/user_tokens",
   earthdataRegister: "https://urs.earthdata.nasa.gov/users/new",
   opentopoKey: "https://portal.opentopography.org/requestService?service=api",
   opentopoRegister: "https://portal.opentopography.org/newUser",
@@ -54,6 +54,13 @@ const LINKS = {
 
 function isConfigured(value: string) {
   return value !== "none" && value !== "unavailable";
+}
+
+function earthdataStatusLabel(value: string) {
+  if (value === "token" || value === "env-token") return "Token 登录";
+  if (value.startsWith("login:")) return "账户登录";
+  if (value === "netrc") return "本地账户登录";
+  return value;
 }
 
 function ProviderStatus({ value }: { value: string }) {
@@ -104,7 +111,22 @@ export function Settings() {
   const [note, setNote] = useState<string | null>(null);
 
   async function refresh() {
-    setStatus(await getCredentialStatus());
+    const next = await getCredentialStatus();
+    setStatus(next);
+    const input = next.earthdata_input;
+    if (input?.mode === "token") {
+      setEarthToken(input.token);
+      setEarthUser("");
+      setEarthPassword("");
+    } else if (input?.mode === "login") {
+      setEarthToken("");
+      setEarthUser(input.username);
+      setEarthPassword(input.password);
+    } else if (input?.mode === "none") {
+      setEarthToken("");
+      setEarthUser("");
+      setEarthPassword("");
+    }
   }
 
   useEffect(() => {
@@ -182,8 +204,8 @@ export function Settings() {
           <SectionTitle
             icon={Radar}
             title="Earthdata / ASF"
-            desc="Sentinel-1 SLC 下载凭据，优先使用 Token。"
-            status={earthStatus}
+            desc="Earthdata 下载凭据。"
+            status={earthdataStatusLabel(earthStatus)}
           />
           <CardContent className="space-y-4">
             <div>

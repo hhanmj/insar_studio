@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from insar_prep.core.error_codes import ErrorCode
@@ -28,8 +29,8 @@ from insar_prep.core.exceptions import CredentialError
 from insar_prep.core.logging import get_logger, mask_text
 from insar_prep.core.models import InsarBaseModel
 from insar_prep.providers.asf.credentials import (
-    CredentialSource,
     EDL_HOST,
+    CredentialSource,
     ResolvedCredential,
     resolve_credentials,
 )
@@ -213,7 +214,9 @@ def _netrc_login() -> tuple[str, str]:
         try:
             auth = netrc.netrc(str(path)).authenticators(EDL_HOST)
         except (netrc.NetrcParseError, OSError) as exc:
-            raise CredentialError(f"could not read netrc at {path}: {exc}", code=ErrorCode.DL004) from exc
+            raise CredentialError(
+                f"could not read netrc at {path}: {exc}", code=ErrorCode.DL004
+            ) from exc
         if auth is not None:
             login, _, password = auth
             if login and password:
@@ -397,7 +400,9 @@ def build_earthdata_session(
         import base64  # noqa: PLC0415 - only needed for the basic-auth path
 
         username, password = (
-            _netrc_login() if resolved.use_netrc else (resolved.username or "", resolved.password or "")
+            _netrc_login()
+            if resolved.use_netrc
+            else (resolved.username or "", resolved.password or "")
         )
         encoded = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
         basic_header = f"Basic {encoded}"

@@ -413,9 +413,10 @@ def test_prepare_with_dem_plan_adds_sections(
     assert conversion is not None
     items = " ".join(planning["items"])
     assert "DEM" in items
-    assert "COP30m.tif" in items
-    assert "COP30m_ellipsoid.tif" in items
-    assert "COP30m_dem" in items
+    assert "COP30m_" in items
+    assert ".tif" in items
+    assert "_ellipsoid.tif" in items
+    assert "_dem" in items
     out = capsys.readouterr().out
     assert str(json_path) in out
     assert str(md_path) in out

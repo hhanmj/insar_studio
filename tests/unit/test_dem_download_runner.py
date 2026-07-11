@@ -59,8 +59,12 @@ def test_success_writes_masked_results_txt(tmp_path: Path) -> None:
     assert not summary.has_failures
     assert len(progress) == 1
 
-    results_txt = tmp_path / "dem_download_results.txt"
-    assert summary.results_path == results_txt
+    results_txt = summary.results_path
+    assert results_txt is not None
+    assert results_txt.parent == tmp_path
+    assert results_txt.name.startswith("dem_download_results_")
+    assert results_txt.name.endswith(".txt")
+    assert results_txt.name.isascii()
     with results_txt.open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     assert rows[0]["region_safe_name"] == "demo"
@@ -112,3 +116,20 @@ def test_write_results_txt_has_fixed_header(tmp_path: Path) -> None:
     with path.open(encoding="utf-8", newline="") as handle:
         header = handle.readline().strip()
     assert header == "region_safe_name\tdataset\toutcome\tbytes_written\terror_code\tmessage"
+
+
+def test_each_results_log_has_an_independent_ascii_filename(tmp_path: Path) -> None:
+    result = DemDownloadResult(
+        region_safe_name="demo",
+        dataset="COP30",
+        outcome=DemDownloadOutcome.SUCCESS,
+        bytes_written=10,
+        message="ok",
+    )
+
+    first = write_dem_download_results_csv(tmp_path, [result])
+    second = write_dem_download_results_csv(tmp_path, [result])
+
+    assert first != second
+    assert first.exists() and second.exists()
+    assert first.name.isascii() and second.name.isascii()
