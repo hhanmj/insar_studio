@@ -120,6 +120,7 @@ class TaskType(StrEnum):
     """Type of a download/processing task."""
 
     DOWNLOAD_SLC = "DOWNLOAD_SLC"
+    DOWNLOAD_BURST = "DOWNLOAD_BURST"
     DOWNLOAD_ORBIT = "DOWNLOAD_ORBIT"
     DOWNLOAD_DEM = "DOWNLOAD_DEM"
     MATCH_ORBIT = "MATCH_ORBIT"
