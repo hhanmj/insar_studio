@@ -10,7 +10,7 @@ InSAR Studio 是一个面向 InSAR 与遥感数据准备流程的桌面助手。
 本项目不替代 SARscape、ISCE、MintPy、SNAP 或 ASF Vertex。它的定位是：**处理前的数据准备助手**。
 
 <p align="center">
-  <img src="docs/assets/ScreenShot_2026-09-19_142050_248.png" alt="InSAR Studio desktop interface" width="860">
+  <img src="docs/assets/ScreenShot.png" alt="InSAR Studio desktop interface" width="860">
 </p>
 
 ## 适合谁
